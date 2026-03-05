@@ -217,7 +217,22 @@ class Transport:
     @staticmethod
     def _handle_announce(packet):
         from .identity import Identity
+        from .destination import Destination
         import gc; gc.collect()
+
+        # Fast pre-filter: skip expensive Ed25519 verify for non-LXMF
+        # announces (e.g. nomadnetwork.node).  Extract the unverified
+        # public key, derive what the LXMF delivery hash *would* be,
+        # and drop if it doesn't match.  Saves ~24s per unknown node.
+        _keysize = const.KEYSIZE // 8  # 64
+        if len(packet.data) >= _keysize:
+            _pk = packet.data[:_keysize]
+            _id_hash = Identity.truncated_hash(_pk)
+            _lxmf_hash = Destination.hash(_id_hash, "lxmf", "delivery")
+            if packet.destination_hash != _lxmf_hash:
+                log("Skip non-LXMF announce " + packet.destination_hash.hex()[:8], LOG_DEBUG)
+                return
+
         valid = Identity.validate_announce(packet)
         gc.collect()
         if valid:
@@ -296,6 +311,7 @@ class Transport:
     @staticmethod
     async def job_loop():
         """Main transport maintenance loop - run as async task"""
+        _gc_count = 0
         while Transport._jobs_running:
             try:
                 now = time.time()
@@ -331,11 +347,13 @@ class Transport:
                     if l in Transport.active_links:
                         Transport.active_links.remove(l)
 
-                import gc
-                gc.collect()
+                _gc_count = (_gc_count + 1) % 15
+                if _gc_count == 0:
+                    import gc
+                    gc.collect()
 
             except Exception as e:
                 log("Transport job error: " + str(e), LOG_ERROR)
 
             import uasyncio as asyncio
-            await asyncio.sleep(0.25)
+            await asyncio.sleep(2)

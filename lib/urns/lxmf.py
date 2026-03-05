@@ -99,6 +99,7 @@ class LXMessage:
         self.rssi = None
         self.snr = None
         self.q = None
+        self.packet = None
 
         self._delivery_callback = None
         self._failed_callback = None
@@ -202,6 +203,10 @@ class LXMessage:
             data = self.packed[self.DESTINATION_LENGTH:]
             pkt = Packet(self._destination, data)
             pkt.send()
+            self.packet = pkt
+            # Scale receipt timeout for transport-routed packets
+            if pkt.receipt and pkt.header_type == Packet.HEADER_2:
+                pkt.receipt.set_timeout(pkt.receipt.timeout * 3)
             self.state = LXMessage.SENT
             self.transport_encrypted = True
             self.transport_encryption = "Curve25519"

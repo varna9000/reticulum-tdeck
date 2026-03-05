@@ -69,6 +69,15 @@ LORA_CONFIG = {
     # spi, spi_acquire, spi_release injected at runtime by tdeck_node.py
 }
 
+# --- TCP interface config (WiFi) ---
+TCP_CONFIG = {
+    "type": "TCPClientInterface",
+    "name": "WiFi TCP",
+    "enabled": True,
+    "target_host": "127.0.0.1",
+    "target_port": 4242,
+}
+
 # --- Reticulum config ---
 CONFIG = {
     "loglevel": 3,

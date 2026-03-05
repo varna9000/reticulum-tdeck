@@ -17,7 +17,7 @@ from machine import Pin, SPI, SoftI2C
 import time
 
 from tdeck_config import (
-    NODE_NAME, DEBUG, CONFIG, LORA_CONFIG,
+    NODE_NAME, DEBUG, CONFIG, LORA_CONFIG, TCP_CONFIG,
     DISP_CS, DISP_DC, DISP_BL,
     LORA_CS, LORA_MISO,
     KBD_SCL, KBD_SDA, KBD_PWR, KBD_ADDR,
@@ -216,6 +216,12 @@ def on_announce(destination_hash, display_name):
     # Compute the LXMF delivery hash for this identity
     lxmf_hash = _compute_lxmf_hash(destination_hash)
 
+    # Filter non-LXMF announces (e.g. nomadnetwork.node pages)
+    if lxmf_hash is not None and lxmf_hash != destination_hash:
+        if DEBUG >= 2:
+            print("[Peer] Skip non-LXMF announce", destination_hash.hex()[:8])
+        return
+
     # Deduplicate: if another peer key already maps to the same LXMF hash,
     # update that peer instead of adding a duplicate.
     if lxmf_hash:
@@ -250,16 +256,20 @@ router.register_announce_callback(on_announce)
 
 # --- GUI -> LXMF wiring ---
 
-def gui_send(dest_hash, text):
+def gui_send(dest_hash, text, msg_idx=None):
     """Called by GUI when user sends a message."""
     import uasyncio as asyncio
-    asyncio.create_task(_async_send(dest_hash, text))
+    asyncio.create_task(_async_send(dest_hash, text, msg_idx))
 
 
-async def _async_send(dest_hash, text):
+async def _async_send(dest_hash, text, msg_idx=None):
     """Send LXMF message as async task (crypto is slow)."""
     import uasyncio as asyncio
     await asyncio.sleep(0)
+
+    # msg_idx is passed from GUI (message already added with status=1)
+    if msg_idx is None:
+        msg_idx = gui.add_chat_message(dest_hash, True, text, status=1)
 
     try:
         msg = router.send_message(dest_hash, text)
@@ -267,12 +277,28 @@ async def _async_send(dest_hash, text):
             sound.play_tx()
             if DEBUG >= 1:
                 print("[TX] Sent to", dest_hash.hex()[:8])
+
+            # Attach receipt callbacks for delivery tracking
+            receipt = msg.packet.receipt if msg.packet else None
+            if receipt:
+                def _on_delivered(rcpt, _dh=dest_hash, _idx=msg_idx):
+                    gui.update_message_status(_dh, _idx, 2)
+                    gui.dirty = True
+
+                def _on_timeout(rcpt, _dh=dest_hash, _idx=msg_idx):
+                    gui.update_message_status(_dh, _idx, 3)
+                    gui.dirty = True
+
+                receipt.set_delivery_callback(_on_delivered)
+                receipt.set_timeout_callback(_on_timeout)
         else:
+            gui.update_message_status(dest_hash, msg_idx, 3)
             gui.add_chat_message(dest_hash, True, "(send failed: unknown peer)")
             gui.dirty = True
             if DEBUG >= 1:
                 print("[TX] Failed: unknown identity for", dest_hash.hex()[:8])
     except Exception as e:
+        gui.update_message_status(dest_hash, msg_idx, 3)
         gui.add_chat_message(dest_hash, True, "(send error)")
         gui.dirty = True
         if DEBUG >= 1:
@@ -282,6 +308,7 @@ async def _async_send(dest_hash, text):
 
 def gui_announce():
     """Called by GUI when user presses 'a'."""
+    sound.play_announce()
     try:
         router.announce()
         if DEBUG >= 1:
@@ -292,8 +319,201 @@ def gui_announce():
     gc.collect()
 
 
+# --- Settings persistence ---
+
+_SETTINGS_PATH = "/rns/settings.json"
+
+
+def _load_settings():
+    try:
+        import json
+        with open(_SETTINGS_PATH, "r") as f:
+            return json.load(f)
+    except:
+        return {}
+
+
+def _save_settings(data):
+    try:
+        import json
+        with open(_SETTINGS_PATH, "w") as f:
+            json.dump(data, f)
+    except Exception as e:
+        if DEBUG >= 1:
+            print("Settings save error:", e)
+
+
+# --- WiFi / TCP ---
+
+def _stop_wifi():
+    """Deactivate WiFi radio."""
+    import network
+    wlan = network.WLAN(network.STA_IF)
+    wlan.disconnect()
+    wlan.active(False)
+    if DEBUG >= 1:
+        print("[WiFi] Disconnected")
+
+
+def wifi_scan():
+    import network
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
+    results = wlan.scan()
+    return sorted([(r[0].decode(), r[3]) for r in results if r[0]],
+                  key=lambda x: x[1], reverse=True)
+
+
+def wifi_connect(ssid, password):
+    import network
+    wlan = network.WLAN(network.STA_IF)
+    # Reset radio state — ESP32 throws "Wifi Internal State Error"
+    # if connect() is called while radio is scanning or already connecting
+    try:
+        wlan.disconnect()
+    except:
+        pass
+    wlan.active(False)
+    time.sleep_ms(100)
+    wlan.active(True)
+    wlan.connect(ssid, password)
+    for _ in range(40):  # ~8s timeout
+        if wlan.isconnected():
+            # Disable power saving — ESP32 drops broadcast packets in PS mode
+            try:
+                wlan.config(pm=0)  # WIFI_PS_NONE
+            except Exception:
+                pass
+            ip = wlan.ifconfig()[0]
+            settings = _load_settings()
+            settings["wifi_ssid"] = ssid
+            settings["wifi_pass"] = password
+            _save_settings(settings)
+            if DEBUG >= 1:
+                print("[WiFi] Connected to", ssid, "IP:", ip)
+            return ip
+        time.sleep_ms(200)
+    if DEBUG >= 1:
+        print("[WiFi] Connection failed:", ssid)
+    return False
+
+
+def _stop_lora():
+    """Disable LoRa interface (free SPI bus for display-only)."""
+    from urns.transport import Transport
+    for iface in list(rns.interfaces):
+        if iface.__class__.__name__ == 'LoRaInterface':
+            iface.online = False
+            if hasattr(iface, 'close'):
+                iface.close()
+            rns.interfaces.remove(iface)
+            Transport.deregister_interface(iface)
+            if DEBUG >= 1:
+                print("[LoRa] Interface stopped")
+            return
+
+
+def _start_lora():
+    """Re-enable LoRa interface."""
+    from urns.transport import Transport
+    # Check if already running
+    for iface in rns.interfaces:
+        if iface.__class__.__name__ == 'LoRaInterface':
+            return
+    import uasyncio as asyncio
+    spi_acquire_lora()
+    try:
+        rns.config["interfaces"] = [LORA_CONFIG]
+        for iface_config in rns.config.get("interfaces", []):
+            if iface_config.get("type") == "LoRaInterface":
+                from urns.interfaces.lora import LoRaInterface
+                iface = LoRaInterface(iface_config)
+                rns.interfaces.append(iface)
+                Transport.register_interface(iface)
+                asyncio.create_task(iface.poll_loop())
+                if DEBUG >= 1:
+                    print("[LoRa] Interface restarted")
+    finally:
+        spi_release_lora()
+
+
+_tcp_iface = None  # track separately so rns.run() doesn't double-start it
+
+
+def tcp_toggle(enabled, host=None, port=None):
+    global _tcp_iface
+    import uasyncio as asyncio
+    from urns.transport import Transport
+    if enabled:
+        TCP_CONFIG["target_host"] = host
+        TCP_CONFIG["target_port"] = port
+        from urns.interfaces.tcp import TCPClientInterface
+        iface = TCPClientInterface(TCP_CONFIG)
+        if iface.online:
+            # Stop LoRa — only one interface at a time
+            _stop_lora()
+            gui.clear_peers()
+            _lxmf_to_peer.clear()
+            Transport.register_interface(iface)
+            asyncio.create_task(iface.poll_loop())
+            _tcp_iface = iface
+            settings = _load_settings()
+            settings["tcp_enabled"] = True
+            settings["tcp_host"] = host
+            settings["tcp_port"] = port
+            _save_settings(settings)
+            if DEBUG >= 1:
+                print("[TCP] Interface started ->", host + ":" + str(port))
+            return True
+        if DEBUG >= 1:
+            print("[TCP] Interface failed to start")
+        return False
+    else:
+        if _tcp_iface is not None:
+            _tcp_iface.online = False
+            _tcp_iface.enabled = False
+            if hasattr(_tcp_iface, 'close'):
+                _tcp_iface.close()
+            Transport.deregister_interface(_tcp_iface)
+            _tcp_iface = None
+            settings = _load_settings()
+            settings["tcp_enabled"] = False
+            _save_settings(settings)
+            gui.clear_peers()
+            _lxmf_to_peer.clear()
+            if DEBUG >= 1:
+                print("[TCP] Interface stopped")
+            # Disconnect WiFi
+            _stop_wifi()
+            gui._wifi_connected = False
+            gui._wifi_ssid_current = ""
+            gui._wifi_ip = ""
+            # Restart LoRa
+            _start_lora()
+            return True
+        return False
+
+
+def set_node_name(name):
+    """Called by GUI when user changes node name."""
+    global NODE_NAME
+    NODE_NAME = name
+    gui.node_name = name
+    dest.display_name = name
+    settings = _load_settings()
+    settings["node_name"] = name
+    _save_settings(settings)
+    if DEBUG >= 1:
+        print("[Settings] Node name:", name)
+
+
 gui.on_send = gui_send
 gui.on_announce = gui_announce
+gui.on_wifi_scan = wifi_scan
+gui.on_wifi_connect = wifi_connect
+gui.on_tcp_toggle = tcp_toggle
+gui.on_node_name = set_node_name
+gui._tcp_default = TCP_CONFIG["target_host"] + ":" + str(TCP_CONFIG["target_port"])
 
 
 # --- Async tasks ---
@@ -314,7 +534,7 @@ async def initial_announce():
 async def reannounce_loop():
     import uasyncio as asyncio
     while True:
-        await asyncio.sleep(120)
+        await asyncio.sleep(300)
         try:
             router.announce()
             gui.announce_flash = time.time()
@@ -329,10 +549,51 @@ async def reannounce_loop():
 
 # --- Main ---
 
+def _auto_connect_wifi():
+    """Restore WiFi and node name from saved settings on boot (synchronous)."""
+    global NODE_NAME
+    settings = _load_settings()
+    saved_name = settings.get("node_name")
+    if saved_name:
+        NODE_NAME = saved_name
+        gui.node_name = saved_name
+        dest.display_name = saved_name
+    ssid = settings.get("wifi_ssid")
+    password = settings.get("wifi_pass")
+    if ssid and password:
+        if DEBUG >= 1:
+            print("[Boot] Reconnecting WiFi:", ssid)
+        ip = wifi_connect(ssid, password)
+        if ip:
+            gui._wifi_connected = True
+            gui._wifi_ssid_current = ssid
+            gui._wifi_ip = ip
+        gc.collect()
+
+
+async def _auto_start_tcp():
+    """Start TCP interface if saved settings say so (needs event loop)."""
+    import uasyncio as asyncio
+    await asyncio.sleep(0)
+    settings = _load_settings()
+    # Always restore last used address for the TCP host input page
+    host = settings.get("tcp_host")
+    port = settings.get("tcp_port")
+    if host and port:
+        gui._tcp_target = host + ":" + str(port)
+    # Auto-connect if it was enabled last session
+    if gui._wifi_connected and settings.get("tcp_enabled") and host and port:
+        if tcp_toggle(True, host, port):
+            gui._tcp_enabled = True
+    gc.collect()
+
+
 def main():
     import uasyncio as asyncio
 
     gc.threshold(-1)  # Relax GC for runtime
+
+    _auto_connect_wifi()
 
     if DEBUG >= 1:
         print("Starting event loop...")
@@ -340,6 +601,7 @@ def main():
     _original_run = rns.run
 
     async def run_all():
+        asyncio.create_task(_auto_start_tcp())
         asyncio.create_task(initial_announce())
         asyncio.create_task(reannounce_loop())
         asyncio.create_task(gui.kbd_loop())

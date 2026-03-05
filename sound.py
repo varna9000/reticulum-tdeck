@@ -21,6 +21,7 @@ class Sound:
         self._i2s = None
         self._rx_buf = None
         self._tx_buf = None
+        self._ann_buf = None
 
     def init(self):
         """Initialize I2S and pre-compute tone buffers."""
@@ -39,6 +40,8 @@ class Sound:
         self._rx_buf = self._gen_chirp(660, 880, 120, 4000)
         # TX: short soft blip
         self._tx_buf = self._gen_tone(440, 80, 3000)
+        # Announce: short rising chirp
+        self._ann_buf = self._gen_chirp(440, 660, 100, 3000)
 
     @staticmethod
     def _gen_tone(freq, duration_ms, amplitude=4000):
@@ -88,6 +91,11 @@ class Sound:
         """Play outgoing message notification."""
         if self.enabled and self._i2s and self._tx_buf:
             self._i2s.write(self._tx_buf)
+
+    def play_announce(self):
+        """Play announce notification."""
+        if self.enabled and self._i2s and self._ann_buf:
+            self._i2s.write(self._ann_buf)
 
     def deinit(self):
         if self._i2s:
