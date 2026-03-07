@@ -7,7 +7,8 @@ Uses [micropython-reticulum](https://github.com/varna9000/micropython-reticulum/
 **NB! App supports only opportunistic messaging. Link messages will not work!.**
 
 
-![demo](images/tdeck-micropython.jpeg "Demo")
+![splash](images/splash.jpeg "Splash Screen")
+![node list](images/node_list.jpeg "Node List")
 
 ## Hardware
 
@@ -64,11 +65,11 @@ Upload the `urns/` library and T-Deck files:
 
 ```
 # Upload uP-reticulum library
-mpremote cp -r urns/ :/lib/urns/
+mpremote cp -r lib/urns/ :/lib/urns/
 
 # Upload T-Deck app files
-mpremote cp t-deck/tdeck_node.py t-deck/tdeck_config.py t-deck/ui.py :
-mpremote cp t-deck/sound.py t-deck/st7789py.py t-deck/vga2_8x16.py :
+mpremote cp tdeck_node.py tdeck_config.py ui.py sound.py :
+mpremote cp lib/st7789py.py lib/vga2_8x16.py :
 ```
 
 ### 5. Configure
@@ -94,7 +95,7 @@ import tdeck_node
 Or set as `main.py` for autostart:
 
 ```
-mpremote cp t-deck/tdeck_node.py :/main.py
+mpremote cp tdeck_node.py :/main.py
 ```
 
 ## Usage
