@@ -29,8 +29,12 @@ pwr.on()
 time.sleep_ms(100)
 
 # --- Shared SPI bus (display + LoRa) ---
-# Start at 2MHz for LoRa compatibility; display functions will reconfigure
-spi = SPI(1, baudrate=8_000_000, sck=Pin(40), mosi=Pin(41), miso=Pin(LORA_MISO))
+# Display: 40MHz (ST7789 max reliable on ESP32-S3)
+# LoRa:    10MHz (SX1262 max=16MHz, 10MHz safe for T-Deck trace lengths)
+_SPI_PINS = {"sck": Pin(40), "mosi": Pin(41), "miso": Pin(LORA_MISO)}
+_SPI_DISP = 40_000_000
+_SPI_LORA = 10_000_000
+spi = SPI(1, baudrate=_SPI_LORA, **_SPI_PINS)
 
 # Display CS — we manage this to keep it deasserted during LoRa ops.
 # LoRa CS is managed internally by the lora-sx126x driver.
@@ -38,13 +42,14 @@ _disp_cs = Pin(DISP_CS, Pin.OUT, value=1)
 
 
 def spi_acquire_display():
-    """Acquire SPI bus for display: ensure display CS can be driven."""
-    pass  # Display driver manages its own CS via st7789
+    """Acquire SPI bus for display: switch to 40MHz."""
+    spi.init(baudrate=_SPI_DISP, **_SPI_PINS)
 
 
 def spi_release_display():
-    """Release SPI bus from display: deassert display CS."""
+    """Release SPI bus from display: deassert CS, restore LoRa speed."""
     _disp_cs.value(1)
+    spi.init(baudrate=_SPI_LORA, **_SPI_PINS)
 
 
 def spi_acquire_lora():
@@ -67,10 +72,55 @@ bl.value(1)
 
 spi_acquire_display()
 tft = st7789.ST7789(spi, 240, 320, dc=dc, cs=_disp_cs, backlight=bl, rotation=1)
-tft.fill(st7789.BLACK)
-tft.text(font, "Starting...", 100, 112, st7789.WHITE, st7789.BLACK)
-spi_release_display()
+tft.fill(0x0821)  # BG_DARK
 
+# Splash: render 1bpp logo (180x180) centered, then "Loading..." below
+try:
+    _logo_w, _logo_h = 180, 180
+    _stride = 23  # 180 bits = 22.5 bytes, padded to 23 (184 bits per row)
+    _logo_x = (320 - _logo_w) // 2   # 70
+    _logo_y = (240 - _logo_h - 20) // 2  # 20, leaves room for text below
+    _fg = 0x07FF  # NEON_CYAN
+    _bg = 0x0821  # BG_DARK
+    # Byte-swap for ST7789 RGB565 little-endian wire format
+    _fg_hi = (_fg >> 8) | ((_fg & 0xFF) << 8)
+    _bg_hi = (_bg >> 8) | ((_bg & 0xFF) << 8)
+
+    with open("logo.bin", "rb") as f:
+        _row_buf = bytearray(_logo_w * 2)
+        for _r in range(_logo_h):
+            _bits = f.read(_stride)
+            _idx = 0
+            for _bi in range(_logo_w):
+                _byte_idx = _bi >> 3
+                _bit_idx = 7 - (_bi & 7)
+                _px = _bg_hi if (_bits[_byte_idx] >> _bit_idx) & 1 else _fg_hi
+                _row_buf[_idx] = _px & 0xFF
+                _row_buf[_idx + 1] = (_px >> 8) & 0xFF
+                _idx += 2
+            tft.blit_buffer(_row_buf, _logo_x, _logo_y + _r, _logo_w, 1)
+
+    del _row_buf, _bits
+    _txt = "Loading..."
+    _tx = (320 - len(_txt) * 8) // 2
+    _ty = _logo_y + _logo_h + 6
+    tft.text(font, _txt, _tx, _ty, 0x07E0, _bg)  # NEON_GREEN
+except Exception as e:
+    tft.text(font, "Starting...", 100, 112, 0x07FF, 0x0821)
+    if DEBUG >= 1:
+        print("Splash error:", e)
+
+spi_release_display()
+# Clean up splash temporaries
+for _v in ('_row_buf', '_bits', '_logo_w', '_logo_h', '_stride',
+           '_logo_x', '_logo_y', '_fg', '_bg', '_fg_hi', '_bg_hi',
+           '_txt', '_tx', '_ty', '_r', '_bi', '_byte_idx', '_bit_idx',
+           '_px', '_idx'):
+    try:
+        del globals()[_v]
+    except KeyError:
+        pass
+del _v
 gc.collect()
 
 # --- Init keyboard ---
@@ -200,10 +250,11 @@ def on_message(message):
     # Add to chat under the GUI peer key
     gui.add_chat_message(peer_key, False, content)
 
-    # Update RSSI from interface
+    # Update RSSI/SNR from interface
     for iface in rns.interfaces:
         if iface.rssi is not None:
             gui.rssi = iface.rssi
+            gui.snr = iface.snr
             break
 
     # Play notification
@@ -243,6 +294,8 @@ def on_announce(destination_hash, display_name):
     for iface in rns.interfaces:
         if iface.rssi is not None:
             rssi = iface.rssi
+            gui.rssi = iface.rssi
+            gui.snr = iface.snr
             break
     gui.add_peer(destination_hash, display_name, rssi=rssi)
     if DEBUG >= 1:

@@ -25,11 +25,12 @@ SCREEN_H = 240
 CHAR_W = 8
 CHAR_H = 16
 COLS = 40          # 320 / 8
-NAV_H = 16        # navbar height (1 row)
-SEP_Y = 208       # separator y
-INPUT_Y = 212      # input line y (below separator)
-BODY_Y = NAV_H + CHAR_H  # main area starts one row below navbar (padding)
-BODY_ROWS = 11    # (208 - 32) / 16 = 11 rows for content
+NAV_H = 20        # navbar height (1 row + 4px padding)
+NAV_TY = 2        # navbar text y offset (2px top padding)
+INPUT_Y = 224      # status bar y (bottom of screen, 224+16=240)
+BODY_Y = 26       # main area start (6px gap below navbar for frame line)
+BODY_ROWS = 12    # 12 * 16 = 192px, ends at y=218, frame bottom at 219
+SEP_Y = 222       # separator line just above input bar
 
 # Data limits
 MAX_PEERS = 16
@@ -37,6 +38,11 @@ MAX_HISTORY = 30  # per peer
 
 # Trackball debounce
 _TB_DEBOUNCE_MS = 80
+
+# Strip non-ASCII bytes and collapse whitespace — emoji removal leaves gaps
+def _ascii(s):
+    raw = ''.join(c for c in s if 32 <= ord(c) < 127)
+    return ' '.join(raw.split())
 
 # Pad string to exact width (no clearing needed)
 def _pad(s, width=COLS):
@@ -53,18 +59,15 @@ class UI:
         self.get_key = get_key_func
         self.node_name = node_name
 
-        # Import colors from st7789py
-        import st7789py as st
-        self.BLACK   = st.BLACK
-        self.WHITE   = st.WHITE
-        self.RED     = st.RED
-        self.GREEN   = st.GREEN
-        self.BLUE    = st.BLUE
-        self.CYAN    = st.CYAN
-        self.YELLOW  = st.YELLOW
-        self.MAGENTA = st.MAGENTA
-        # Selection highlight: dark grey (RGB565)
-        self.SEL_BG  = 0x2945
+        # Cyberpunk color palette (RGB565)
+        self.YELLOW     = 0xFFE0
+        self.BG_DARK    = 0x0821  # very dark blue-grey — main background
+        self.NEON_CYAN  = 0x07FF  # primary text, borders
+        self.NEON_GREEN = 0x07E0  # "me>" prefix, input prompt, active items
+        self.NEON_MAG   = 0xF81F  # unread markers, accents
+        self.DIM_CYAN   = 0x0514  # secondary/dimmed text
+        self.HEADER_BG  = 0x0011  # very dark blue — navbar background
+        self.SEL_BG     = 0x1082  # selection highlight bg (brighter than BG_DARK)
 
         # State
         self.state = STATE_NODES
@@ -95,6 +98,7 @@ class UI:
         # Navbar state
         self.bat_v = 0.0
         self.rssi = None
+        self.snr = None
         self.announce_flash = 0  # timestamp of last announce flash
 
         # Trackball pins
@@ -120,8 +124,8 @@ class UI:
         self._bat_adc = ADC(Pin(4))
         self._bat_adc.atten(ADC.ATTN_11DB)
 
-        # Unread message tracking
-        self.unread = set()
+        # Unread message tracking: dest_hash -> count
+        self.unread = {}
 
         # Settings state
         self._settings_page = _SET_MAIN
@@ -152,39 +156,80 @@ class UI:
         if self._cache[idx] == text:
             return False
         self._cache[idx] = text
-        self.tft.text(self.font, _pad(text), 0, y, fg, bg or self.BLACK)
+        self.tft.text(self.font, _pad(text), 0, y, fg, bg or self.BG_DARK)
         return True
 
     def _row(self, text, y, fg, bg=None):
         """Draw a full-width padded row — overwrites old content, no flicker."""
-        self.tft.text(self.font, _pad(text), 0, y, fg, bg or self.BLACK)
+        self.tft.text(self.font, _pad(text), 0, y, fg, bg or self.BG_DARK)
 
     def _text(self, text, x, y, fg, bg=None):
         """Draw text at pixel position."""
-        self.tft.text(self.font, text, x, y, fg, bg or self.BLACK)
+        self.tft.text(self.font, text, x, y, fg, bg or self.BG_DARK)
 
     # --- Navbar ---
 
     def draw_navbar(self):
-        # Build full navbar string, padded to COLS
-        bat_str = "bat:{:.1f}V".format(self.bat_v)
-        iface_str = "[TCP]" if self._tcp_enabled else "[LoRa]"
-        rssi_str = "rssi:" + str(self.rssi) if self.rssi is not None else ""
+        bat_v_str = "{:.1f}V".format(self.bat_v)
         name = self.node_name[:10]
-        ann = "[A]" if (self.announce_flash and time.time() - self.announce_flash < 2) else "   "
+        ann = ">>>" if (self.announce_flash and time.time() - self.announce_flash < 2) else ""
 
-        # Fixed-position layout: bat(10) iface(7) rssi(10) name(10) ann(3) = 40
-        nav = "{:<10}{:<7}{:<10}{:>10}{}".format(bat_str, iface_str, rssi_str, name, ann)
-        self._draw_row_cached(0, nav, 0, self.WHITE, self.BLUE)
+        # Center section: iface + optional SNR
+        if self._tcp_enabled:
+            center = "[TCP]"
+        elif self.rssi is not None:
+            center = "[LoRa] snr:" + str(self.snr or 0)
+        else:
+            center = "[LoRa]"
+
+        # Right side: [ann][name] right-aligned
+        right_str = (ann + " " if ann else "") + name
+        left_w = 4 + len(bat_v_str)  # icon chars + voltage
+        right_w = len(right_str)
+        mid_w = COLS - left_w - right_w
+        mid_str = center.center(mid_w) if mid_w > len(center) else center[:mid_w]
+        nav = "    " + bat_v_str + mid_str + right_str
+
+        hb = self.HEADER_BG
+        self.tft.fill_rect(0, 0, SCREEN_W, NAV_H, hb)
+        self.tft.text(self.font, _pad(nav), 0, NAV_TY, self.NEON_CYAN, hb)
+        self.tft.text(self.font, bat_v_str, 4 * CHAR_W, NAV_TY, self.NEON_GREEN, hb)
+
+        # Overdraw center section in dim (iface stays cyan from nav)
+        center_x = (left_w + (mid_w - len(center)) // 2) * CHAR_W
+        self.tft.text(self.font, center, center_x, NAV_TY, self.DIM_CYAN, hb)
+
+        # Overdraw announce chevrons in magenta
+        if ann:
+            ann_x = (COLS - right_w) * CHAR_W
+            self.tft.text(self.font, ann, ann_x, NAV_TY, self.NEON_MAG, hb)
+
+        # Battery icon (28x12 at top-left)
+        bl = 3 if self.bat_v > 3.9 else (2 if self.bat_v > 3.6 else (1 if self.bat_v > 3.3 else 0))
+        gr = self.NEON_GREEN
+        dm = self.DIM_CYAN
+        self.tft.fill_rect(1, 4, 26, 12, gr)
+        self.tft.fill_rect(2, 5, 24, 10, hb)
+        self.tft.fill_rect(27, 7, 2, 6, gr)
+        self.tft.fill_rect(3,  6, 7, 8, gr if bl >= 1 else dm)
+        self.tft.fill_rect(11, 6, 7, 8, gr if bl >= 2 else dm)
+        self.tft.fill_rect(19, 6, 7, 8, gr if bl >= 3 else dm)
+
+        self._cache[0] = nav + ann + center
 
     # --- Node list screen ---
 
     def draw_node_list(self):
         if not self._peer_keys:
-            self._draw_row_cached(1, "No peers yet.", BODY_Y, self.WHITE)
-            self._draw_row_cached(2, "Waiting for announces...", BODY_Y + CHAR_H, self.WHITE)
-            for i in range(2, BODY_ROWS):
-                self._draw_row_cached(i + 1, "", BODY_Y + i * CHAR_H, self.WHITE)
+            _mid = BODY_ROWS // 2 - 1
+            for i in range(BODY_ROWS):
+                y = BODY_Y + i * CHAR_H
+                if i == _mid:
+                    self._draw_row_cached(i + 1, "No peers yet.".center(COLS), y, self.NEON_CYAN)
+                elif i == _mid + 1:
+                    self._draw_row_cached(i + 1, "Waiting for announces...".center(COLS), y, self.DIM_CYAN)
+                else:
+                    self._draw_row_cached(i + 1, "", y, self.NEON_CYAN)
         else:
             visible = self._peer_keys[self.node_scroll:self.node_scroll + BODY_ROWS]
             for i in range(BODY_ROWS):
@@ -192,34 +237,69 @@ class UI:
                 if i < len(visible):
                     key = visible[i]
                     peer = self.peers[key]
-                    name = peer.get("name") or "?"
-                    hash_str = key.hex()[:8]
-                    marker = "* " if key in self.unread else "  "
-                    right = "[" + hash_str + "]"
-                    max_name = COLS - len(marker) - len(right) - 1
+                    name = _ascii(peer.get("name") or "?")
+                    hash_tag = "[" + key.hex()[:8] + "]"
+                    uc = self.unread.get(key, 0)
+                    marker = str(min(uc, 9)) + "*" if uc > 1 else ("* " if uc == 1 else "  ")
+                    # Hash in brackets, 1 char right padding
+                    _rpad = 1
+                    max_name = COLS - len(marker) - len(hash_tag) - _rpad
                     left = marker + name[:max_name]
-                    line = left + " " * (COLS - len(left) - len(right)) + right
+                    line = left + " " * (COLS - len(left) - len(hash_tag) - _rpad) + hash_tag
+                    hash_x = (COLS - len(hash_tag) - _rpad) * CHAR_W
 
                     abs_idx = self.node_scroll + i
                     if abs_idx == self.selected_idx:
-                        cache_key = '\x01' + line  # \x01 = selected marker
+                        cache_key = '\x01' + line
                         if self._cache[i + 1] != cache_key:
                             self._cache[i + 1] = cache_key
                             self.tft.text(self.font, _pad(line), 0, y, self.YELLOW, self.SEL_BG)
-                            if key in self.unread:
-                                self.tft.text(self.font, "* ", 0, y, self.MAGENTA, self.SEL_BG)
+                            # Accent bar (clear of corner bracket)
+                            self.tft.fill_rect(4, y, 3, CHAR_H, self.NEON_MAG)
+                            if uc:
+                                self.tft.text(self.font, marker, 0, y, self.NEON_MAG, self.SEL_BG)
+                            # Dim hash on right
+                            self.tft.text(self.font, hash_tag, hash_x, y, self.DIM_CYAN, self.SEL_BG)
                     else:
-                        self._draw_row_cached(i + 1, line, y, self.WHITE, self.BLACK)
-                        if key in self.unread:
-                            self.tft.text(self.font, "* ", 0, y, self.MAGENTA, self.BLACK)
+                        self._draw_row_cached(i + 1, line, y, self.NEON_CYAN, self.BG_DARK)
+                        if uc:
+                            self.tft.text(self.font, marker, 0, y, self.NEON_MAG, self.BG_DARK)
+                        # Dim hash on right
+                        self.tft.text(self.font, hash_tag, hash_x, y, self.DIM_CYAN, self.BG_DARK)
                 else:
-                    self._draw_row_cached(i + 1, "", y, self.WHITE)
+                    self._draw_row_cached(i + 1, "", y, self.NEON_CYAN)
 
-        # Separator
-        self.tft.fill_rect(0, SEP_Y, SCREEN_W, 2, self.BLUE)
+        # Scroll indicator on right edge
+        _total = len(self._peer_keys)
+        if _total > BODY_ROWS:
+            _track_h = BODY_ROWS * CHAR_H
+            _bar_h = max(6, _track_h * BODY_ROWS // _total)
+            _bar_y = BODY_Y + self.node_scroll * _track_h // _total
+            self.tft.fill_rect(SCREEN_W - 2, BODY_Y, 2, _track_h, self.BG_DARK)
+            self.tft.fill_rect(SCREEN_W - 2, _bar_y, 2, _bar_h, self.DIM_CYAN)
 
-        # Status bar
-        self._draw_row_cached(14, "Click=chat a=announce s=settings", INPUT_Y, self.CYAN)
+        # Neon frame: full-width lines + corner brackets
+        _cx = self.NEON_CYAN
+        _L = 12  # corner vertical arm length
+        _top = BODY_Y - 3
+        _bot = BODY_Y + BODY_ROWS * CHAR_H + 1
+        # Full-width horizontal lines
+        self.tft.fill_rect(0, _top, SCREEN_W, 1, _cx)
+        self.tft.fill_rect(0, _bot, SCREEN_W, 1, _cx)
+        # Corner verticals
+        self.tft.fill_rect(0, _top, 1, _L, _cx)           # top-left
+        self.tft.fill_rect(SCREEN_W - 1, _top, 1, _L, _cx) # top-right
+        self.tft.fill_rect(0, _bot - _L + 1, 1, _L, _cx)  # bottom-left
+        self.tft.fill_rect(SCREEN_W - 1, _bot - _L + 1, 1, _L, _cx)  # bottom-right
+
+        # Bottom bar with key hints
+        self.tft.text(self.font, _pad(""), 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+        self.tft.text(self.font, "(", 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+        self.tft.text(self.font, "a", CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
+        self.tft.text(self.font, ")nnounce", 2 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+        self.tft.text(self.font, "(", 13 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+        self.tft.text(self.font, "s", 14 * CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
+        self.tft.text(self.font, ")ettings", 15 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
 
     # --- Chat screen ---
 
@@ -239,7 +319,7 @@ class UI:
                 prefix = "me> "
             else:
                 peer = self.peers.get(self.selected_peer)
-                pname = (peer.get("name") or "?")[:8]
+                pname = _ascii(peer.get("name") or "?")[:8]
                 prefix = pname + "> "
             # Reserve space for suffix on last wrapped line
             suffix = _suffix_map.get(status, "") if is_mine else ""
@@ -253,9 +333,25 @@ class UI:
         return lines
 
     def draw_chat(self):
-        lines = self._build_chat_lines()
+        # Chat header row: "< PeerName" left, "[hash]" right
+        peer = self.peers.get(self.selected_peer)
+        pname = _ascii(peer.get("name") or "?")[:20] if peer else "?"
+        phash = "[" + self.selected_peer.hex()[:8] + "]"
+        header = "< " + pname
+        cache_key = header + phash
+        if self._cache[1] != cache_key:
+            self._cache[1] = cache_key
+            self.tft.text(self.font, _pad(header), 0, BODY_Y, self.NEON_CYAN, self.BG_DARK)
+            self.tft.text(self.font, "<", 0, BODY_Y, self.NEON_GREEN, self.BG_DARK)
+            hx = (COLS - len(phash) - 1) * CHAR_W
+            self.tft.text(self.font, phash, hx, BODY_Y, self.DIM_CYAN, self.BG_DARK)
+        # Separator under header
+        self.tft.fill_rect(0, BODY_Y + CHAR_H - 1, SCREEN_W, 1, self.DIM_CYAN)
 
-        # Clamp scroll — can't scroll past all content
+        lines = self._build_chat_lines()
+        _chat_rows = BODY_ROWS - 1  # 11 rows for messages
+
+        # Clamp scroll
         total = len(lines)
         max_scroll = max(0, total - 1)
         if self.chat_scroll > max_scroll:
@@ -263,40 +359,48 @@ class UI:
 
         # Apply scroll — show last N lines, scrollable up
         view_end = max(0, total - self.chat_scroll)
-        view_start = max(0, view_end - BODY_ROWS)
+        view_start = max(0, view_end - _chat_rows)
         visible = lines[view_start:view_end]
 
-        _status_color = {1: self.YELLOW, 2: self.GREEN, 3: self.RED}
-        for i in range(BODY_ROWS):
-            y = BODY_Y + i * CHAR_H
+        _status_color = {1: self.YELLOW, 2: self.NEON_GREEN, 3: self.NEON_MAG}
+        for i in range(_chat_rows):
+            y = BODY_Y + (i + 1) * CHAR_H
+            ci = i + 2  # cache index (1=header, 2..12=chat rows)
             if i < len(visible):
                 is_mine, text, is_first, slen, status = visible[i]
-                cached = self._cache[i + 1] == text
-                if cached:
-                    continue  # skip unchanged row
-                self._cache[i + 1] = text
+                if self._cache[ci] == text:
+                    continue
+                self._cache[ci] = text
 
                 padded = _pad(text)
                 if is_first:
-                    # Optimized: draw full line WHITE, overdraw short prefix in color
-                    self.tft.text(self.font, padded, 0, y, self.WHITE, self.BLACK)
+                    self.tft.text(self.font, padded, 0, y, self.NEON_CYAN, self.BG_DARK)
                     if is_mine:
-                        self.tft.text(self.font, text[:4], 0, y, self.GREEN, self.BLACK)
+                        self.tft.text(self.font, text[:4], 0, y, self.NEON_GREEN, self.BG_DARK)
                     else:
                         gt = text.find(">")
                         if gt >= 0:
-                            self.tft.text(self.font, text[:gt + 1], 0, y, self.RED, self.BLACK)
+                            self.tft.text(self.font, text[:gt + 1], 0, y, self.NEON_MAG, self.BG_DARK)
                 else:
-                    self.tft.text(self.font, padded, 0, y, self.WHITE, self.BLACK)
-                # Overdraw status suffix in color
+                    self.tft.text(self.font, padded, 0, y, self.NEON_CYAN, self.BG_DARK)
                 if slen > 0 and status in _status_color:
                     sx = (len(text) - slen) * CHAR_W
-                    self.tft.text(self.font, text[-slen:], sx, y, _status_color[status], self.BLACK)
+                    self.tft.text(self.font, text[-slen:], sx, y, _status_color[status], self.BG_DARK)
             else:
-                self._draw_row_cached(i + 1, "", y, self.WHITE)
+                self._draw_row_cached(ci, "", y, self.NEON_CYAN)
 
-        # Separator
-        self.tft.fill_rect(0, SEP_Y, SCREEN_W, 2, self.BLUE)
+        # Scroll indicator on right edge
+        if total > _chat_rows:
+            _track_h = _chat_rows * CHAR_H
+            _track_y = BODY_Y + CHAR_H
+            _bar_h = max(6, _track_h * _chat_rows // total)
+            _pos = max_scroll - self.chat_scroll if max_scroll else 0
+            _bar_y = _track_y + _pos * (_track_h - _bar_h) // max(1, max_scroll)
+            self.tft.fill_rect(SCREEN_W - 2, _track_y, 2, _track_h, self.BG_DARK)
+            self.tft.fill_rect(SCREEN_W - 2, _bar_y, 2, _bar_h, self.DIM_CYAN)
+
+        # Separator above input
+        self.tft.fill_rect(0, SEP_Y, SCREEN_W, 1, self.DIM_CYAN)
 
         # Input line
         self.draw_input()
@@ -304,11 +408,17 @@ class UI:
     def draw_input(self):
         prompt = "> "
         inp = self.cmd_buf.decode()
-        text_part = inp[:COLS - 3] + "_"
-        text_padded = _pad(text_part, COLS - 2)
-        # Draw prompt in green, text+cursor in white — single pass, no flicker
-        self.tft.text(self.font, prompt, 0, INPUT_Y, self.GREEN, self.BLACK)
-        self.tft.text(self.font, text_padded, 2 * CHAR_W, INPUT_Y, self.WHITE, self.BLACK)
+        if inp:
+            text_part = inp[:COLS - 3] + "_"
+            text_padded = _pad(text_part, COLS - 2)
+            self.tft.text(self.font, prompt, 0, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
+            self.tft.text(self.font, text_padded, 2 * CHAR_W, INPUT_Y, self.NEON_CYAN, self.BG_DARK)
+        else:
+            self.tft.text(self.font, _pad("> _"), 0, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
+            _hx = (COLS - 12) * CHAR_W  # right-aligned with 1ch padding
+            self.tft.text(self.font, "[", _hx, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+            self.tft.text(self.font, "bksp", _hx + CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
+            self.tft.text(self.font, "=back]", _hx + 5 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
 
     # --- Text wrapping ---
 
@@ -349,7 +459,7 @@ class UI:
         """Enter chat for the currently selected peer (trackball click only)."""
         if self._peer_keys and 0 <= self.selected_idx < len(self._peer_keys):
             self.selected_peer = self._peer_keys[self.selected_idx]
-            self.unread.discard(self.selected_peer)
+            self.unread.pop(self.selected_peer, None)
             self.chat_scroll = 0
             self.cmd_buf = bytearray()
             self.state = STATE_CHAT
@@ -598,10 +708,10 @@ class UI:
         elif self._settings_page == _SET_NODE_NAME:
             self._draw_node_name()
         # Separator
-        self.tft.fill_rect(0, SEP_Y, SCREEN_W, 2, self.BLUE)
+        self.tft.fill_rect(0, SEP_Y, SCREEN_W, 2, self.DIM_CYAN)
 
     def _draw_settings_main(self):
-        self._draw_row_cached(1, "Settings", BODY_Y, self.CYAN)
+        self._draw_row_cached(1, "Settings", BODY_Y, self.NEON_CYAN)
 
         if self._wifi_connected:
             wifi_status = self._wifi_ssid_current
@@ -623,21 +733,32 @@ class UI:
                     if self._cache[i + 2] != cache_key:
                         self._cache[i + 2] = cache_key
                         self.tft.text(self.font, _pad(line), 0, y, self.YELLOW, self.SEL_BG)
+                        self.tft.fill_rect(4, y, 3, CHAR_H, self.NEON_MAG)
                 else:
-                    self._draw_row_cached(i + 2, line, y, self.WHITE)
+                    self._draw_row_cached(i + 2, line, y, self.NEON_CYAN)
             else:
-                self._draw_row_cached(i + 2, "", y, self.WHITE)
+                self._draw_row_cached(i + 2, "", y, self.NEON_CYAN)
 
-        self._draw_row_cached(14, "Click=select  Bksp=back", INPUT_Y, self.CYAN)
+        self._draw_settings_bottom_bar()
+
+    def _draw_settings_bottom_bar(self):
+        self.tft.text(self.font, _pad(""), 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+        self.tft.text(self.font, "(", 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+        self.tft.text(self.font, "click", CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
+        self.tft.text(self.font, ")select", 6 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+        _hx = (COLS - 12) * CHAR_W
+        self.tft.text(self.font, "[", _hx, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+        self.tft.text(self.font, "bksp", _hx + CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
+        self.tft.text(self.font, "=back]", _hx + 5 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
 
     def _draw_wifi_scan(self):
-        self._draw_row_cached(1, "WiFi Networks", BODY_Y, self.CYAN)
+        self._draw_row_cached(1, "WiFi Networks", BODY_Y, self.NEON_CYAN)
 
         if not self._wifi_networks:
             msg = "  Scanning..." if self._wifi_scanning else "  No networks found"
-            self._draw_row_cached(2, msg, BODY_Y + CHAR_H, self.WHITE)
+            self._draw_row_cached(2, msg, BODY_Y + CHAR_H, self.DIM_CYAN)
             for i in range(2, BODY_ROWS):
-                self._draw_row_cached(i + 1, "", BODY_Y + i * CHAR_H, self.WHITE)
+                self._draw_row_cached(i + 1, "", BODY_Y + i * CHAR_H, self.NEON_CYAN)
         else:
             visible_start = self._settings_scroll
             visible = self._wifi_networks[visible_start:visible_start + BODY_ROWS - 1]
@@ -652,26 +773,27 @@ class UI:
                         if self._cache[i + 2] != cache_key:
                             self._cache[i + 2] = cache_key
                             self.tft.text(self.font, _pad(line), 0, y, self.YELLOW, self.SEL_BG)
+                            self.tft.fill_rect(4, y, 3, CHAR_H, self.NEON_MAG)
                     else:
-                        self._draw_row_cached(i + 2, line, y, self.WHITE)
+                        self._draw_row_cached(i + 2, line, y, self.NEON_CYAN)
                 else:
-                    self._draw_row_cached(i + 2, "", y, self.WHITE)
+                    self._draw_row_cached(i + 2, "", y, self.NEON_CYAN)
 
-        self._draw_row_cached(14, "Click=select  Bksp=back", INPUT_Y, self.CYAN)
+        self._draw_settings_bottom_bar()
 
     def _draw_wifi_pass(self):
-        self._draw_row_cached(1, "Connect to: " + self._wifi_ssid[:26], BODY_Y, self.CYAN)
+        self._draw_row_cached(1, "Connect to: " + self._wifi_ssid[:26], BODY_Y, self.NEON_CYAN)
 
         for i in range(1, BODY_ROWS):
-            self._draw_row_cached(i + 1, "", BODY_Y + i * CHAR_H, self.WHITE)
+            self._draw_row_cached(i + 1, "", BODY_Y + i * CHAR_H, self.NEON_CYAN)
 
         # Password input line
         prompt = "> "
         inp = self.cmd_buf.decode()
         text_part = inp[:COLS - 3] + "_"
         text_padded = _pad(text_part, COLS - 2)
-        self.tft.text(self.font, prompt, 0, INPUT_Y, self.GREEN, self.BLACK)
-        self.tft.text(self.font, text_padded, 2 * CHAR_W, INPUT_Y, self.WHITE, self.BLACK)
+        self.tft.text(self.font, prompt, 0, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
+        self.tft.text(self.font, text_padded, 2 * CHAR_W, INPUT_Y, self.NEON_CYAN, self.BG_DARK)
 
     async def _do_wifi_scan(self):
         """Run WiFi scan in async task so UI renders 'Scanning...' first."""
@@ -686,32 +808,32 @@ class UI:
         self.dirty = True
 
     def _draw_node_name(self):
-        self._draw_row_cached(1, "Node Name", BODY_Y, self.CYAN)
+        self._draw_row_cached(1, "Node Name", BODY_Y, self.NEON_CYAN)
 
         for i in range(1, BODY_ROWS):
-            self._draw_row_cached(i + 1, "", BODY_Y + i * CHAR_H, self.WHITE)
+            self._draw_row_cached(i + 1, "", BODY_Y + i * CHAR_H, self.NEON_CYAN)
 
         # Name input line
         prompt = "> "
         inp = self.cmd_buf.decode()
         text_part = inp[:COLS - 3] + "_"
         text_padded = _pad(text_part, COLS - 2)
-        self.tft.text(self.font, prompt, 0, INPUT_Y, self.GREEN, self.BLACK)
-        self.tft.text(self.font, text_padded, 2 * CHAR_W, INPUT_Y, self.WHITE, self.BLACK)
+        self.tft.text(self.font, prompt, 0, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
+        self.tft.text(self.font, text_padded, 2 * CHAR_W, INPUT_Y, self.NEON_CYAN, self.BG_DARK)
 
     def _draw_tcp_host(self):
-        self._draw_row_cached(1, "TCP Server Address", BODY_Y, self.CYAN)
+        self._draw_row_cached(1, "TCP Server Address", BODY_Y, self.NEON_CYAN)
 
         for i in range(1, BODY_ROWS):
-            self._draw_row_cached(i + 1, "", BODY_Y + i * CHAR_H, self.WHITE)
+            self._draw_row_cached(i + 1, "", BODY_Y + i * CHAR_H, self.NEON_CYAN)
 
         # Address input line
         prompt = "> "
         inp = self.cmd_buf.decode()
         text_part = inp[:COLS - 3] + "_"
         text_padded = _pad(text_part, COLS - 2)
-        self.tft.text(self.font, prompt, 0, INPUT_Y, self.GREEN, self.BLACK)
-        self.tft.text(self.font, text_padded, 2 * CHAR_W, INPUT_Y, self.WHITE, self.BLACK)
+        self.tft.text(self.font, prompt, 0, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
+        self.tft.text(self.font, text_padded, 2 * CHAR_W, INPUT_Y, self.NEON_CYAN, self.BG_DARK)
 
     def _irq_handler_up(self, pin):
         t = time.ticks_ms()
@@ -808,7 +930,7 @@ class UI:
         self.peers.clear()
         self._peer_keys.clear()
         self.chat_history.clear()
-        self.unread.clear()
+        self.unread = {}
         self.selected_peer = None
         self.selected_idx = 0
         self.node_scroll = 0
@@ -842,7 +964,7 @@ class UI:
         # Track unread: incoming message when not viewing that chat
         if not is_mine:
             if self.state == STATE_NODES or self.selected_peer != dest_hash:
-                self.unread.add(dest_hash)
+                self.unread[dest_hash] = self.unread.get(dest_hash, 0) + 1
             # Bubble peer to top of node list
             if dest_hash in self._peer_keys:
                 self._peer_keys.remove(dest_hash)
@@ -886,7 +1008,7 @@ class UI:
         """Cached screen redraw — skips unchanged rows."""
         # Clear body + invalidate cache on screen state change
         if self.state != self._prev_state:
-            self.tft.fill_rect(0, NAV_H, SCREEN_W, SCREEN_H - NAV_H, self.BLACK)
+            self.tft.fill_rect(0, NAV_H, SCREEN_W, SCREEN_H - NAV_H, self.BG_DARK)
             self._cache = [''] * 15  # invalidate all rows
             self._prev_state = self.state
 
