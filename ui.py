@@ -39,6 +39,9 @@ MAX_HISTORY = 30  # per peer
 # Trackball debounce
 _TB_DEBOUNCE_MS = 80
 
+# Screen power-off timeout
+_SCREEN_TIMEOUT_MS = 10000
+
 # Strip non-ASCII bytes and collapse whitespace — emoji removal leaves gaps
 def _ascii(s):
     raw = ''.join(c for c in s if 32 <= ord(c) < 127)
@@ -141,6 +144,11 @@ class UI:
         self._tcp_default = ""  # "host:port" from TCP_CONFIG, set by tdeck_node.py
         self._settings_scroll = 0
 
+        # Screen power management
+        self._last_activity = time.ticks_ms()
+        self._screen_on = True
+        self._bl = None  # backlight pin, set by set_backlight()
+
         # Callbacks (set by tdeck_node.py)
         self.on_send = None       # on_send(dest_hash_bytes, text)
         self.on_announce = None   # on_announce()
@@ -148,6 +156,26 @@ class UI:
         self.on_wifi_connect = None   # (ssid, password) -> bool
         self.on_tcp_toggle = None     # (enabled, host, port) -> bool
         self.on_node_name = None      # (name) -> None
+
+    # --- Screen power management ---
+
+    def set_backlight(self, bl_pin):
+        self._bl = bl_pin
+
+    def wake_screen(self):
+        if not self._screen_on:
+            if self._bl:
+                self._bl.value(1)
+            self._screen_on = True
+            self.dirty = True
+            self._cache = [''] * 15
+        self._last_activity = time.ticks_ms()
+
+    def sleep_screen(self):
+        if self._screen_on:
+            if self._bl:
+                self._bl.value(0)
+            self._screen_on = False
 
     # --- Drawing helpers ---
 
@@ -864,6 +892,13 @@ class UI:
         if not (up or down or click):
             return False
 
+        # If screen is off, consume the event and just wake
+        if not self._screen_on:
+            self.wake_screen()
+            return True
+
+        self.wake_screen()
+
         for _ in range(up):
             self._scroll_up()
         for _ in range(down):
@@ -1031,6 +1066,14 @@ class UI:
                 key = self.get_key()
                 if key == b'\x00':
                     break
+                if not self._screen_on:
+                    self.wake_screen()
+                    # Drain remaining keys — first press only wakes
+                    for _ in range(10):
+                        if self.get_key() == b'\x00':
+                            break
+                    break
+                self.wake_screen()
                 self.handle_key(key)
             self.handle_trackball()
             await asyncio.sleep_ms(30)
@@ -1045,8 +1088,18 @@ class UI:
         spi_release_display()
 
         while True:
-            # Redraw: immediate for input line, throttled for full redraws
             now = time.ticks_ms()
+
+            # Screen timeout: turn off after inactivity
+            if self._screen_on and time.ticks_diff(now, self._last_activity) > _SCREEN_TIMEOUT_MS:
+                self.sleep_screen()
+                spi_release_display()
+
+            if not self._screen_on:
+                await asyncio.sleep_ms(200)
+                continue
+
+            # Redraw: immediate for input line, throttled for full redraws
             if self._input_dirty and not self.dirty:
                 spi_acquire_display()
                 self.draw_input()
@@ -1064,7 +1117,8 @@ class UI:
         """Update battery reading every 10s."""
         while True:
             self.update_battery()
-            spi_acquire_display()
-            self.draw_navbar()
-            spi_release_display()
+            if self._screen_on:
+                spi_acquire_display()
+                self.draw_navbar()
+                spi_release_display()
             await asyncio.sleep(10)

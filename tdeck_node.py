@@ -182,6 +182,7 @@ gc.collect()
 from ui import UI
 
 gui = UI(tft, font, get_key, node_name=NODE_NAME)
+gui.set_backlight(bl)
 gc.collect()
 
 # --- Setup interfaces (LoRa comes online) ---
@@ -257,7 +258,8 @@ def on_message(message):
             gui.snr = iface.snr
             break
 
-    # Play notification
+    # Wake screen and play notification
+    gui.wake_screen()
     sound.play_rx()
     gc.collect()
 
@@ -298,6 +300,7 @@ def on_announce(destination_hash, display_name):
             gui.snr = iface.snr
             break
     gui.add_peer(destination_hash, display_name, rssi=rssi)
+    gui.wake_screen()
     if DEBUG >= 1:
         print("[Peer]", display_name or "?", "[" + destination_hash.hex()[:8] + "]")
     gc.collect()

@@ -137,6 +137,10 @@ Press `s` from the node list to open settings. Navigate with trackball, select w
 
 All settings (WiFi credentials, TCP host/port, node name, TCP enabled state) are saved to `/rns/settings.json` and restored on boot. If WiFi and TCP were enabled when the device was last used, they reconnect automatically on startup.
 
+### Screen Power-Off
+
+The screen turns off automatically after 10 seconds of inactivity to save battery. Any keypress, trackball event, incoming message, or peer announce wakes the screen. The first input after wake is consumed (not processed) to prevent accidental actions. The MCU stays awake to receive LoRa packets — only the backlight is toggled. All SPI display writes are skipped while the screen is off, freeing the bus for LoRa.
+
 ### Status Bar
 
 Top bar shows: battery voltage, active interface (`[LoRa]` or `[TCP]`), RSSI of last received packet, node name, and `[A]` flash on announce.
