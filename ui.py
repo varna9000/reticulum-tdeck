@@ -11,6 +11,7 @@ from machine import Pin, ADC
 STATE_NODES    = 0
 STATE_CHAT     = 1
 STATE_SETTINGS = 2
+STATE_IMAGE    = 3
 
 # Settings sub-pages
 _SET_MAIN      = 0
@@ -35,6 +36,7 @@ SEP_Y = 222       # separator line just above input bar
 # Data limits
 MAX_PEERS = 16
 MAX_HISTORY = 30  # per peer
+MAX_CACHED_IMAGES = 3  # max JPEG payloads kept in RAM
 
 # Trackball debounce
 _TB_DEBOUNCE_MS = 80
@@ -70,7 +72,7 @@ class UI:
         self.NEON_MAG   = 0xF81F  # unread markers, accents
         self.DIM_CYAN   = 0x0514  # secondary/dimmed text
         self.HEADER_BG  = 0x0011  # very dark blue — navbar background
-        self.SEL_BG     = 0x1082  # selection highlight bg (brighter than BG_DARK)
+        self.SEL_BG     = 0x2966  # selection highlight — bright blue tint
 
         # State
         self.state = STATE_NODES
@@ -93,6 +95,7 @@ class UI:
         # status: 0=none, 1=pending, 2=delivered, 3=failed
         self.chat_history = {}
         self.chat_scroll = 0
+        self.chat_cursor = -1  # -1 = inactive (at bottom), else index into visible lines
         self.selected_peer = None  # dest_hash_bytes of current chat peer
 
         # Input
@@ -143,6 +146,13 @@ class UI:
         self._tcp_target = ""  # "host:port" string, set from saved settings on boot
         self._tcp_default = ""  # "host:port" from TCP_CONFIG, set by tdeck_node.py
         self._settings_scroll = 0
+
+        # Image viewer state
+        self._image_cache = {}  # (peer_hash, msg_idx) -> jpeg_bytes
+        self._image_cache_order = []  # LRU order of (peer_hash, msg_idx) keys
+        self._viewing_image = None  # jpeg_bytes currently displayed
+        self._image_drawn = False  # True once JPEG has been blitted
+        self._visible_image_lines = {}  # display_row -> msg_idx (populated by draw_chat)
 
         # Screen power management
         self._last_activity = time.ticks_ms()
@@ -218,6 +228,12 @@ class UI:
         mid_str = center.center(mid_w) if mid_w > len(center) else center[:mid_w]
         nav = "    " + bat_v_str + mid_str + right_str
 
+        # Skip redraw if navbar content unchanged
+        nav_key = nav + ann + center
+        if self._cache[0] == nav_key:
+            return
+        self._cache[0] = nav_key
+
         hb = self.HEADER_BG
         self.tft.fill_rect(0, 0, SCREEN_W, NAV_H, hb)
         self.tft.text(self.font, _pad(nav), 0, NAV_TY, self.NEON_CYAN, hb)
@@ -242,8 +258,6 @@ class UI:
         self.tft.fill_rect(3,  6, 7, 8, gr if bl >= 1 else dm)
         self.tft.fill_rect(11, 6, 7, 8, gr if bl >= 2 else dm)
         self.tft.fill_rect(19, 6, 7, 8, gr if bl >= 3 else dm)
-
-        self._cache[0] = nav + ann + center
 
     # --- Node list screen ---
 
@@ -306,43 +320,44 @@ class UI:
             self.tft.fill_rect(SCREEN_W - 2, BODY_Y, 2, _track_h, self.BG_DARK)
             self.tft.fill_rect(SCREEN_W - 2, _bar_y, 2, _bar_h, self.DIM_CYAN)
 
-        # Neon frame: full-width lines + corner brackets
-        _cx = self.NEON_CYAN
-        _L = 12  # corner vertical arm length
-        _top = BODY_Y - 3
-        _bot = BODY_Y + BODY_ROWS * CHAR_H + 1
-        # Full-width horizontal lines
-        self.tft.fill_rect(0, _top, SCREEN_W, 1, _cx)
-        self.tft.fill_rect(0, _bot, SCREEN_W, 1, _cx)
-        # Corner verticals
-        self.tft.fill_rect(0, _top, 1, _L, _cx)           # top-left
-        self.tft.fill_rect(SCREEN_W - 1, _top, 1, _L, _cx) # top-right
-        self.tft.fill_rect(0, _bot - _L + 1, 1, _L, _cx)  # bottom-left
-        self.tft.fill_rect(SCREEN_W - 1, _bot - _L + 1, 1, _L, _cx)  # bottom-right
+        # Neon frame + footer hints — drawn once on state change (cached via _prev_state)
+        if self._cache[13] != "NF":
+            self._cache[13] = "NF"
+            _cx = self.NEON_CYAN
+            _L = 12  # corner vertical arm length
+            _top = BODY_Y - 3
+            _bot = BODY_Y + BODY_ROWS * CHAR_H + 1
+            self.tft.fill_rect(0, _top, SCREEN_W, 1, _cx)
+            self.tft.fill_rect(0, _bot, SCREEN_W, 1, _cx)
+            self.tft.fill_rect(0, _top, 1, _L, _cx)
+            self.tft.fill_rect(SCREEN_W - 1, _top, 1, _L, _cx)
+            self.tft.fill_rect(0, _bot - _L + 1, 1, _L, _cx)
+            self.tft.fill_rect(SCREEN_W - 1, _bot - _L + 1, 1, _L, _cx)
 
-        # Bottom bar with key hints
-        self.tft.text(self.font, _pad(""), 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-        self.tft.text(self.font, "(", 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-        self.tft.text(self.font, "a", CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
-        self.tft.text(self.font, ")nnounce", 2 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-        self.tft.text(self.font, "(", 13 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-        self.tft.text(self.font, "s", 14 * CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
-        self.tft.text(self.font, ")ettings", 15 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+            self.tft.text(self.font, _pad(""), 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+            self.tft.text(self.font, "(", 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+            self.tft.text(self.font, "a", CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
+            self.tft.text(self.font, ")nnounce", 2 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+            self.tft.text(self.font, "(", 13 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+            self.tft.text(self.font, "s", 14 * CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
+            self.tft.text(self.font, ")ettings", 15 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
 
     # --- Chat screen ---
 
     def _build_chat_lines(self):
-        """Build word-wrapped display lines for current chat."""
+        """Build word-wrapped display lines for current chat.
+        Returns list of (is_mine, text, is_first, suffix_len, status, msg_idx, has_image)"""
         if self.selected_peer is None:
             return []
 
         _suffix_map = {1: " ..", 2: " \xfb", 3: " !"}
         msgs = self.chat_history.get(self.selected_peer, [])
         lines = []
-        for msg in msgs:
+        for mi, msg in enumerate(msgs):
             is_mine = msg[0]
             text = msg[1]
             status = msg[3] if len(msg) > 3 else 0
+            has_image = msg[4] if len(msg) > 4 else False
             if is_mine:
                 prefix = "me> "
             else:
@@ -357,7 +372,7 @@ class UI:
             for j, wl in enumerate(wrapped):
                 # status_suffix_len: how many chars of suffix on this line
                 slen = len(suffix) if (suffix and j == len(wrapped) - 1) else 0
-                lines.append((is_mine, wl, j == 0, slen, status))
+                lines.append((is_mine, wl, j == 0, slen, status, mi, has_image))
         return lines
 
     def draw_chat(self):
@@ -390,63 +405,168 @@ class UI:
         view_start = max(0, view_end - _chat_rows)
         visible = lines[view_start:view_end]
 
+        # Track which visible lines have images
+        self._visible_image_lines = {}  # display_row -> msg_idx
+
+        # Clamp chat_cursor to visible range
+        if self.chat_cursor >= len(visible):
+            self.chat_cursor = len(visible) - 1
+
         _status_color = {1: self.YELLOW, 2: self.NEON_GREEN, 3: self.NEON_MAG}
         for i in range(_chat_rows):
             y = BODY_Y + (i + 1) * CHAR_H
             ci = i + 2  # cache index (1=header, 2..12=chat rows)
             if i < len(visible):
-                is_mine, text, is_first, slen, status = visible[i]
-                if self._cache[ci] == text:
+                is_mine, text, is_first, slen, status, msg_idx, has_image = visible[i]
+
+                # Track image lines for click detection
+                if has_image and is_first:
+                    self._visible_image_lines[i] = msg_idx
+
+                is_highlighted = (i == self.chat_cursor)
+                in_cache = (self.selected_peer, msg_idx) in self._image_cache if has_image and is_first else True
+
+                # Cache check: skip row if text and highlight state unchanged
+                ck = text + ("\x01" if is_highlighted else "\x00")
+                if self._cache[ci] == ck:
                     continue
-                self._cache[ci] = text
+                self._cache[ci] = ck
+
+                row_bg = self.SEL_BG if is_highlighted else self.BG_DARK
 
                 padded = _pad(text)
+                self.tft.text(self.font, padded, 0, y, self.NEON_CYAN, row_bg)
                 if is_first:
-                    self.tft.text(self.font, padded, 0, y, self.NEON_CYAN, self.BG_DARK)
                     if is_mine:
-                        self.tft.text(self.font, text[:4], 0, y, self.NEON_GREEN, self.BG_DARK)
+                        self.tft.text(self.font, text[:4], 0, y, self.NEON_GREEN, row_bg)
                     else:
                         gt = text.find(">")
                         if gt >= 0:
-                            self.tft.text(self.font, text[:gt + 1], 0, y, self.NEON_MAG, self.BG_DARK)
-                else:
-                    self.tft.text(self.font, padded, 0, y, self.NEON_CYAN, self.BG_DARK)
+                            self.tft.text(self.font, text[:gt + 1], 0, y, self.NEON_MAG, row_bg)
+                    # Image rendering
+                    if has_image:
+                        img_pos = text.find("[image]")
+                        if img_pos >= 0:
+                            if not in_cache:
+                                # Expired: dim + strikethrough
+                                self.tft.text(self.font, "[image]", img_pos * CHAR_W, y,
+                                              self.DIM_CYAN, row_bg)
+                                self.tft.fill_rect(img_pos * CHAR_W, y + 7,
+                                                   7 * CHAR_W, 1, self.DIM_CYAN)
+                            elif is_highlighted:
+                                # Highlighted: yellow + accent bar
+                                self.tft.text(self.font, "[image]", img_pos * CHAR_W, y,
+                                              self.YELLOW, row_bg)
+                                self.tft.fill_rect(0, y, 3, CHAR_H, self.NEON_MAG)
+                            else:
+                                # Normal: magenta
+                                self.tft.text(self.font, "[image]", img_pos * CHAR_W, y,
+                                              self.NEON_MAG, row_bg)
                 if slen > 0 and status in _status_color:
                     sx = (len(text) - slen) * CHAR_W
-                    self.tft.text(self.font, text[-slen:], sx, y, _status_color[status], self.BG_DARK)
+                    self.tft.text(self.font, text[-slen:], sx, y, _status_color[status], row_bg)
             else:
                 self._draw_row_cached(ci, "", y, self.NEON_CYAN)
 
-        # Scroll indicator on right edge
+        # Scroll indicator on right edge (cached)
         if total > _chat_rows:
             _track_h = _chat_rows * CHAR_H
             _track_y = BODY_Y + CHAR_H
             _bar_h = max(6, _track_h * _chat_rows // total)
             _pos = max_scroll - self.chat_scroll if max_scroll else 0
             _bar_y = _track_y + _pos * (_track_h - _bar_h) // max(1, max_scroll)
-            self.tft.fill_rect(SCREEN_W - 2, _track_y, 2, _track_h, self.BG_DARK)
-            self.tft.fill_rect(SCREEN_W - 2, _bar_y, 2, _bar_h, self.DIM_CYAN)
+            _sk = str(_bar_y) + ":" + str(_bar_h)
+            if self._cache[13] != _sk:
+                self._cache[13] = _sk
+                self.tft.fill_rect(SCREEN_W - 2, _track_y, 2, _track_h, self.BG_DARK)
+                self.tft.fill_rect(SCREEN_W - 2, _bar_y, 2, _bar_h, self.DIM_CYAN)
 
-        # Separator above input
-        self.tft.fill_rect(0, SEP_Y, SCREEN_W, 1, self.DIM_CYAN)
-
-        # Input line
-        self.draw_input()
+        # Input line drawn by draw() after draw_chat() returns
 
     def draw_input(self):
         prompt = "> "
         inp = self.cmd_buf.decode()
         if inp:
+            ik = "> " + inp
+            if self._cache[14] == ik:
+                return
+            self._cache[14] = ik
             text_part = inp[:COLS - 3] + "_"
             text_padded = _pad(text_part, COLS - 2)
             self.tft.text(self.font, prompt, 0, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
             self.tft.text(self.font, text_padded, 2 * CHAR_W, INPUT_Y, self.NEON_CYAN, self.BG_DARK)
         else:
+            _on_image = self.chat_cursor >= 0 and self.chat_cursor in self._visible_image_lines
+            ik = "IMG" if _on_image else "BACK"
+            if self._cache[14] == ik:
+                return
+            self._cache[14] = ik
             self.tft.text(self.font, _pad("> _"), 0, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
-            _hx = (COLS - 12) * CHAR_W  # right-aligned with 1ch padding
-            self.tft.text(self.font, "[", _hx, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-            self.tft.text(self.font, "bksp", _hx + CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
-            self.tft.text(self.font, "=back]", _hx + 5 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+            if _on_image:
+                _hx = (COLS - 12) * CHAR_W
+                self.tft.text(self.font, "[", _hx, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+                self.tft.text(self.font, "click", _hx + CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
+                self.tft.text(self.font, "=view]", _hx + 6 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+            else:
+                _hx = (COLS - 12) * CHAR_W
+                self.tft.text(self.font, "[", _hx, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+                self.tft.text(self.font, "bksp", _hx + CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
+                self.tft.text(self.font, "=back]", _hx + 5 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+
+    # --- Image viewer ---
+
+    def _enter_image_view(self, msg_idx):
+        """Enter full-screen JPEG view for a message with an image."""
+        cache_key = (self.selected_peer, msg_idx)
+        jpeg_data = self._image_cache.get(cache_key)
+        if jpeg_data is None:
+            return  # image expired from cache
+        self._viewing_image = jpeg_data
+        self._image_drawn = False
+        self._prev_image_state = self.state
+        self.state = STATE_IMAGE
+        self._state_change_ms = time.ticks_ms()
+        self.dirty = True
+
+    def draw_image(self, spi_acquire_display, spi_release_display):
+        """Render full-screen JPEG: decode+scale to 320x240 in C, blit."""
+        if self._image_drawn or self._viewing_image is None:
+            return
+        gc.collect()
+        spi_acquire_display()
+        try:
+            import tjpgd_fast_xtensawin as tjpgd
+            # Decode and scale to screen size in native C
+            w, h, rgb565 = tjpgd.decode(self._viewing_image, SCREEN_W, SCREEN_H)
+            # Reset display window to full screen before blit
+            self.tft._set_window(0, 0, SCREEN_W - 1, SCREEN_H - 1)
+            self.tft.fill(0x0000)
+            self.tft.blit_buffer(rgb565, 0, 0, w, h)
+            del rgb565
+            gc.collect()
+            # Hint bar at bottom
+            self.tft.fill_rect(0, SCREEN_H - 18, SCREEN_W, 18, 0x0000)
+            self.tft.text(self.font, "any key = back", 96, SCREEN_H - 17, self.DIM_CYAN, 0x0000)
+        except ImportError:
+            self.tft.fill(0x0000)
+            self.tft.text(self.font, "No JPEG decoder", 56, 104, self.NEON_MAG, 0x0000)
+            self.tft.text(self.font, "Upload tjpgd_fast .mpy", 32, 128, self.DIM_CYAN, 0x0000)
+        except Exception:
+            self.tft.fill(0x0000)
+            self.tft.text(self.font, "Image decode error", 40, 112, self.NEON_MAG, 0x0000)
+        spi_release_display()
+        self._image_drawn = True
+
+    def _exit_image_view(self):
+        """Return from image viewer to chat."""
+        self._viewing_image = None
+        self._image_drawn = False
+        self.chat_cursor = -1
+        self.state = STATE_CHAT
+        self._prev_state = -1  # force full screen clear in draw()
+        self._state_change_ms = time.ticks_ms()
+        self._cache = [''] * 15
+        self.dirty = True
 
     # --- Text wrapping ---
 
@@ -476,7 +596,10 @@ class UI:
         if ch == 0:
             return False
 
-        if self.state == STATE_NODES:
+        if self.state == STATE_IMAGE:
+            self._exit_image_view()
+            return True
+        elif self.state == STATE_NODES:
             return self._handle_key_nodes(ch, key)
         elif self.state == STATE_SETTINGS:
             return self._handle_key_settings(ch, key)
@@ -489,6 +612,7 @@ class UI:
             self.selected_peer = self._peer_keys[self.selected_idx]
             self.unread.pop(self.selected_peer, None)
             self.chat_scroll = 0
+            self.chat_cursor = -1
             self.cmd_buf = bytearray()
             self.state = STATE_CHAT
             self._state_change_ms = time.ticks_ms()
@@ -825,11 +949,11 @@ class UI:
 
     async def _do_wifi_scan(self):
         """Run WiFi scan in async task so UI renders 'Scanning...' first."""
-        await asyncio.sleep(0)  # yield to let UI draw
+        await asyncio.sleep_ms(100)  # yield to let UI draw "Scanning..."
         try:
             results = self.on_wifi_scan()
             self._wifi_networks = results or []
-        except Exception:
+        except Exception as e:
             self._wifi_networks = []
         self._wifi_scanning = False
         self._cache = [''] * 15
@@ -904,8 +1028,17 @@ class UI:
         for _ in range(down):
             self._scroll_down()
         if click:
-            if self.state == STATE_NODES:
+            if self.state == STATE_IMAGE:
+                self._exit_image_view()
+            elif self.state == STATE_NODES:
                 self._enter_chat()
+            elif self.state == STATE_CHAT:
+                # If cursor is on an image line, open it
+                if self.chat_cursor >= 0 and self.chat_cursor in self._visible_image_lines:
+                    msg_idx = self._visible_image_lines[self.chat_cursor]
+                    cache_key = (self.selected_peer, msg_idx)
+                    if cache_key in self._image_cache:
+                        self._enter_image_view(msg_idx)
             elif self.state == STATE_SETTINGS:
                 self.handle_key(b'\x0D')
 
@@ -913,7 +1046,9 @@ class UI:
         return True
 
     def _scroll_up(self):
-        if self.state == STATE_NODES:
+        if self.state == STATE_IMAGE:
+            return
+        elif self.state == STATE_NODES:
             if self.selected_idx > 0:
                 self.selected_idx -= 1
                 if self.selected_idx < self.node_scroll:
@@ -921,12 +1056,21 @@ class UI:
         elif self.state == STATE_SETTINGS:
             self._settings_scroll_up()
         else:
-            # Capped by draw_chat to actual content length
-            if self.chat_scroll < MAX_HISTORY * 3:
-                self.chat_scroll += 1
+            # Move cursor up; scroll viewport when cursor reaches top
+            _chat_rows = BODY_ROWS - 1
+            if self.chat_cursor < 0:
+                self.chat_cursor = _chat_rows - 1  # activate at bottom
+            elif self.chat_cursor > 0:
+                self.chat_cursor -= 1
+            else:
+                # Cursor at top — scroll viewport up
+                if self.chat_scroll < MAX_HISTORY * 3:
+                    self.chat_scroll += 1
 
     def _scroll_down(self):
-        if self.state == STATE_NODES:
+        if self.state == STATE_IMAGE:
+            return
+        elif self.state == STATE_NODES:
             if self.selected_idx < len(self._peer_keys) - 1:
                 self.selected_idx += 1
                 if self.selected_idx >= self.node_scroll + BODY_ROWS:
@@ -934,8 +1078,16 @@ class UI:
         elif self.state == STATE_SETTINGS:
             self._settings_scroll_down()
         else:
-            if self.chat_scroll > 0:
-                self.chat_scroll -= 1
+            # Move cursor down; scroll viewport when cursor reaches bottom
+            _chat_rows = BODY_ROWS - 1
+            if self.chat_cursor < 0:
+                self.chat_cursor = 0  # activate at top
+            elif self.chat_cursor < _chat_rows - 1:
+                self.chat_cursor += 1
+            else:
+                # Cursor at bottom — scroll viewport down
+                if self.chat_scroll > 0:
+                    self.chat_scroll -= 1
 
     def _settings_scroll_up(self):
         if self._settings_page == _SET_MAIN:
@@ -986,15 +1138,25 @@ class UI:
             self._peer_keys.append(dest_hash)
         self.dirty = True
 
-    def add_chat_message(self, dest_hash, is_mine, text, status=0):
+    def add_chat_message(self, dest_hash, is_mine, text, status=0, image=None):
         """Add a message to chat history. Returns index of the added message."""
         if dest_hash not in self.chat_history:
             self.chat_history[dest_hash] = []
         hist = self.chat_history[dest_hash]
-        hist.append((is_mine, text, time.time(), status))
+        has_image = image is not None
+        hist.append((is_mine, text, time.time(), status, has_image))
         if len(hist) > MAX_HISTORY:
             hist.pop(0)
         msg_idx = len(hist) - 1
+
+        # Cache image data (LRU eviction)
+        if image is not None:
+            cache_key = (dest_hash, msg_idx)
+            self._image_cache[cache_key] = image
+            self._image_cache_order.append(cache_key)
+            while len(self._image_cache_order) > MAX_CACHED_IMAGES:
+                old_key = self._image_cache_order.pop(0)
+                self._image_cache.pop(old_key, None)
 
         # Track unread: incoming message when not viewing that chat
         if not is_mine:
@@ -1026,7 +1188,8 @@ class UI:
         hist = self.chat_history.get(dest_hash)
         if hist and 0 <= index < len(hist):
             old = hist[index]
-            hist[index] = (old[0], old[1], old[2], status)
+            has_image = old[4] if len(old) > 4 else False
+            hist[index] = (old[0], old[1], old[2], status, has_image)
             if self.state == STATE_CHAT and self.selected_peer == dest_hash:
                 for i in range(1, BODY_ROWS + 1):
                     self._cache[i] = ''
@@ -1041,9 +1204,15 @@ class UI:
 
     def draw(self):
         """Cached screen redraw — skips unchanged rows."""
+        # Image state is handled separately in gui_loop (needs SPI acquire/release)
+        if self.state == STATE_IMAGE:
+            self.dirty = False
+            return
+
         # Clear body + invalidate cache on screen state change
         if self.state != self._prev_state:
             self.tft.fill_rect(0, NAV_H, SCREEN_W, SCREEN_H - NAV_H, self.BG_DARK)
+            self.tft.fill_rect(0, SEP_Y, SCREEN_W, 1, self.DIM_CYAN)
             self._cache = [''] * 15  # invalidate all rows
             self._prev_state = self.state
 
@@ -1052,8 +1221,9 @@ class UI:
             self.draw_node_list()
         elif self.state == STATE_SETTINGS:
             self.draw_settings()
-        else:
+        elif self.state == STATE_CHAT:
             self.draw_chat()
+            self.draw_input()
         self.dirty = False
         self._input_dirty = False
 
@@ -1076,10 +1246,12 @@ class UI:
                 self.wake_screen()
                 self.handle_key(key)
             self.handle_trackball()
-            await asyncio.sleep_ms(30)
+            await asyncio.sleep_ms(20)
 
     async def gui_loop(self, spi_acquire_display, spi_release_display):
         """Drawing + input loop. kbd_loop handles fast polling separately."""
+        self._spi_acquire = spi_acquire_display
+        self._spi_release = spi_release_display
         self._last_draw = 0
 
         # Initial draw
@@ -1099,19 +1271,26 @@ class UI:
                 await asyncio.sleep_ms(200)
                 continue
 
+            # Image view: render JPEG once, then idle until key press
+            if self.state == STATE_IMAGE:
+                if not self._image_drawn:
+                    self.draw_image(spi_acquire_display, spi_release_display)
+                await asyncio.sleep_ms(50)
+                continue
+
             # Redraw: immediate for input line, throttled for full redraws
             if self._input_dirty and not self.dirty:
                 spi_acquire_display()
                 self.draw_input()
                 spi_release_display()
                 self._input_dirty = False
-            elif self.dirty and time.ticks_diff(now, self._last_draw) > 80:
+            elif self.dirty and time.ticks_diff(now, self._last_draw) > 50:
                 spi_acquire_display()
                 self.draw()
                 spi_release_display()
                 self._last_draw = now
 
-            await asyncio.sleep_ms(20 if self.dirty or self._input_dirty else 200)
+            await asyncio.sleep_ms(10 if self.dirty or self._input_dirty else 100)
 
     async def battery_loop(self, spi_acquire_display, spi_release_display):
         """Update battery reading every 10s."""

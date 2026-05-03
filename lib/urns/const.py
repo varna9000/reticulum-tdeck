@@ -7,6 +7,8 @@ from micropython import const
 MTU                   = const(500)
 TRUNCATED_HASHLENGTH  = const(128)  # bits
 IFAC_MIN_SIZE         = const(1)
+IFAC_DEFAULT_SIZE     = const(16)   # bytes
+IFAC_SALT             = b'\xad\xf5\x4d\x88\x2c\x9a\x9b\x80\x77\x1e\xb4\x99\x5d\x70\x2d\x4a\x3e\x73\x33\x91\xb2\xa0\xf5\x3f\x41\x6d\x9f\x90\x7e\x55\xcf\xf8'
 HEADER_MINSIZE        = const(2 + 1 + (128 // 8))       # 19
 HEADER_MAXSIZE        = const(2 + 1 + (128 // 8) * 2)   # 35
 MDU                   = const(500 - 35 - 1)              # 464
@@ -90,6 +92,8 @@ MAX_PATH_TABLE        = const(32)
 MAX_ACTIVE_LINKS      = const(4)
 MAX_ANNOUNCE_QUEUE    = const(16)
 MAX_RECEIPTS          = const(32)
+MAX_INCOMING_RESOURCES = const(1)
+MAX_OUTGOING_RESOURCES = const(2)
 TRANSPORT_HOPLIMIT    = const(128)
 
 # Timing

@@ -61,7 +61,7 @@ class Packet:
         if header_type is None:
             header_type = const.HDR_1
         if context_flag is None:
-            context_flag = const.FLAG_UNSET
+            context_flag = const.FLAG_SET if context and context != const.CTX_NONE else const.FLAG_UNSET
 
         if destination is not None:
             self.header_type = header_type
@@ -114,20 +114,6 @@ class Packet:
 
     def pack(self):
         self.destination_hash = self.destination.hash
-
-        # Auto-upgrade to HDR_2 if destination is reachable via a transport
-        # node (learned from HDR_2 announces stored in Transport.path_table).
-        if (self.header_type == const.HDR_1
-                and self.transport_id is None
-                and self.packet_type == const.PKT_DATA):
-            from .transport import Transport
-            _tid = Transport.path_table.get(self.destination_hash)
-            if _tid is not None:
-                self.header_type = const.HDR_2
-                self.transport_id = _tid
-                self.flags = self._get_packed_flags()
-                log("Packet auto-routed via transport " + _tid.hex()[:8], LOG_DEBUG)
-
         self.header = b""
         self.header += struct.pack("!B", self.flags)
         self.header += struct.pack("!B", self.hops)
@@ -158,19 +144,14 @@ class Packet:
                     self.header += self.destination.hash
                     if self.packet_type == const.PKT_ANNOUNCE:
                         self.ciphertext = self.data
-                    else:
-                        # Encrypt DATA/PROOF payloads to the final destination
-                        self.ciphertext = self.destination.encrypt(self.data)
-                        if hasattr(self.destination, 'latest_ratchet_id'):
-                            self.ratchet_id = self.destination.latest_ratchet_id
                 else:
-                    raise IOError("Header type 2 requires transport ID")
+                    raise OSError("Header type 2 requires transport ID")
 
         self.header += bytes([self.context])
         self.raw = self.header + self.ciphertext
 
         if len(self.raw) > self.MTU:
-            raise IOError("Packet size " + str(len(self.raw)) + " exceeds MTU " + str(self.MTU))
+            raise OSError("Packet size " + str(len(self.raw)) + " exceeds MTU " + str(self.MTU))
 
         self.packed = True
         self.update_hash()
@@ -219,7 +200,7 @@ class Packet:
                 self.receipt = None
                 return False
         else:
-            raise IOError("Packet already sent")
+            raise OSError("Packet already sent")
 
     def resend(self):
         if self.sent:
@@ -232,7 +213,7 @@ class Packet:
                 self.receipt = None
                 return False
         else:
-            raise IOError("Packet not yet sent")
+            raise OSError("Packet not yet sent")
 
     def update_hash(self):
         self.packet_hash = self.get_hash()

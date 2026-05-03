@@ -124,7 +124,7 @@ class Reticulum:
     _INTERFACE_MAP = {
         "UDPInterface":       "udp",
         "SerialInterface":    "serial",
-        "E220Interface":      "e220",
+        "E32Interface":       "e32",
         "LoRaInterface":      "lora",
         "TCPClientInterface": "tcp",
     }
@@ -148,6 +148,7 @@ class Reticulum:
                 mod = __import__("urns.interfaces." + modname, None, None, (itype,))
                 cls = getattr(mod, itype)
                 iface = cls(iface_config)
+                iface.setup_ifac(iface_config)
                 self.interfaces.append(iface)
                 Transport.register_interface(iface)
             except Exception as e:

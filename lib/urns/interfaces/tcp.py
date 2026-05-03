@@ -28,7 +28,7 @@ def hdlc_escape(data):
 
 
 class TCPClientInterface(Interface):
-    HW_MTU = 564
+    HW_MTU = 16384
     CONNECT_TIMEOUT = 5
     RECONNECT_WAIT = 5
     MAX_RECONNECTS = 0       # 0 = unlimited
@@ -46,6 +46,8 @@ class TCPClientInterface(Interface):
         self._in_frame = False
         self._escape = False
         self._buffer = bytearray()
+        self._recv_buf = bytearray(512)
+        self._recv_mv = memoryview(self._recv_buf)
         self._reconnect_count = 0
         self._last_reconnect = 0
 
@@ -109,16 +111,20 @@ class TCPClientInterface(Interface):
             return False
 
         try:
-            # Wrap HDR_1 DATA packets as HDR_2 TRANSPORT when the
-            # destination has a known transport path.  Only TCP needs
+            # Wrap HDR_1 packets as HDR_2 TRANSPORT when the destination
+            # hash is in path_table (known via announce). Only TCP needs
             # this — broadcast interfaces (UDP, LoRa) send HDR_1 directly.
-            # Check: bit 6 = 0 (HDR_1) and bits 0-1 = 0 (PKT_DATA)
-            if len(data) >= 19 and (data[0] & 0x43) == 0x00:
+            # Link-addressed packets (link_id as dest) are NOT wrapped —
+            # the transport server routes these via its link_table.
+            if len(data) >= 19 and (data[0] & 0x40) == 0x00 and (data[0] & 0x03) != 0x01:
                 from ..transport import Transport
                 transport_id = Transport.path_table.get(data[2:18])
                 if transport_id:
                     # Set HDR_2 (bit 6) + TRANSPORT (bit 4), keep other bits
                     data = bytes([data[0] | 0x50]) + data[1:2] + transport_id + data[2:]
+
+            # Apply IFAC after transport wrapping, before framing
+            data = self.ifac_sign(data)
 
             frame = bytes([FLAG]) + hdlc_escape(data) + bytes([FLAG])
             # Switch to blocking mode with timeout for reliable sendall().
@@ -189,11 +195,11 @@ class TCPClientInterface(Interface):
                 # process_outgoing() restores it after sendall(), but
                 # guard here too in case of any edge cases.
                 self._socket.settimeout(0)
-                data = self._socket.recv(512)
-                if data:
-                    for b in data:
-                        self._process_byte(b)
-                else:
+                n = self._socket.readinto(self._recv_buf)
+                if n and n > 0:
+                    for i in range(n):
+                        self._process_byte(self._recv_mv[i])
+                elif n == 0:
                     # Empty recv = connection closed
                     log("TCP connection closed by remote", LOG_NOTICE)
                     self.online = False

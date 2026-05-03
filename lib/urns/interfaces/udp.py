@@ -55,7 +55,6 @@ class UDPInterface(Interface):
         self.forward_ip = config.get("forward_ip", None)
         self.forward_port = config.get("forward_port", 4242)
         self.bitrate = config.get("bitrate", 10000000)  # ~10Mbps WiFi
-        self._rxbuf = 1024  # receive buffer (larger than mtu for IFAC/headers)
 
         # Auto-detect subnet broadcast if not specified
         if self.forward_ip is None or self.forward_ip == "255.255.255.255":
@@ -122,6 +121,7 @@ class UDPInterface(Interface):
 
         sent = False
         try:
+            data = self.ifac_sign(data)
             self._socket.sendto(data, self._forward_addr)
             # Re-assert non-blocking after sendto — lwIP bug:
             # sendto corrupts the socket's non-blocking state
@@ -193,7 +193,7 @@ class UDPInterface(Interface):
                     continue
 
                 try:
-                    data, addr = self._socket.recvfrom(self._rxbuf)
+                    data, addr = self._socket.recvfrom(self.mtu)
                     if data:
                         log("UDP recv " + str(len(data)) + "B from " + str(addr), LOG_DEBUG)
                         self.process_incoming(data)

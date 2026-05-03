@@ -159,7 +159,7 @@ gc.collect()
 
 # --- Init Reticulum ---
 from urns import Reticulum
-from urns.lxmf import LXMRouter
+from urns.lxmf import LXMRouter, FIELD_IMAGE
 from urns.log import LOG_NONE, LOG_NOTICE, LOG_DEBUG
 
 log_map = {0: LOG_NONE, 1: LOG_NONE, 2: LOG_DEBUG}
@@ -218,6 +218,17 @@ def on_message(message):
     content = message.content_as_string() or "(binary)"
     source_hash = message.source_hash
 
+    # Extract image if present
+    image_data = None
+    fields = message.fields if hasattr(message, 'fields') else {}
+    if FIELD_IMAGE in fields:
+        img_field = fields[FIELD_IMAGE]
+        if isinstance(img_field, (list, tuple)) and len(img_field) >= 2:
+            if img_field[0] == "jpg" and isinstance(img_field[1], (bytes, bytearray)):
+                image_data = bytes(img_field[1])
+                if not content or content == "(binary)":
+                    content = "[image]"
+
     # Map LXMF source_hash to GUI peer key via precomputed mapping
     peer_key = _lxmf_to_peer.get(source_hash)
 
@@ -249,7 +260,7 @@ def on_message(message):
         gui.add_peer(peer_key, source_hash.hex()[:8])
 
     # Add to chat under the GUI peer key
-    gui.add_chat_message(peer_key, False, content)
+    gui.add_chat_message(peer_key, False, content, image=image_data)
 
     # Update RSSI/SNR from interface
     for iface in rns.interfaces:
@@ -334,19 +345,9 @@ async def _async_send(dest_hash, text, msg_idx=None):
             if DEBUG >= 1:
                 print("[TX] Sent to", dest_hash.hex()[:8])
 
-            # Attach receipt callbacks for delivery tracking
-            receipt = msg.packet.receipt if msg.packet else None
-            if receipt:
-                def _on_delivered(rcpt, _dh=dest_hash, _idx=msg_idx):
-                    gui.update_message_status(_dh, _idx, 2)
-                    gui.dirty = True
-
-                def _on_timeout(rcpt, _dh=dest_hash, _idx=msg_idx):
-                    gui.update_message_status(_dh, _idx, 3)
-                    gui.dirty = True
-
-                receipt.set_delivery_callback(_on_delivered)
-                receipt.set_timeout_callback(_on_timeout)
+            # Mark as sent — receipt tracking not available in upstream API
+            gui.update_message_status(dest_hash, msg_idx, 2)
+            gui.dirty = True
         else:
             gui.update_message_status(dest_hash, msg_idx, 3)
             gui.add_chat_message(dest_hash, True, "(send failed: unknown peer)")
@@ -413,9 +414,41 @@ def _stop_wifi():
 
 def wifi_scan():
     import network
+    # Pause LoRa — SX1262 SPI polling interferes with WiFi scanning
+    for iface in rns.interfaces:
+        if hasattr(iface, '_paused'):
+            iface._paused = True
+        iface.online = False
+    spi_release_lora()
+    time.sleep_ms(100)
+
     wlan = network.WLAN(network.STA_IF)
+    try:
+        wlan.disconnect()
+    except:
+        pass
+    wlan.active(False)
+    time.sleep_ms(200)
     wlan.active(True)
-    results = wlan.scan()
+    time.sleep_ms(1000)
+    try:
+        results = wlan.scan()
+        if not results:
+            time.sleep_ms(500)
+            results = wlan.scan()
+    except Exception as e:
+        if DEBUG >= 1:
+            print("[WiFi] Scan error:", e)
+        results = []
+
+    # Resume LoRa
+    for iface in rns.interfaces:
+        if hasattr(iface, '_paused'):
+            iface._paused = False
+        iface.online = True
+
+    if DEBUG >= 1:
+        print("[WiFi] Scan found", len(results), "networks")
     return sorted([(r[0].decode(), r[3]) for r in results if r[0]],
                   key=lambda x: x[1], reverse=True)
 

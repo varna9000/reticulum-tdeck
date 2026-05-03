@@ -69,35 +69,15 @@ class LoRaInterface(Interface):
         self._reasm_seq = None
         self._reasm_time = 0
 
-        self._init_with_retry()
-
-    def _reset_hw(self):
-        """Hardware-reset the SX1262 via the RESET pin."""
-        from machine import Pin
-        rst = Pin(self._reset_pin, Pin.OUT)
-        rst.value(0)
-        time.sleep_ms(20)
-        rst.value(1)
-        time.sleep_ms(50)
-
-    def _init_with_retry(self, max_attempts=3):
-        """Try _init_modem() up to max_attempts times with HW reset between."""
-        for attempt in range(1, max_attempts + 1):
-            try:
-                if attempt > 1:
-                    self._reset_hw()
-                    time.sleep_ms(200 * attempt)
-                self._init_modem()
-                self.online = True
-                log("LoRa " + self.name + " on " + str(self._freq_khz) + "kHz"
-                    + " SF" + str(self._sf) + " BW" + str(self._bw)
-                    + " TX" + str(self._tx_power) + "dBm", LOG_NOTICE)
-                return
-            except Exception as e:
-                log("LoRa modem init attempt " + str(attempt) + "/" + str(max_attempts)
-                    + " failed: " + str(e), LOG_ERROR)
-                self._modem = None
-        self.online = False
+        try:
+            self._init_modem()
+            self.online = True
+            log("LoRa " + self.name + " on " + str(self._freq_khz) + "kHz"
+                + " SF" + str(self._sf) + " BW" + str(self._bw)
+                + " TX" + str(self._tx_power) + "dBm", LOG_NOTICE)
+        except Exception as e:
+            log("LoRa modem init failed: " + str(e), LOG_ERROR)
+            self.online = False
 
     def _init_modem(self):
         from machine import SPI, Pin
@@ -171,6 +151,8 @@ class LoRaInterface(Interface):
                 log("LoRa drop: " + str(len(data)) + "B exceeds " + str(2 * _FRAME_PAYLOAD), LOG_DEBUG)
                 return False
 
+            data = self.ifac_sign(data)
+
             # RNode-compatible header: random seq in upper nibble.
             # The SX1262 driver sends all bytes faithfully — no FIFO
             # offset bug.  The old b'\x00' dummy byte was actually
@@ -207,46 +189,8 @@ class LoRaInterface(Interface):
 
     async def poll_loop(self):
         import uasyncio as asyncio
-        from machine import Pin
 
         log("LoRa poll loop started for " + self.name, LOG_NOTICE)
-
-        # If init failed, retry with increasing backoff before giving up
-        if not self.online:
-            _retry_delays = [2, 5, 10, 20, 30]
-            for i, delay in enumerate(_retry_delays):
-                log("LoRa offline, retry " + str(i + 1) + "/" + str(len(_retry_delays))
-                    + " in " + str(delay) + "s", LOG_NOTICE)
-                await asyncio.sleep(delay)
-                try:
-                    self._acquire()
-                    self._reset_hw()
-                    time.sleep_ms(500)
-                    self._init_modem()
-                    self._release()
-                    self.online = True
-                    log("LoRa " + self.name + " recovered on retry " + str(i + 1), LOG_NOTICE)
-                    break
-                except Exception as e:
-                    self._release()
-                    self._modem = None
-                    log("LoRa retry " + str(i + 1) + " failed: " + str(e), LOG_ERROR)
-
-            if not self.online:
-                log("LoRa poll loop EXITED — all retries exhausted for " + self.name, LOG_ERROR)
-                return
-
-        # DIO1 interrupt-driven wakeup: SX1262 asserts DIO1 when a packet
-        # is ready.  Use ThreadSafeFlag to bridge ISR -> async context.
-        _dio1_flag = None
-        try:
-            _dio1_flag = asyncio.ThreadSafeFlag()
-            _dio1_pin = Pin(self._dio1_pin, Pin.IN)
-            _dio1_pin.irq(trigger=Pin.IRQ_RISING, handler=lambda p: _dio1_flag.set())
-            log("LoRa DIO1 IRQ wakeup enabled", LOG_NOTICE)
-        except Exception as e:
-            log("LoRa DIO1 IRQ unavailable, using fallback poll: " + str(e), LOG_DEBUG)
-            _dio1_flag = None
 
         _last_gc = time.time()
         _last_diag = time.time()
@@ -355,14 +299,7 @@ class LoRaInterface(Interface):
             except Exception as e:
                 log("LoRa poll error: " + str(e), LOG_ERROR)
 
-            # Wait for DIO1 IRQ or 500ms fallback timeout
-            if _dio1_flag is not None:
-                try:
-                    await asyncio.wait_for_ms(_dio1_flag.wait(), 500)
-                except asyncio.TimeoutError:
-                    pass
-            else:
-                await asyncio.sleep_ms(250)
+            await asyncio.sleep(0.05)
 
         log("LoRa poll loop EXITED for " + self.name, LOG_ERROR)
 
