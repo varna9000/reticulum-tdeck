@@ -176,6 +176,12 @@ rns.setup_interfaces()
 spi_release_lora()
 gc.collect()
 
+# Set initial LoRa status on UI
+for _iface in rns.interfaces:
+    if _iface.__class__.__name__ == 'LoRaInterface':
+        gui.lora_online = _iface.online
+        break
+
 if DEBUG >= 1:
     print("LXMF address:", dest.hexhash)
     print("Free memory:", gc.mem_free(), "bytes")
@@ -505,10 +511,22 @@ def _start_lora():
                 rns.interfaces.append(iface)
                 Transport.register_interface(iface)
                 asyncio.create_task(iface.poll_loop())
+                gui.lora_online = iface.online
                 if DEBUG >= 1:
-                    print("[LoRa] Interface restarted")
+                    print("[LoRa] Interface restarted, online:", iface.online)
     finally:
         spi_release_lora()
+
+
+def lora_reset():
+    """Reset and reinitialize LoRa interface (called from UI)."""
+    if DEBUG >= 1:
+        print("[LoRa] Manual reset requested")
+    _stop_lora()
+    gui.lora_online = False
+    gui.dirty = True
+    _start_lora()
+    gui.dirty = True
 
 
 _tcp_iface = None  # track separately so rns.run() doesn't double-start it
@@ -587,6 +605,7 @@ gui.on_wifi_scan = wifi_scan
 gui.on_wifi_connect = wifi_connect
 gui.on_tcp_toggle = tcp_toggle
 gui.on_node_name = set_node_name
+gui.on_lora_reset = lora_reset
 gui._tcp_default = TCP_CONFIG["target_host"] + ":" + str(TCP_CONFIG["target_port"])
 
 

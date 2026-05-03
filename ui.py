@@ -105,6 +105,7 @@ class UI:
         self.bat_v = 0.0
         self.rssi = None
         self.snr = None
+        self.lora_online = True
         self.announce_flash = 0  # timestamp of last announce flash
 
         # Trackball pins
@@ -166,6 +167,7 @@ class UI:
         self.on_wifi_connect = None   # (ssid, password) -> bool
         self.on_tcp_toggle = None     # (enabled, host, port) -> bool
         self.on_node_name = None      # (name) -> None
+        self.on_lora_reset = None     # () -> bool
 
     # --- Screen power management ---
 
@@ -215,6 +217,8 @@ class UI:
         # Center section: iface + optional SNR
         if self._tcp_enabled:
             center = "[TCP]"
+        elif not self.lora_online:
+            center = "[LoRa FAIL]"
         elif self.rssi is not None:
             center = "[LoRa] snr:" + str(self.snr or 0)
         else:
@@ -241,7 +245,8 @@ class UI:
 
         # Overdraw center section in dim (iface stays cyan from nav)
         center_x = (left_w + (mid_w - len(center)) // 2) * CHAR_W
-        self.tft.text(self.font, center, center_x, NAV_TY, self.DIM_CYAN, hb)
+        center_color = self.NEON_MAG if (not self._tcp_enabled and not self.lora_online) else self.DIM_CYAN
+        self.tft.text(self.font, center, center_x, NAV_TY, center_color, hb)
 
         # Overdraw announce chevrons in magenta
         if ann:
@@ -710,6 +715,12 @@ class UI:
                     self._cache = [''] * 15
                     self.dirty = True
                     return True
+                elif self._settings_idx == 3:  # LoRa reset
+                    if self.on_lora_reset:
+                        self.on_lora_reset()
+                    self._cache = [''] * 15
+                    self.dirty = True
+                    return True
         elif self._settings_page == _SET_WIFI_SCAN:
             if ch == 0x1B or ch == 0x08:
                 self._settings_page = _SET_MAIN
@@ -874,8 +885,9 @@ class UI:
         wifi_line = "WiFi: " + wifi_status
         tcp_line = "TCP:  " + (self._tcp_target if self._tcp_enabled else "OFF")
         name_line = "Name: " + self.node_name
+        lora_line = "LoRa: " + ("Online" if self.lora_online else "OFFLINE (click=reset)")
 
-        items = [wifi_line, tcp_line, name_line]
+        items = [wifi_line, tcp_line, name_line, lora_line]
         for i in range(BODY_ROWS - 1):
             y = BODY_Y + (i + 1) * CHAR_H
             if i < len(items):
@@ -1101,7 +1113,7 @@ class UI:
 
     def _settings_scroll_down(self):
         if self._settings_page == _SET_MAIN:
-            if self._settings_idx < 2:  # 3 items: WiFi, TCP, Name
+            if self._settings_idx < 3:  # 4 items: WiFi, TCP, Name, LoRa
                 self._settings_idx += 1
         elif self._settings_page == _SET_WIFI_SCAN:
             if self._settings_idx < len(self._wifi_networks) - 1:
