@@ -75,7 +75,7 @@ mpremote cp tdeck_node.py ui.py sound.mpy tdeck_config.mpy :
 mpremote cp lib/st7789py.mpy lib/vga2_8x16.mpy :/lib/
 
 # Upload assets
-mpremote cp logo.bin :
+mpremote cp logo.jpg :
 ```
 
 > **Note**: Upload `.mpy` files instead of `.py` for faster boot, lower RAM usage, and ~65% less flash storage. The entry point `tdeck_node.py` can also be `.mpy`.

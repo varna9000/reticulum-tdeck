@@ -19,6 +19,8 @@ TIMEOUT = 120
 HASHMAP_IS_EXHAUSTED = 0xFF
 HASHMAP_IS_NOT_EXHAUSTED = 0x00
 MAX_RESOURCE_SIZE = 16384  # 16KB — ESP32 memory safe
+REQUEST_RETRY_INTERVAL = 10  # seconds between request retries
+MAX_REQUEST_RETRIES = 5
 
 # Resource flags
 FLAG_ENCRYPTED = 0x01
@@ -184,6 +186,8 @@ class Resource:
         r.encrypted = None
         r.expected_proof = None
         r.status = TRANSFERRING
+        r.last_request_at = 0
+        r.request_retries = 0
 
         # Register with link
         link.register_incoming_resource(r)
@@ -251,8 +255,11 @@ class Resource:
             req_data += self.hashmap[i]
 
         self.window_count = 0
+        self.last_request_at = time.time()
+        self.request_retries += 1
         self.link.send(req_data, const.CTX_RESOURCE_REQ)
-        log("Resource request: " + str(len(missing)) + " parts for " + self.hash.hex()[:8], LOG_DEBUG)
+        log("Resource request: " + str(len(missing)) + " parts for " + self.hash.hex()[:8]
+            + " (try " + str(self.request_retries) + ")", LOG_DEBUG)
 
     def receive_part(self, data):
         """(Receiver) Receive a raw resource part."""
@@ -435,6 +442,21 @@ class Resource:
             self.status = FAILED
             log("Resource cancelled: " + self.hash.hex()[:8], LOG_DEBUG)
             self._conclude()
+
+    def check_request_timeout(self):
+        """(Receiver) Retry resource request if no parts arrived within interval."""
+        if self.status != TRANSFERRING:
+            return
+        if self.last_request_at == 0:
+            return
+        if time.time() - self.last_request_at < REQUEST_RETRY_INTERVAL:
+            return
+        if self.request_retries >= MAX_REQUEST_RETRIES:
+            log("Resource " + self.hash.hex()[:8] + " max retries exceeded, cancelling", LOG_ERROR)
+            self.cancel()
+            return
+        log("Resource " + self.hash.hex()[:8] + " request timeout, retrying", LOG_NOTICE)
+        self.request_next()
 
     def is_timed_out(self):
         return time.time() - self.created_at > TIMEOUT

@@ -53,8 +53,9 @@ def spi_release_display():
 
 
 def spi_acquire_lora():
-    """Acquire SPI bus for LoRa: deassert display CS."""
+    """Acquire SPI bus for LoRa: deassert display CS, ensure 10MHz."""
     _disp_cs.value(1)
+    spi.init(baudrate=_SPI_LORA, **_SPI_PINS)
 
 
 def spi_release_lora():
@@ -74,37 +75,24 @@ spi_acquire_display()
 tft = st7789.ST7789(spi, 240, 320, dc=dc, cs=_disp_cs, backlight=bl, rotation=1)
 tft.fill(0x0821)  # BG_DARK
 
-# Splash: render 1bpp logo (180x180) centered, then "Loading..." below
+# Splash: render JPEG logo centered, then "Loading..." below
 try:
-    _logo_w, _logo_h = 180, 180
-    _stride = 23  # 180 bits = 22.5 bytes, padded to 23 (184 bits per row)
-    _logo_x = (320 - _logo_w) // 2   # 70
-    _logo_y = (240 - _logo_h - 20) // 2  # 20, leaves room for text below
-    _fg = 0x07FF  # NEON_CYAN
-    _bg = 0x0821  # BG_DARK
-    # Byte-swap for ST7789 RGB565 little-endian wire format
-    _fg_hi = (_fg >> 8) | ((_fg & 0xFF) << 8)
-    _bg_hi = (_bg >> 8) | ((_bg & 0xFF) << 8)
-
-    with open("logo.bin", "rb") as f:
-        _row_buf = bytearray(_logo_w * 2)
-        for _r in range(_logo_h):
-            _bits = f.read(_stride)
-            _idx = 0
-            for _bi in range(_logo_w):
-                _byte_idx = _bi >> 3
-                _bit_idx = 7 - (_bi & 7)
-                _px = _bg_hi if (_bits[_byte_idx] >> _bit_idx) & 1 else _fg_hi
-                _row_buf[_idx] = _px & 0xFF
-                _row_buf[_idx + 1] = (_px >> 8) & 0xFF
-                _idx += 2
-            tft.blit_buffer(_row_buf, _logo_x, _logo_y + _r, _logo_w, 1)
-
-    del _row_buf, _bits
+    import tjpgd_fast_xtensawin as tjpgd
+    with open("logo.jpg", "rb") as f:
+        _jpeg_data = f.read()
+    _w, _h, _rgb565 = tjpgd.decode(_jpeg_data, 320, 220)
+    del _jpeg_data
+    _logo_x = (320 - _w) // 2
+    _logo_y = (220 - _h) // 2
+    tft.blit_buffer(_rgb565, _logo_x, _logo_y, _w, _h)
+    del _rgb565
+    gc.collect()
     _txt = "Loading..."
     _tx = (320 - len(_txt) * 8) // 2
-    _ty = _logo_y + _logo_h + 6
-    tft.text(font, _txt, _tx, _ty, 0x07E0, _bg)  # NEON_GREEN
+    tft.text(font, _txt, _tx, 224, 0x07E0, 0x0821)  # NEON_GREEN
+except ImportError:
+    # No JPEG decoder — fall back to simple text splash
+    tft.text(font, "Starting...", 100, 112, 0x07FF, 0x0821)
 except Exception as e:
     tft.text(font, "Starting...", 100, 112, 0x07FF, 0x0821)
     if DEBUG >= 1:
@@ -112,10 +100,7 @@ except Exception as e:
 
 spi_release_display()
 # Clean up splash temporaries
-for _v in ('_row_buf', '_bits', '_logo_w', '_logo_h', '_stride',
-           '_logo_x', '_logo_y', '_fg', '_bg', '_fg_hi', '_bg_hi',
-           '_txt', '_tx', '_ty', '_r', '_bi', '_byte_idx', '_bit_idx',
-           '_px', '_idx'):
+for _v in ('_jpeg_data', '_rgb565', '_w', '_h', '_logo_x', '_logo_y', '_txt', '_tx'):
     try:
         del globals()[_v]
     except KeyError:
