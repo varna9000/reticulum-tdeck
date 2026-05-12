@@ -787,10 +787,6 @@ async def _encode_and_send_voice(dest_hash, pcm_bytes):
         gc.collect()
         if DEBUG >= 1:
             print("[Audio] encoded", len(c2_data), "B codec2 (mode 3200)")
-            # Save sent data for debugging
-            with open("sent_audio.c2", "wb") as f:
-                f.write(c2_data)
-            print("[Audio] saved sent_audio.c2 for comparison")
 
         gui._audio_status = "sending"
         gui._nav_mid_cache = ''
@@ -838,12 +834,12 @@ async def _play_audio(audio_data, codec_mode):
             if DEBUG >= 1:
                 print("[Audio] decode start:", n_frames, "frames, mode:", codec_mode,
                       "mem:", gc.mem_free())
-            # Batch decode — gain=1 (no amplification, MAX98357A handles volume)
-            pcm = _codec2_mod.decode(audio_data, codec_mode, 1)
+            # Batch decode — gain=2 for comfortable speaker volume
+            pcm = _codec2_mod.decode(audio_data, codec_mode, 2)
             if DEBUG >= 1:
                 print("[Audio] decoded", len(pcm), "B")
             gc.collect()
-            if len(_pcm_cache) >= 3:
+            if len(_pcm_cache) >= 1:
                 _pcm_cache.pop(next(iter(_pcm_cache)))
             _pcm_cache[cache_id] = pcm
         except Exception as e:
@@ -974,7 +970,7 @@ async def _auto_start_tcp():
 def main():
     import uasyncio as asyncio
 
-    gc.threshold(50000)  # Auto-GC after 50KB allocated (prevents long scan pauses)
+    gc.threshold(200000)  # Auto-GC after 200KB allocated (less frequent, fewer pauses)
 
     _auto_connect_wifi()
 
@@ -986,7 +982,7 @@ def main():
     async def run_all():
         asyncio.create_task(_auto_start_tcp())
         asyncio.create_task(initial_announce())
-        asyncio.create_task(reannounce_loop())
+        # No auto re-announce — press 'a' to announce manually
         asyncio.create_task(gui.kbd_loop())
         asyncio.create_task(gui.gui_loop(spi_acquire_display, spi_release_display))
         asyncio.create_task(gui.battery_loop(spi_acquire_display, spi_release_display))

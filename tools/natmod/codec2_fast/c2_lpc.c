@@ -204,7 +204,7 @@ void levinson_durbin(float R[],    /* order+1 autocorrelation coeff */
 void levinson_durbin_dd(double R[], double lpcs[], int order)
 {
     /* Full double precision — R[] in, double lpcs[] out.
-       Preserves precision for BW expansion + LSP root-finding. */
+       Caller must use double[] for lpcs to preserve precision. */
     double sum, e, k;
     int i, j;
     double a[LPC_ORD + 1][LPC_ORD + 1];

@@ -755,34 +755,36 @@ float speech_to_uq_lsps(float lsp[], float ak[], float Sn[], float w[],
         return 0.0;
     }
 
-    /* Double-precision autocorrelation and Levinson-Durbin to preserve
-       precision for LSP root-finding on ESP32 single-precision float. */
+    /* Full double-precision pipeline: autocorrelation → Levinson-Durbin →
+       BW expansion → LSP. Keeps ak in double until final float conversion
+       to prevent precision loss that causes LSP root-finding failure. */
+    double ak_d[LPC_ORD + 1];
     void autocorrelate_d(float[], double[], int, int);
-    void levinson_durbin_dd(double[], float[], int);
+    void levinson_durbin_dd(double[], double[], int);
     autocorrelate_d(Wn, R, m_pitch, order);
-    levinson_durbin_dd(R, ak, order);
+    levinson_durbin_dd(R, ak_d, order);
 
+    /* Energy from un-expanded double coefficients */
     E = 0.0;
     for (i = 0; i <= order; i++) {
-        E += ak[i] * (float)R[i];
+        E += (float)(ak_d[i] * R[i]);
     }
 
-    /* BW expansion in double precision, then pass to lpc_to_lsp.
-       Doing BW expansion in float loses precision in higher-order
-       coefficients, causing 2 LSP roots to be unfindable. */
+    /* Copy un-expanded to caller's float ak[] */
+    for (i = 0; i <= order; i++) {
+        ak[i] = (float)ak_d[i];
+    }
+
+    /* BW expansion in double, convert to float for lpc_to_lsp */
     {
         float ak_bw[LPC_ORD + 1];
         for (i = 0; i <= order; i++) {
             double bw = 1.0;
             int j;
             for (j = 0; j < i; j++) bw *= 0.994;
-            ak_bw[i] = (float)((double)ak[i] * bw);
+            ak_bw[i] = (float)(ak_d[i] * bw);
         }
         roots = lpc_to_lsp(ak_bw, order, lsp, 5, LSP_DELTA1);
-    }
-    /* Also apply BW expansion to ak[] in-place (upstream convention) */
-    for (i = 0; i <= order; i++) {
-        ak[i] *= powf(0.994, (float)i);
     }
     _lsp_calls++;
     _lsp_last_roots = roots;
