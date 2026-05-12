@@ -1,4 +1,4 @@
-"""Record mic, encode codec2 3200, decode, play back — tests full audio chain."""
+"""Record mic, encode codec2 3200, save .c2 file, decode, play back."""
 import gc, time, struct
 gc.collect()
 
@@ -29,15 +29,12 @@ sound.stop_recording()
 print("Recorded", pos, "bytes in", time.ticks_diff(time.ticks_ms(), t0), "ms")
 
 n = pos // 2
-
-# Compute DC offset
+# DC removal
 dc_sum = 0
 for i in range(n):
     dc_sum += struct.unpack_from("<h", rec, i * 2)[0]
 dc = dc_sum // n
-print("DC offset: %d" % dc)
 
-# Remove DC offset
 mn, mx = 32767, -32767
 for i in range(n):
     s = struct.unpack_from("<h", rec, i * 2)[0] - dc
@@ -46,12 +43,11 @@ for i in range(n):
     struct.pack_into("<h", rec, i * 2, s)
     if s < mn: mn = s
     if s > mx: mx = s
-print("After DC removal — min/max: %d / %d" % (mn, mx))
+print("DC offset: %d, after removal min/max: %d / %d" % (dc, mn, mx))
 
-# Play RAW (DC-removed)
-print("\n--- Playing RAW (DC removed) ---")
-sound.play_tx()
-time.sleep_ms(300)
+# Play RAW
+print("\n--- Playing RAW ---")
+sound.play_tx(); time.sleep_ms(200)
 i = 0
 while i < pos:
     sound.play_pcm(rec[i:i+1600])
@@ -67,6 +63,11 @@ t0 = time.ticks_ms()
 encoded = c2.encode(pcm, 0)
 print("Encoded: %d B in %d ms" % (len(encoded), time.ticks_diff(time.ticks_ms(), t0)))
 
+# Save encoded to file for transfer/analysis
+with open("last_audio.c2", "wb") as f:
+    f.write(encoded)
+print("Saved to last_audio.c2")
+
 # Decode
 gc.collect()
 decoded = c2.decode(encoded, 0, 1)
@@ -77,21 +78,19 @@ for i in range(0, len(decoded), 2):
     if s > mx2: mx2 = s
 print("Decoded min/max: %d / %d" % (mn2, mx2))
 
-# Play decoded WITHOUT amplification first (same volume as raw)
-print("\n--- Playing DECODED (no amp, same as raw) ---")
-sound.play_tx()
-time.sleep_ms(300)
+# Play decoded without amp
+print("\n--- Playing DECODED (no amp) ---")
+sound.play_tx(); time.sleep_ms(200)
 i = 0
 while i < len(decoded):
     sound.play_pcm(decoded[i:i+1600])
     i += 1600
 time.sleep_ms(500)
 
-# Play decoded WITH amplification
+# Play decoded with amp
 gc.collect()
 print("\n--- Playing DECODED (amplified) ---")
-sound.play_tx()
-time.sleep_ms(300)
+sound.play_tx(); time.sleep_ms(200)
 i = 0
 while i < len(decoded):
     seg = sound.amplify_pcm(decoded[i:i+1600])

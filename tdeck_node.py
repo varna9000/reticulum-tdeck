@@ -10,7 +10,6 @@ Usage:
 """
 
 import gc
-gc.threshold(4096)
 gc.collect()
 
 from machine import Pin, SPI, SoftI2C
@@ -140,11 +139,22 @@ except Exception as e:
         print("Sound init failed:", e)
     sound.enabled = False
 
+# Init microphone (ES7210 on I2C)
+try:
+    from machine import SoftI2C
+    _mic_i2c = SoftI2C(scl=Pin(8), sda=Pin(18), freq=100000)
+    sound.init_mic(_mic_i2c)
+    if DEBUG >= 1:
+        print("Mic init OK")
+except Exception as e:
+    if DEBUG >= 1:
+        print("Mic init failed:", e)
+
 gc.collect()
 
 # --- Init Reticulum ---
 from urns import Reticulum
-from urns.lxmf import LXMRouter, FIELD_IMAGE
+from urns.lxmf import LXMRouter, FIELD_IMAGE, FIELD_AUDIO
 from urns.log import LOG_NONE, LOG_NOTICE, LOG_DEBUG
 
 log_map = {0: LOG_NONE, 1: LOG_NONE, 2: LOG_DEBUG}
@@ -171,20 +181,33 @@ gui.set_backlight(bl)
 gc.collect()
 
 # --- Setup interfaces (LoRa comes online) ---
+def _lora_status(online):
+    gui.lora_online = online
+    gui._nav_mid_cache = ''
+    gui.dirty = True
+
+LORA_CONFIG["on_status"] = _lora_status
 spi_acquire_lora()
 rns.setup_interfaces()
 spi_release_lora()
 gc.collect()
 
-# Set initial LoRa status on UI
-for _iface in rns.interfaces:
-    if _iface.__class__.__name__ == 'LoRaInterface':
-        gui.lora_online = _iface.online
-        break
-
 if DEBUG >= 1:
     print("LXMF address:", dest.hexhash)
     print("Free memory:", gc.mem_free(), "bytes")
+
+# Pre-import codec2 natmod — keep in sys.modules so GC can't reclaim it
+gc.collect()
+try:
+    import codec2_fast_xtensawin
+    _codec2_mod = codec2_fast_xtensawin
+    if DEBUG >= 1:
+        print("Codec2 module loaded, mem:", gc.mem_free())
+except Exception as e:
+    _codec2_mod = None
+    if DEBUG >= 1:
+        print("Codec2 load failed:", e)
+gc.collect()
 
 
 # --- Callbacks ---
@@ -206,6 +229,16 @@ def _compute_lxmf_hash(dest_hash):
 
 def on_message(message):
     """Incoming LXMF message handler."""
+    try:
+        _on_message_inner(message)
+    except Exception as e:
+        import sys
+        print("[RX] CRASH:", e)
+        sys.print_exception(e)
+
+def _on_message_inner(message):
+    gui.transfer_progress = None
+    gui._progress_dirty = False
     content = message.content_as_string() or "(binary)"
     source_hash = message.source_hash
 
@@ -215,10 +248,42 @@ def on_message(message):
     if FIELD_IMAGE in fields:
         img_field = fields[FIELD_IMAGE]
         if isinstance(img_field, (list, tuple)) and len(img_field) >= 2:
-            if img_field[0] == "jpg" and isinstance(img_field[1], (bytes, bytearray)):
+            if img_field[0] in ("jpg", "webp", "png") and isinstance(img_field[1], (bytes, bytearray)):
                 image_data = bytes(img_field[1])
                 if not content or content == "(binary)":
                     content = "[image]"
+
+    # Extract audio if present
+    audio_data = None
+    if FIELD_AUDIO in fields:
+        aud_field = fields[FIELD_AUDIO]
+        if DEBUG >= 1:
+            print("[Audio] field type:", type(aud_field).__name__,
+                  "len:", len(aud_field) if hasattr(aud_field, '__len__') else "?")
+            if isinstance(aud_field, (list, tuple)) and len(aud_field) >= 1:
+                print("[Audio] mode:", aud_field[0], "type:", type(aud_field[0]).__name__)
+                if len(aud_field) >= 2:
+                    print("[Audio] data type:", type(aud_field[1]).__name__,
+                          "len:", len(aud_field[1]) if hasattr(aud_field[1], '__len__') else "?")
+        if isinstance(aud_field, (list, tuple)) and len(aud_field) >= 2:
+            aud_mode = aud_field[0]
+            if isinstance(aud_field[1], (bytes, bytearray)):
+                if DEBUG >= 1:
+                    d = aud_field[1]
+                    print("[Audio]", len(d), "B mode", aud_mode)
+                if aud_mode in (0x08, 0x09):  # AM_CODEC2_2400 or AM_CODEC2_3200
+                    audio_data = bytes(aud_field[1])
+                    # Map LXMF audio mode to codec2 internal mode
+                    # CODEC2_MODE_3200=0, CODEC2_MODE_2400=1
+                    audio_codec_mode = 0 if aud_mode == 0x09 else 1
+                    if not content or content == "(binary)":
+                        content = "[voice]"
+                    else:
+                        content = "[voice] " + content
+                elif DEBUG >= 1:
+                    print("[Audio] unsupported mode:", aud_mode)
+    elif DEBUG >= 2:
+        print("[Audio] no FIELD_AUDIO in fields, keys:", list(fields.keys()) if fields else "none")
 
     # Map LXMF source_hash to GUI peer key via precomputed mapping
     peer_key = _lxmf_to_peer.get(source_hash)
@@ -249,9 +314,14 @@ def on_message(message):
     # Ensure peer exists in GUI
     if peer_key not in gui.peers:
         gui.add_peer(peer_key, source_hash.hex()[:8])
+    if DEBUG >= 1:
+        print("[RX] peer ok")
 
     # Add to chat under the GUI peer key
-    gui.add_chat_message(peer_key, False, content, image=image_data)
+    gui.add_chat_message(peer_key, False, content, image=image_data,
+                         audio=audio_data, audio_mode=audio_codec_mode if audio_data else None)
+    if DEBUG >= 1:
+        print("[RX] chat ok")
 
     # Update RSSI/SNR from interface
     for iface in rns.interfaces:
@@ -262,8 +332,14 @@ def on_message(message):
 
     # Wake screen and play notification
     gui.wake_screen()
+    if DEBUG >= 1:
+        print("[RX] wake ok")
     sound.play_rx()
+    if DEBUG >= 1:
+        print("[RX] sound ok")
     gc.collect()
+    if DEBUG >= 1:
+        print("[RX] done, mem:", gc.mem_free())
 
 
 def on_announce(destination_hash, display_name):
@@ -289,7 +365,6 @@ def on_announce(destination_hash, display_name):
             if DEBUG >= 1:
                 print("[Peer] (dedup)", display_name or "?",
                       "[" + destination_hash.hex()[:8] + " -> " + existing.hex()[:8] + "]")
-            gc.collect()
             return
         # Store mapping: LXMF hash -> this GUI peer key
         _lxmf_to_peer[lxmf_hash] = destination_hash
@@ -305,11 +380,15 @@ def on_announce(destination_hash, display_name):
     gui.wake_screen()
     if DEBUG >= 1:
         print("[Peer]", display_name or "?", "[" + destination_hash.hex()[:8] + "]")
-    gc.collect()
 
+
+def on_progress(received, total):
+    gui.transfer_progress = (received, total)
+    gui._progress_dirty = True
 
 router.register_delivery_callback(on_message)
 router.register_announce_callback(on_announce)
+router.register_progress_callback(on_progress)
 
 
 # --- GUI -> LXMF wiring ---
@@ -495,12 +574,20 @@ def _stop_lora():
 
 def _start_lora():
     """Re-enable LoRa interface."""
+    global _lora_task
     from urns.transport import Transport
     # Check if already running
     for iface in rns.interfaces:
         if iface.__class__.__name__ == 'LoRaInterface':
             return
     import uasyncio as asyncio
+    # Cancel stale poll_loop task from previous interface
+    if _lora_task is not None:
+        try:
+            _lora_task.cancel()
+        except Exception:
+            pass
+        _lora_task = None
     spi_acquire_lora()
     try:
         rns.config["interfaces"] = [LORA_CONFIG]
@@ -510,7 +597,7 @@ def _start_lora():
                 iface = LoRaInterface(iface_config)
                 rns.interfaces.append(iface)
                 Transport.register_interface(iface)
-                asyncio.create_task(iface.poll_loop())
+                _lora_task = asyncio.create_task(iface.poll_loop())
                 gui.lora_online = iface.online
                 if DEBUG >= 1:
                     print("[LoRa] Interface restarted, online:", iface.online)
@@ -530,15 +617,24 @@ def lora_reset():
 
 
 _tcp_iface = None  # track separately so rns.run() doesn't double-start it
+_lora_task = None  # track poll_loop task to cancel on restart
+_tcp_task = None
 
 
 def tcp_toggle(enabled, host=None, port=None):
-    global _tcp_iface
+    global _tcp_iface, _tcp_task
     import uasyncio as asyncio
     from urns.transport import Transport
     if enabled:
         TCP_CONFIG["target_host"] = host
         TCP_CONFIG["target_port"] = port
+        # Cancel stale TCP poll_loop task
+        if _tcp_task is not None:
+            try:
+                _tcp_task.cancel()
+            except Exception:
+                pass
+            _tcp_task = None
         from urns.interfaces.tcp import TCPClientInterface
         iface = TCPClientInterface(TCP_CONFIG)
         if iface.online:
@@ -547,7 +643,7 @@ def tcp_toggle(enabled, host=None, port=None):
             gui.clear_peers()
             _lxmf_to_peer.clear()
             Transport.register_interface(iface)
-            asyncio.create_task(iface.poll_loop())
+            _tcp_task = asyncio.create_task(iface.poll_loop())
             _tcp_iface = iface
             settings = _load_settings()
             settings["tcp_enabled"] = True
@@ -606,10 +702,188 @@ gui.on_wifi_connect = wifi_connect
 gui.on_tcp_toggle = tcp_toggle
 gui.on_node_name = set_node_name
 gui.on_lora_reset = lora_reset
+gui.on_volume = lambda v: setattr(sound, 'volume', v)
+def _on_audio_play(audio_data, audio_mode):
+    import uasyncio as asyncio
+    asyncio.create_task(_play_audio(audio_data, audio_mode))
+gui.on_audio_play = _on_audio_play
+
+_MAX_REC_SECS = 15  # max recording duration
+_REC_CHUNK = 640    # samples per mic read (80ms) — larger chunks reduce GIL contention
+_rec_buf = bytearray(_MAX_REC_SECS * 8000 * 2)  # permanent recording buffer — avoids fragmentation
+_rec_pos = 0
+
+def _on_record_start():
+    global _rec_pos
+    _rec_pos = 0
+    sound.start_recording()
+    import uasyncio as asyncio
+    asyncio.create_task(_recording_loop())
+
+def _on_record_stop(send=False):
+    global _rec_pos
+    sound.stop_recording()
+    if send and _rec_pos > 0 and gui.selected_peer:
+        import uasyncio as asyncio
+        pcm = bytes(_rec_buf[:_rec_pos])
+        _rec_pos = 0
+        if DEBUG >= 1:
+            print("[Audio] recorded", len(pcm), "B, mem:", gc.mem_free())
+        asyncio.create_task(_encode_and_send_voice(gui.selected_peer, pcm))
+    else:
+        _rec_pos = 0
+
+gui.on_record_start = _on_record_start
+gui.on_record_stop = _on_record_stop
 gui._tcp_default = TCP_CONFIG["target_host"] + ":" + str(TCP_CONFIG["target_port"])
 
 
 # --- Async tasks ---
+
+def _mic_thread():
+    """Mic capture thread — runs on core 1, reads I2S continuously.
+    I2S readinto() releases the GIL while waiting for DMA data,
+    so the main thread (event loop, LoRa, keyboard) runs freely."""
+    global _rec_pos
+    chunk_bytes = _REC_CHUNK * 2
+    try:
+        while sound.is_recording:
+            buf = _rec_buf
+            if buf is None or _rec_pos >= len(buf) - chunk_bytes:
+                break
+            chunk = sound.read_mic_chunk(_REC_CHUNK)
+            if chunk and buf is _rec_buf:  # check buf hasn't been freed
+                buf[_rec_pos:_rec_pos + chunk_bytes] = chunk
+                _rec_pos += chunk_bytes
+    except:
+        pass
+
+async def _recording_loop():
+    """Start mic capture on a separate thread, poll keyboard on main thread."""
+    import uasyncio as asyncio
+    import _thread
+    _thread.start_new_thread(_mic_thread, ())
+    while sound.is_recording and _rec_buf:
+        key = get_key()
+        if key != b'\x00':
+            gui.handle_key(key)
+        await asyncio.sleep_ms(20)
+
+
+async def _encode_and_send_voice(dest_hash, pcm_bytes):
+    """Encode PCM to Codec2 3200 and send as LXMF voice message."""
+    import uasyncio as asyncio
+    dur = len(pcm_bytes) // (8000 * 2)
+    gui._audio_status = "encode " + str(dur) + "s audio"
+    gui._nav_mid_cache = ''
+    gui.dirty = True
+    await asyncio.sleep_ms(200)
+    try:
+        gc.collect()
+        if DEBUG >= 1:
+            print("[Audio] PCM", len(pcm_bytes), "B, mem:", gc.mem_free())
+        c2_data = _codec2_mod.encode(pcm_bytes, 0)  # mode 0 = 3200
+        del pcm_bytes
+        gc.collect()
+        if DEBUG >= 1:
+            print("[Audio] encoded", len(c2_data), "B codec2 (mode 3200)")
+            # Save sent data for debugging
+            with open("sent_audio.c2", "wb") as f:
+                f.write(c2_data)
+            print("[Audio] saved sent_audio.c2 for comparison")
+
+        gui._audio_status = "sending"
+        gui._nav_mid_cache = ''
+        gui.dirty = True
+        await asyncio.sleep_ms(100)  # let event loop process pending I/O
+
+        from urns.lxmf import FIELD_AUDIO, LXMessage
+        fields = {FIELD_AUDIO: [0x09, c2_data]}  # 0x09 = AM_CODEC2_3200
+        msg_idx = gui.add_chat_message(dest_hash, True, "[voice]", status=1)
+        msg = router.send_message(dest_hash, "[voice]", fields=fields,
+                                  desired_method=LXMessage.DIRECT)
+        if msg:
+            gui.update_message_status(dest_hash, msg_idx, 2)
+            sound.play_tx()
+        else:
+            gui.update_message_status(dest_hash, msg_idx, 3)
+    except Exception as e:
+        if DEBUG >= 1:
+            print("[Audio] encode/send error:", e)
+    finally:
+        gui._audio_status = None
+        gui._nav_mid_cache = ''
+        gui.dirty = True
+
+
+_pcm_cache = {}  # id(codec2_bytes) -> pcm_bytes — decoded audio for instant replay
+
+
+async def _play_audio(audio_data, codec_mode):
+    """Decode (if needed) and play Codec2 audio. Shows status in navbar."""
+    import uasyncio as asyncio
+    cache_id = id(audio_data)
+
+    # Decode on first click, cache for instant replay
+    if cache_id not in _pcm_cache:
+        bpf = 8 if codec_mode == 0 else 6
+        n_frames = len(audio_data) // bpf
+        dur = n_frames * 20 // 1000  # audio duration in seconds
+        gui._audio_status = "decode " + str(dur) + "s audio"
+        gui._nav_mid_cache = ''
+        gui.dirty = True
+        await asyncio.sleep_ms(200)  # let navbar draw before blocking
+        try:
+            gc.collect()
+            if DEBUG >= 1:
+                print("[Audio] decode start:", n_frames, "frames, mode:", codec_mode,
+                      "mem:", gc.mem_free())
+            gain = 10
+            # Batch decode in C — keeps codec2 pointer on C stack (GC-safe)
+            pcm = _codec2_mod.decode(audio_data, codec_mode, gain)
+            if DEBUG >= 1:
+                print("[Audio] decoded", len(pcm), "B")
+            gc.collect()
+            if len(_pcm_cache) >= 3:
+                _pcm_cache.pop(next(iter(_pcm_cache)))
+            _pcm_cache[cache_id] = pcm
+        except Exception as e:
+            if DEBUG >= 1:
+                import sys
+                print("[Audio] decode error:", e)
+                sys.print_exception(e)
+            gui._audio_status = None
+            gui._nav_mid_cache = ''
+            gui.dirty = True
+            return
+
+    pcm = _pcm_cache.get(cache_id)
+    if pcm is None:
+        gui._audio_status = None
+        gui._nav_mid_cache = ''
+        gui.dirty = True
+        return
+
+    # Play
+    gc.collect()
+    await asyncio.sleep_ms(50)
+    gui._audio_status = "playing"
+    gui._nav_mid_cache = ''
+    gui.dirty = True
+    if DEBUG >= 1:
+        print("[Audio] playing", len(pcm), "B PCM")
+    chunk = 1600  # 100ms at 8kHz 16-bit mono
+    i = 0
+    while i < len(pcm):
+        sound.play_pcm(pcm[i:i + chunk])
+        i += chunk
+        await asyncio.sleep_ms(5)
+    if DEBUG >= 1:
+        print("[Audio] playback complete")
+    gui._audio_status = None
+    gui._nav_mid_cache = ''
+    gui.dirty = True
+
 
 async def initial_announce():
     import uasyncio as asyncio
@@ -626,18 +900,21 @@ async def initial_announce():
 
 async def reannounce_loop():
     import uasyncio as asyncio
+    from lib.urns import const as _c
+    _interval = _c.ROAMING_ANNOUNCE_INTERVAL  # 90s for roaming, was 300s
     while True:
-        await asyncio.sleep(300)
+        await asyncio.sleep(_interval)
         try:
             router.announce()
-            gui.announce_flash = time.time()
+            gui.announce_flash = time.ticks_ms()
             gui.dirty = True
             if DEBUG >= 2:
                 print("[Re-announced]")
         except Exception as e:
             if DEBUG >= 2:
                 print("Re-announce error:", e)
-        gc.collect()
+        if DEBUG >= 2:
+            print("[mem]", gc.mem_free())
 
 
 # --- Main ---
@@ -684,7 +961,7 @@ async def _auto_start_tcp():
 def main():
     import uasyncio as asyncio
 
-    gc.threshold(-1)  # Relax GC for runtime
+    gc.threshold(50000)  # Auto-GC after 50KB allocated (prevents long scan pauses)
 
     _auto_connect_wifi()
 

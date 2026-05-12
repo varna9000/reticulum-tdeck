@@ -12,6 +12,7 @@ STATE_NODES    = 0
 STATE_CHAT     = 1
 STATE_SETTINGS = 2
 STATE_IMAGE    = 3
+STATE_RECORDING = 4
 
 # Settings sub-pages
 _SET_MAIN      = 0
@@ -84,6 +85,9 @@ class UI:
         # Row cache: 15 slots (navbar + 12 body + sep + input)
         # Compared before drawing — skip SPI if row unchanged.
         self._cache = [''] * 15
+        self._nav_bat_cache = ''
+        self._nav_mid_cache = ''
+        self._nav_right_cache = ''
 
         # Peers: dest_hash_bytes -> {"name": str, "rssi": int}
         self.peers = {}
@@ -106,6 +110,10 @@ class UI:
         self.rssi = None
         self.snr = None
         self.lora_online = True
+        self.transfer_progress = None  # (received, total) or None
+        self._audio_status = None      # None, "decoding", or "playing"
+        self._rec_seconds = 0          # recording duration counter
+        self._progress_dirty = False
         self.announce_flash = 0  # timestamp of last announce flash
 
         # Trackball pins
@@ -147,13 +155,19 @@ class UI:
         self._tcp_target = ""  # "host:port" string, set from saved settings on boot
         self._tcp_default = ""  # "host:port" from TCP_CONFIG, set by tdeck_node.py
         self._settings_scroll = 0
+        self._volume = 8  # 0-10, synced with sound.volume
 
         # Image viewer state
-        self._image_cache = {}  # (peer_hash, msg_idx) -> jpeg_bytes
+        self._image_cache = {}  # (peer_hash, msg_idx) -> jpeg/webp bytes
+        self._audio_cache = {}  # (peer_hash, msg_idx) -> (codec2_bytes, mode)
         self._image_cache_order = []  # LRU order of (peer_hash, msg_idx) keys
         self._viewing_image = None  # jpeg_bytes currently displayed
         self._image_drawn = False  # True once JPEG has been blitted
         self._visible_image_lines = {}  # display_row -> msg_idx (populated by draw_chat)
+
+        # Chat lines cache (avoids rebuilding word-wrapped lines on every draw)
+        self._chat_lines_cache = None
+        self._chat_lines_peer = None
 
         # Screen power management
         self._last_activity = time.ticks_ms()
@@ -168,6 +182,10 @@ class UI:
         self.on_tcp_toggle = None     # (enabled, host, port) -> bool
         self.on_node_name = None      # (name) -> None
         self.on_lora_reset = None     # () -> bool
+        self.on_volume = None         # (level) -> None
+        self.on_audio_play = None     # (codec2_bytes, mode) -> None
+        self.on_record_start = None   # () -> None
+        self.on_record_stop = None    # (send: bool) -> None
 
     # --- Screen power management ---
 
@@ -212,10 +230,15 @@ class UI:
     def draw_navbar(self):
         bat_v_str = "{:.1f}V".format(self.bat_v)
         name = self.node_name[:10]
-        ann = ">>>" if (self.announce_flash and time.time() - self.announce_flash < 2) else ""
+        ann = ">>>" if (self.announce_flash and time.ticks_diff(time.ticks_ms(), self.announce_flash) < 2000) else ""
 
-        # Center section: iface + optional SNR
-        if self._tcp_enabled:
+        # Center section: iface + optional SNR or transfer progress
+        if self._audio_status:
+            center = "[" + self._audio_status + "]"
+        elif self.transfer_progress:
+            rcv, tot = self.transfer_progress
+            center = "RX " + str(rcv) + "/" + str(tot)
+        elif self._tcp_enabled:
             center = "[TCP]"
         elif not self.lora_online:
             center = "[LoRa FAIL]"
@@ -229,40 +252,60 @@ class UI:
         left_w = 4 + len(bat_v_str)  # icon chars + voltage
         right_w = len(right_str)
         mid_w = COLS - left_w - right_w
-        mid_str = center.center(mid_w) if mid_w > len(center) else center[:mid_w]
-        nav = "    " + bat_v_str + mid_str + right_str
-
-        # Skip redraw if navbar content unchanged
-        nav_key = nav + ann + center
-        if self._cache[0] == nav_key:
-            return
-        self._cache[0] = nav_key
+        center_color = self.NEON_MAG if (not self._tcp_enabled and not self.lora_online) else self.DIM_CYAN
 
         hb = self.HEADER_BG
-        self.tft.fill_rect(0, 0, SCREEN_W, NAV_H, hb)
-        self.tft.text(self.font, _pad(nav), 0, NAV_TY, self.NEON_CYAN, hb)
-        self.tft.text(self.font, bat_v_str, 4 * CHAR_W, NAV_TY, self.NEON_GREEN, hb)
 
-        # Overdraw center section in dim (iface stays cyan from nav)
-        center_x = (left_w + (mid_w - len(center)) // 2) * CHAR_W
-        center_color = self.NEON_MAG if (not self._tcp_enabled and not self.lora_online) else self.DIM_CYAN
-        self.tft.text(self.font, center, center_x, NAV_TY, center_color, hb)
+        # --- Section-based redraw: only repaint what changed ---
 
-        # Overdraw announce chevrons in magenta
-        if ann:
-            ann_x = (COLS - right_w) * CHAR_W
-            self.tft.text(self.font, ann, ann_x, NAV_TY, self.NEON_MAG, hb)
-
-        # Battery icon (28x12 at top-left)
+        # Build per-section cache keys
         bl = 3 if self.bat_v > 3.9 else (2 if self.bat_v > 3.6 else (1 if self.bat_v > 3.3 else 0))
-        gr = self.NEON_GREEN
-        dm = self.DIM_CYAN
-        self.tft.fill_rect(1, 4, 26, 12, gr)
-        self.tft.fill_rect(2, 5, 24, 10, hb)
-        self.tft.fill_rect(27, 7, 2, 6, gr)
-        self.tft.fill_rect(3,  6, 7, 8, gr if bl >= 1 else dm)
-        self.tft.fill_rect(11, 6, 7, 8, gr if bl >= 2 else dm)
-        self.tft.fill_rect(19, 6, 7, 8, gr if bl >= 3 else dm)
+        bat_key = bat_v_str + str(bl)
+        mid_key = center
+        right_key = right_str + ann
+
+        # Full navbar invalidation: reset section caches + fill background
+        if self._cache[0] == '':
+            self._nav_bat_cache = ''
+            self._nav_mid_cache = ''
+            self._nav_right_cache = ''
+            self.tft.fill_rect(0, 0, SCREEN_W, NAV_H, hb)
+
+        # Battery section (icon + voltage text)
+        if self._nav_bat_cache != bat_key:
+            self._nav_bat_cache = bat_key
+            # Battery icon (28x12 at top-left)
+            gr = self.NEON_GREEN
+            dm = self.DIM_CYAN
+            self.tft.fill_rect(1, 4, 26, 12, gr)
+            self.tft.fill_rect(2, 5, 24, 10, hb)
+            self.tft.fill_rect(27, 7, 2, 6, gr)
+            self.tft.fill_rect(3,  6, 7, 8, gr if bl >= 1 else dm)
+            self.tft.fill_rect(11, 6, 7, 8, gr if bl >= 2 else dm)
+            self.tft.fill_rect(19, 6, 7, 8, gr if bl >= 3 else dm)
+            # Voltage text (padded to fixed width to clear old chars)
+            self.tft.text(self.font, _pad(bat_v_str, 5), 4 * CHAR_W, NAV_TY, self.NEON_GREEN, hb)
+
+        # Center section (interface status / progress)
+        if self._nav_mid_cache != mid_key:
+            self._nav_mid_cache = mid_key
+            mid_str = center.center(mid_w) if mid_w > len(center) else center[:mid_w]
+            center_x = left_w * CHAR_W
+            # Pad to full mid_w to clear old text
+            self.tft.text(self.font, _pad(mid_str, mid_w), center_x, NAV_TY, center_color, hb)
+
+        # Right section (announce flash + node name)
+        if self._nav_right_cache != right_key:
+            self._nav_right_cache = right_key
+            right_x = (COLS - right_w) * CHAR_W
+            # Clear right area first (name length may change)
+            right_max = COLS - left_w - mid_w
+            self.tft.text(self.font, _pad(right_str, right_max), right_x, NAV_TY, self.NEON_CYAN, hb)
+            if ann:
+                self.tft.text(self.font, ann, right_x, NAV_TY, self.NEON_MAG, hb)
+
+        # Update composite cache key
+        self._cache[0] = bat_key + mid_key + right_key
 
     # --- Node list screen ---
 
@@ -349,11 +392,19 @@ class UI:
 
     # --- Chat screen ---
 
+    def _invalidate_chat_lines(self):
+        """Invalidate cached chat lines — call when messages change."""
+        self._chat_lines_cache = None
+
     def _build_chat_lines(self):
         """Build word-wrapped display lines for current chat.
-        Returns list of (is_mine, text, is_first, suffix_len, status, msg_idx, has_image)"""
+        Returns list of (is_mine, text, is_first, suffix_len, status, msg_idx, has_image, has_audio)"""
         if self.selected_peer is None:
             return []
+
+        # Return cached result if still valid
+        if self._chat_lines_cache is not None and self._chat_lines_peer == self.selected_peer:
+            return self._chat_lines_cache
 
         _suffix_map = {1: " ..", 2: " \xfb", 3: " !"}
         msgs = self.chat_history.get(self.selected_peer, [])
@@ -363,6 +414,7 @@ class UI:
             text = msg[1]
             status = msg[3] if len(msg) > 3 else 0
             has_image = msg[4] if len(msg) > 4 else False
+            has_audio = msg[5] if len(msg) > 5 else False
             if is_mine:
                 prefix = "me> "
             else:
@@ -377,7 +429,9 @@ class UI:
             for j, wl in enumerate(wrapped):
                 # status_suffix_len: how many chars of suffix on this line
                 slen = len(suffix) if (suffix and j == len(wrapped) - 1) else 0
-                lines.append((is_mine, wl, j == 0, slen, status, mi, has_image))
+                lines.append((is_mine, wl, j == 0, slen, status, mi, has_image, has_audio))
+        self._chat_lines_cache = lines
+        self._chat_lines_peer = self.selected_peer
         return lines
 
     def draw_chat(self):
@@ -410,8 +464,9 @@ class UI:
         view_start = max(0, view_end - _chat_rows)
         visible = lines[view_start:view_end]
 
-        # Track which visible lines have images
+        # Track which visible lines have images/audio
         self._visible_image_lines = {}  # display_row -> msg_idx
+        self._visible_audio_lines = {}  # display_row -> msg_idx
 
         # Clamp chat_cursor to visible range
         if self.chat_cursor >= len(visible):
@@ -422,11 +477,13 @@ class UI:
             y = BODY_Y + (i + 1) * CHAR_H
             ci = i + 2  # cache index (1=header, 2..12=chat rows)
             if i < len(visible):
-                is_mine, text, is_first, slen, status, msg_idx, has_image = visible[i]
+                is_mine, text, is_first, slen, status, msg_idx, has_image, has_audio = visible[i]
 
-                # Track image lines for click detection
+                # Track image/audio lines for click detection
                 if has_image and is_first:
                     self._visible_image_lines[i] = msg_idx
+                if has_audio and is_first:
+                    self._visible_audio_lines[i] = msg_idx
 
                 is_highlighted = (i == self.chat_cursor)
                 in_cache = (self.selected_peer, msg_idx) in self._image_cache if has_image and is_first else True
@@ -467,6 +524,14 @@ class UI:
                                 # Normal: magenta
                                 self.tft.text(self.font, "[image]", img_pos * CHAR_W, y,
                                               self.NEON_MAG, row_bg)
+                    # Voice rendering
+                    if has_audio:
+                        vpos = text.find("[voice]")
+                        if vpos >= 0:
+                            vc = self.YELLOW if is_highlighted else self.NEON_GREEN
+                            self.tft.text(self.font, "[voice]", vpos * CHAR_W, y, vc, row_bg)
+                            if is_highlighted:
+                                self.tft.fill_rect(0, y, 3, CHAR_H, self.NEON_GREEN)
                 if slen > 0 and status in _status_color:
                     sx = (len(text) - slen) * CHAR_W
                     self.tft.text(self.font, text[-slen:], sx, y, _status_color[status], row_bg)
@@ -540,9 +605,14 @@ class UI:
         gc.collect()
         spi_acquire_display()
         try:
-            import tjpgd_fast_xtensawin as tjpgd
+            data = self._viewing_image
+            # Detect format: WebP starts with RIFF....WEBP
+            if len(data) > 12 and data[:4] == b'RIFF' and data[8:12] == b'WEBP':
+                import webp_fast_xtensawin as _dec
+            else:
+                import tjpgd_fast_xtensawin as _dec
             # Decode and scale to screen size in native C
-            w, h, rgb565 = tjpgd.decode(self._viewing_image, SCREEN_W, SCREEN_H)
+            w, h, rgb565 = _dec.decode(data, SCREEN_W, SCREEN_H)
             # Reset display window to full screen before blit
             self.tft._set_window(0, 0, SCREEN_W - 1, SCREEN_H - 1)
             self.tft.fill(0x0000)
@@ -604,6 +674,8 @@ class UI:
         if self.state == STATE_IMAGE:
             self._exit_image_view()
             return True
+        elif self.state == STATE_RECORDING:
+            return self._handle_key_recording(ch, key)
         elif self.state == STATE_NODES:
             return self._handle_key_nodes(ch, key)
         elif self.state == STATE_SETTINGS:
@@ -627,7 +699,7 @@ class UI:
         if key == b'a' or key == b'A':
             if self.on_announce:
                 self.on_announce()
-            self.announce_flash = time.time()
+            self.announce_flash = time.ticks_ms()
             self.dirty = True
             return True
         elif key == b's' or key == b'S':
@@ -669,10 +741,56 @@ class UI:
                 self.dirty = True
             return True
         elif 0x20 <= ch < 0x7F:  # Printable
+            # 'r' or '0' (Sym+0 mic key) with empty input = start voice recording
+            if key in (b'r', b'R', b'0') and len(self.cmd_buf) == 0 and self.selected_peer:
+                self._enter_recording()
+                return True
             self.cmd_buf += key
             self._input_dirty = True
             return True
         return False
+
+    def _draw_recording(self):
+        """Draw recording screen."""
+        mid = BODY_ROWS // 2
+        for i in range(BODY_ROWS):
+            y = BODY_Y + i * CHAR_H
+            if i == mid - 1:
+                secs = str(int(self._rec_seconds))
+                self._draw_row_cached(i + 1, ("Recording... " + secs + "s").center(COLS),
+                                      y, self.NEON_MAG)
+            elif i == mid + 1:
+                self._draw_row_cached(i + 1, "Enter=send  Esc=cancel".center(COLS),
+                                      y, self.DIM_CYAN)
+            else:
+                self._draw_row_cached(i + 1, "", y, self.NEON_CYAN)
+        # Input area
+        self.tft.text(self.font, _pad(""), 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+
+    def _enter_recording(self):
+        """Switch to recording state."""
+        self._rec_seconds = 0
+        self.state = STATE_RECORDING
+        self._prev_state = -1
+        self._state_change_ms = time.ticks_ms()
+        self._cache = [''] * 15
+        self.dirty = True
+        if self.on_record_start:
+            self.on_record_start()
+
+    def _handle_key_recording(self, ch, key):
+        """Any key stops recording. Esc/Backspace=cancel, anything else=send."""
+        if ch == 0x1B or ch == 0x08:  # Esc or Backspace — cancel
+            send = False
+        else:
+            send = True  # Enter, space, any key — stop & send
+        if self.on_record_stop:
+            self.on_record_stop(send=send)
+        self.state = STATE_CHAT
+        self._state_change_ms = time.ticks_ms()
+        self._cache = [''] * 15
+        self.dirty = True
+        return True
 
     def _handle_key_settings(self, ch, key):
         if self._settings_page == _SET_MAIN:
@@ -718,6 +836,13 @@ class UI:
                 elif self._settings_idx == 3:  # LoRa reset
                     if self.on_lora_reset:
                         self.on_lora_reset()
+                    self._cache = [''] * 15
+                    self.dirty = True
+                    return True
+                elif self._settings_idx == 4:  # Volume
+                    self._volume = (self._volume + 1) % 11  # cycle 0-10
+                    if self.on_volume:
+                        self.on_volume(self._volume)
                     self._cache = [''] * 15
                     self.dirty = True
                     return True
@@ -887,7 +1012,9 @@ class UI:
         name_line = "Name: " + self.node_name
         lora_line = "LoRa: " + ("Online" if self.lora_online else "OFFLINE (click=reset)")
 
-        items = [wifi_line, tcp_line, name_line, lora_line]
+        vol_bar = "#" * self._volume + "." * (10 - self._volume)
+        vol_line = "Vol:  [" + vol_bar + "] " + str(self._volume)
+        items = [wifi_line, tcp_line, name_line, lora_line, vol_line]
         for i in range(BODY_ROWS - 1):
             y = BODY_Y + (i + 1) * CHAR_H
             if i < len(items):
@@ -1051,6 +1178,13 @@ class UI:
                     cache_key = (self.selected_peer, msg_idx)
                     if cache_key in self._image_cache:
                         self._enter_image_view(msg_idx)
+                # If cursor is on a voice line, play it
+                elif self.chat_cursor >= 0 and self.chat_cursor in self._visible_audio_lines:
+                    msg_idx = self._visible_audio_lines[self.chat_cursor]
+                    cache_key = (self.selected_peer, msg_idx)
+                    if cache_key in self._audio_cache and self.on_audio_play:
+                        audio_data, audio_mode = self._audio_cache[cache_key]
+                        self.on_audio_play(audio_data, audio_mode)
             elif self.state == STATE_SETTINGS:
                 self.handle_key(b'\x0D')
 
@@ -1113,7 +1247,7 @@ class UI:
 
     def _settings_scroll_down(self):
         if self._settings_page == _SET_MAIN:
-            if self._settings_idx < 3:  # 4 items: WiFi, TCP, Name, LoRa
+            if self._settings_idx < 4:  # 5 items: WiFi, TCP, Name, LoRa, Volume
                 self._settings_idx += 1
         elif self._settings_page == _SET_WIFI_SCAN:
             if self._settings_idx < len(self._wifi_networks) - 1:
@@ -1150,16 +1284,21 @@ class UI:
             self._peer_keys.append(dest_hash)
         self.dirty = True
 
-    def add_chat_message(self, dest_hash, is_mine, text, status=0, image=None):
+    def add_chat_message(self, dest_hash, is_mine, text, status=0, image=None, audio=None, audio_mode=None):
         """Add a message to chat history. Returns index of the added message."""
         if dest_hash not in self.chat_history:
             self.chat_history[dest_hash] = []
         hist = self.chat_history[dest_hash]
         has_image = image is not None
-        hist.append((is_mine, text, time.time(), status, has_image))
+        has_audio = audio is not None
+        hist.append((is_mine, text, time.time(), status, has_image, has_audio))
         if len(hist) > MAX_HISTORY:
             hist.pop(0)
         msg_idx = len(hist) - 1
+
+        # Cache audio data for replay
+        if audio is not None:
+            self._audio_cache[(dest_hash, msg_idx)] = (audio, audio_mode)
 
         # Cache image data (LRU eviction)
         if image is not None:
@@ -1186,6 +1325,7 @@ class UI:
         if self.state == STATE_CHAT:
             if self.selected_peer == dest_hash:
                 self.chat_scroll = 0
+                self._invalidate_chat_lines()
             # Invalidate body row cache — lines shift when new message arrives
             for i in range(1, BODY_ROWS + 1):
                 self._cache[i] = ''
@@ -1203,6 +1343,7 @@ class UI:
             has_image = old[4] if len(old) > 4 else False
             hist[index] = (old[0], old[1], old[2], status, has_image)
             if self.state == STATE_CHAT and self.selected_peer == dest_hash:
+                self._invalidate_chat_lines()
                 for i in range(1, BODY_ROWS + 1):
                     self._cache[i] = ''
                 self.dirty = True
@@ -1236,6 +1377,8 @@ class UI:
         elif self.state == STATE_CHAT:
             self.draw_chat()
             self.draw_input()
+        elif self.state == STATE_RECORDING:
+            self._draw_recording()
         self.dirty = False
         self._input_dirty = False
 
@@ -1290,6 +1433,14 @@ class UI:
                 await asyncio.sleep_ms(50)
                 continue
 
+            # Progress update: redraw center section only, no full clear
+            if self._progress_dirty and not self.dirty:
+                spi_acquire_display()
+                self._nav_mid_cache = ''  # force center section redraw
+                self.draw_navbar()
+                spi_release_display()
+                self._progress_dirty = False
+
             # Redraw: immediate for input line, throttled for full redraws
             if self._input_dirty and not self.dirty:
                 spi_acquire_display()
@@ -1305,11 +1456,13 @@ class UI:
             await asyncio.sleep_ms(10 if self.dirty or self._input_dirty else 100)
 
     async def battery_loop(self, spi_acquire_display, spi_release_display):
-        """Update battery reading every 10s."""
+        """Update battery reading every 10s, only redraw if changed."""
+        _last_bl = -1
         while True:
             self.update_battery()
-            if self._screen_on:
-                spi_acquire_display()
-                self.draw_navbar()
-                spi_release_display()
+            bl = 3 if self.bat_v > 3.9 else (2 if self.bat_v > 3.6 else (1 if self.bat_v > 3.3 else 0))
+            if bl != _last_bl and self._screen_on:
+                _last_bl = bl
+                self._nav_bat_cache = ''  # only invalidate battery section
+                self.dirty = True
             await asyncio.sleep(10)

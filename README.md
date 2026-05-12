@@ -4,7 +4,7 @@ Standalone LoRa + TCP messaging device running on the LilyGO T-Deck v1.
 Uses [micropython-reticulum](https://github.com/varna9000/micropython-reticulum/README.md) for Reticulum-compatible encrypted messaging over LoRa or WiFi TCP.
 
 
-Supports both **opportunistic** (single-packet) and **link-based** (direct) messaging, including **JPEG image transfer** with on-device decoding and full-screen display.
+Supports both **opportunistic** (single-packet) and **link-based** (direct) messaging, including **JPEG image transfer** with on-device decoding and full-screen display, and **Codec2 voice messages** compatible with meshchat.
 
 
 ![splash](images/splash.jpeg "Splash Screen")
@@ -16,7 +16,7 @@ Supports both **opportunistic** (single-packet) and **link-based** (direct) mess
 - **Radio**: Semtech SX1262 LoRa transceiver (shared SPI bus with display)
 - **Display**: ST7789 320x240 TFT (landscape)
 - **Input**: QWERTY keyboard (I2C) + trackball with click button
-- **Audio**: MAX98357A I2S amplifier — chirp on RX, blip on TX
+- **Audio**: MAX98357A I2S amplifier + ES7210 ADC microphone — Codec2 voice messaging
 - **Battery**: LiPo with ADC voltage monitoring
 
 ## Setup
@@ -64,14 +64,14 @@ mpremote mip install lora-sync
 Upload pre-compiled `.mpy` modules for best performance. All `.mpy` files are cross-compiled for the `xtensawin` architecture using `mpy-cross -march=xtensawin`.
 
 ```
-# Upload native C modules (crypto + JPEG decoder)
-mpremote cp lib/ed25519_fast_xtensawin.mpy lib/bz2_fast_xtensawin.mpy lib/tjpgd_fast_xtensawin.mpy :/lib/
+# Upload native C modules (crypto + JPEG + Codec2)
+mpremote cp lib/ed25519_fast_xtensawin.mpy lib/bz2_fast_xtensawin.mpy lib/tjpgd_fast_xtensawin.mpy lib/codec2_fast_xtensawin.mpy :/lib/
 
 # Upload uP-reticulum library (.mpy)
 mpremote cp -r lib/urns/ :/lib/urns/
 
 # Upload T-Deck app files
-mpremote cp tdeck_node.py ui.py sound.mpy tdeck_config.mpy :
+mpremote cp tdeck_node.py ui.py sound.py es7210.py tdeck_config.py :
 mpremote cp lib/st7789py.mpy lib/vga2_8x16.mpy :/lib/
 
 # Upload assets
@@ -127,6 +127,7 @@ The device starts on the node list screen showing discovered peers. Peers with u
 | Send message | Enter |
 | Navigate messages | Trackball up/down (moves highlight cursor) |
 | View image | Click trackball on a highlighted `[image]` line |
+| Record voice | Press `r` or `0` (empty input) |
 | Back to node list | Backspace (empty input) or Escape |
 
 Message delivery status is shown after each sent message:
@@ -139,6 +140,39 @@ Message delivery status is shown after each sent message:
 When a peer sends an image (JPEG via LXMF `FIELD_IMAGE`), it appears as `[image]` in magenta in the chat. Use the trackball to highlight the image line — the hint bar changes to `[click=view]`. Click to open a full-screen view scaled to 320x240. Press any key to return to chat.
 
 Images are decoded on-device using the native `tjpgd_fast` TJpgDec module with nearest-neighbor scaling. Up to 3 recent images are cached in RAM; older images appear dimmed with a strikethrough to indicate they've been evicted.
+
+### Voice Messages
+
+Press `r` (or `0`) with an empty input field to start recording a voice message. Speak into the mic, then press any key to stop and send, or Escape/Backspace to cancel. Voice messages are encoded with **Codec2 3200 bps** and sent via LXMF `FIELD_AUDIO` using link-based (DIRECT) delivery. They are compatible with [meshchat](https://github.com/liamcottle/reticulum-meshchat) and other LXMF clients that support Codec2.
+
+Received voice messages appear as `[voice]` in the chat. Highlight with the trackball and click to play.
+
+#### ES7210 Microphone — Technical Details
+
+Getting usable audio from the T-Deck's ES7210 ADC for Codec2 encoding required solving several hardware and software challenges:
+
+**MicroPython I2S limitations:**
+- MicroPython's `machine.I2S` has no MCLK output support — the ESP-IDF I2S peripheral can generate a phase-locked MCLK, but MicroPython hardcodes `mclk = I2S_GPIO_UNUSED`. MCLK is generated via PWM at 4.096 MHz on GPIO 48 as a workaround. This is asynchronous to BCLK/LRCK, causing periodic frame misalignment.
+- MicroPython forces stereo mode for I2S RX internally, even when `format=I2S.MONO` is specified. In MONO mode it extracts the **right** channel, but the T-Deck mic is on ADC1 (left channel). The driver uses `format=I2S.STEREO` and extracts the left channel manually.
+- The async MCLK causes a `[L, R, 0, 0]` repeating pattern — only every other stereo pair contains valid data. The driver reads at 16 kHz stereo and extracts valid left-channel samples with stride-8 byte offset, yielding 8 kHz mono for Codec2.
+
+**ES7210 register configuration:**
+- Register `0x08` must be `0x20` (slave mode). The default `0x00` is master mode — both ESP32 and ES7210 driving BCLK/LRCK causes bus contention and 88% zero samples.
+- LRCK divider = 256 (registers `0x04`/`0x05`) with 4.096 MHz MCLK gives 16 kHz sample rate.
+- PGA gain at maximum (37.5 dB, register value `0x1E`) for the MEMS microphone.
+- DLL power down (`0x06 = 0x04`) works better with async PWM MCLK than DLL enabled.
+
+**Codec2 encoding on ESP32 single-precision float:**
+- The ESP32-S3 has no double-precision FPU — all `double` operations are software-emulated (~5x slower).
+- Codec2's LPC-to-LSP conversion (`lpc_to_lsp()`) uses Chebyshev polynomial root-finding that fails systematically on single-precision float. The upstream codec2 was designed for x86 `double` precision. Meshtastic's ESP32 port only decodes — encoding was never shipped on ESP32.
+- **Fix**: The entire autocorrelation → Levinson-Durbin → bandwidth expansion → LSP root-finding pipeline runs in `double` precision. The Chebyshev polynomial evaluation uses the Clenshaw algorithm in double. The P/Q polynomial arrays and root search variables are all double. An adaptive step size (from Speex) narrows the search grid near interval edges where roots cluster.
+- Without this fix: 0/10 LSP roots found → codec2 output is silence or screeching. With the fix: 10/10 roots, 0% failure rate.
+- Post-filter is disabled (`lpc_pf = 0`) as it amplifies numerical errors from the remaining single-precision arithmetic in the synthesis path.
+
+**Recording architecture:**
+- Mic capture runs on a **separate thread** (`_thread`) on ESP32-S3's second core. The I2S `readinto()` call releases the GIL while waiting for DMA data, so the main async event loop (LoRa polling, keyboard, UI) runs freely on the first core.
+- The 240 KB recording buffer (15 seconds at 8 kHz 16-bit) is **pre-allocated at boot** and never freed, preventing heap fragmentation that would block the 39 KB codec2 native module from loading.
+- IIR DC offset removal is applied per-sample during capture: `dc = (dc * 31 + sample) >> 5`.
 
 ### Settings
 
@@ -194,6 +228,7 @@ When TCP is activated, LoRa is stopped (only one interface at a time). When TCP 
 | Keyboard SCL/SDA/PWR | 8, 18, 10 |
 | Trackball U/D/L/R/Click | 3, 15, 1, 2, 0 |
 | Speaker BCK/WS/DOUT | 7, 5, 6 |
+| Mic SCK/LRCK/DIN/MCLK | 47, 21, 14, 48 |
 | Battery ADC | 4 |
 
 ## Architecture
@@ -202,7 +237,8 @@ When TCP is activated, LoRa is stopped (only one interface at a time). When TCP 
 tdeck_node.py       Main entry: init hardware, wire LXMF callbacks to GUI
 tdeck_config.py     Pin definitions, radio parameters, TCP config, node name
 ui.py               Async GUI: node list, chat, settings, image viewer, diff-based drawing
-sound.py            I2S notification tones (RX chirp, TX blip)
+sound.py            I2S audio: notification tones, mic capture, PCM playback
+es7210.py           ES7210 ADC microphone driver (I2C register config)
 lib/st7789py.py     ST7789 display driver (pure Python)
 lib/vga2_8x16.py    8x16 VGA font
 lib/urns/           µReticulum networking stack (from micropython-reticulum)
@@ -215,6 +251,7 @@ lib/urns/           µReticulum networking stack (from micropython-reticulum)
 | `ed25519_fast_xtensawin.mpy` | 50 KB | Ed25519 signing/verification (~160x faster than pure Python) |
 | `bz2_fast_xtensawin.mpy` | 5 KB | BZ2 compression/decompression for message payloads |
 | `tjpgd_fast_xtensawin.mpy` | 5 KB | TJpgDec JPEG decoder with nearest-neighbor scaling |
+| `codec2_fast_xtensawin.mpy` | 46 KB | Codec2 3200/2400 bps voice codec (full double-precision LSP pipeline) |
 
 These are compiled as MicroPython native modules using `mpy-cross` and the ESP-IDF Xtensa toolchain. Source and Makefiles are in `tools/natmod/`.
 
@@ -246,11 +283,14 @@ Settings are stored as JSON in `/rns/settings.json` on the device flash. Saved f
 | `tdeck_node.py` | Main app — hardware init, Reticulum/LXMF setup, async event loop |
 | `tdeck_config.py` | All pin definitions, radio config, and TCP config |
 | `ui.py` | GUI state machine with cached drawing, image viewer, and async input |
-| `sound.py` | I2S tone generation for RX/TX notifications |
+| `sound.py` | I2S audio: tones, mic capture (ES7210 stride extraction), PCM playback |
+| `es7210.py` | ES7210 ADC mic driver — I2C register config, gain, slave mode |
 | `lib/st7789py.py` | Pure Python ST7789 driver |
 | `lib/vga2_8x16.py` | Bitmap font (8x16 pixels per character, 40 columns) |
 | `lib/urns/` | µReticulum stack — transport, LXMF, crypto, interfaces |
 | `lib/ed25519_fast_xtensawin.mpy` | Native Ed25519 crypto module |
 | `lib/bz2_fast_xtensawin.mpy` | Native BZ2 compression module |
 | `lib/tjpgd_fast_xtensawin.mpy` | Native JPEG decoder (TJpgDec) |
+| `lib/codec2_fast_xtensawin.mpy` | Native Codec2 voice codec |
 | `tools/natmod/tjpgd_fast/` | TJpgDec native module source + Makefile |
+| `tools/natmod/codec2_fast/` | Codec2 native module source + Makefile |

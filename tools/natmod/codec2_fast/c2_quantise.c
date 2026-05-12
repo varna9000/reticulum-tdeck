@@ -755,59 +755,35 @@ float speech_to_uq_lsps(float lsp[], float ak[], float Sn[], float w[],
         return 0.0;
     }
 
-    /* Full double-precision pipeline: autocorrelation → LPC → BW expansion → LSP.
-       ESP32 single-precision float loses too much precision at each stage. */
+    /* Double-precision autocorrelation and Levinson-Durbin to preserve
+       precision for LSP root-finding on ESP32 single-precision float. */
     void autocorrelate_d(float[], double[], int, int);
+    void levinson_durbin_d(double[], float[], int);
     autocorrelate_d(Wn, R, m_pitch, order);
+    levinson_durbin_d(R, ak, order);
 
-    /* Levinson-Durbin: double R[] in, double ak_d[] out */
-    double ak_d[LPC_ORD + 1];
-    {
-        double sum, ee, k;
-        int j;
-        double a[LPC_ORD + 1][LPC_ORD + 1];
-        ee = R[0];
-        for (i = 1; i <= order; i++) {
-            sum = 0.0;
-            for (j = 1; j <= i - 1; j++)
-                sum += a[i-1][j] * R[i-j];
-            k = -(R[i] + sum) / ee;
-            if (k > 1.0) k = 1.0;
-            if (k < -1.0) k = -1.0;
-            a[i][i] = k;
-            for (j = 1; j <= i - 1; j++)
-                a[i][j] = a[i-1][j] + k * a[i-1][i-j];
-            ee *= (1.0 - k * k);
-        }
-        ak_d[0] = 1.0;
-        for (i = 1; i <= order; i++)
-            ak_d[i] = a[order][i];
-    }
-
-    /* Energy (before BW expansion) */
     E = 0.0;
     for (i = 0; i <= order; i++) {
-        E += (float)(ak_d[i] * R[i]);
+        E += ak[i] * (float)R[i];
     }
 
-    /* Copy to float ak[] for caller (codec2 needs float ak for other uses) */
-    for (i = 0; i <= order; i++)
-        ak[i] = (float)ak_d[i];
-
-    /* BW expansion in double, then LSP root-finding with double coefficients */
+    /* BW expansion in double precision, then pass to lpc_to_lsp.
+       Doing BW expansion in float loses precision in higher-order
+       coefficients, causing 2 LSP roots to be unfindable. */
+    {
+        float ak_bw[LPC_ORD + 1];
+        for (i = 0; i <= order; i++) {
+            double bw = 1.0;
+            int j;
+            for (j = 0; j < i; j++) bw *= 0.994;
+            ak_bw[i] = (float)((double)ak[i] * bw);
+        }
+        roots = lpc_to_lsp(ak_bw, order, lsp, 5, LSP_DELTA1);
+    }
+    /* Also apply BW expansion to ak[] in-place (upstream convention) */
     for (i = 0; i <= order; i++) {
-        double bw = 1.0;
-        for (int j = 0; j < i; j++) bw *= 0.994;
-        ak_d[i] *= bw;
+        ak[i] *= powf(0.994, (float)i);
     }
-
-    /* lpc_to_lsp already takes double P/Q internally — pass float but
-       from the double-precision coefficients */
-    float ak_f[LPC_ORD + 1];
-    for (i = 0; i <= order; i++)
-        ak_f[i] = (float)ak_d[i];
-
-    roots = lpc_to_lsp(ak_f, order, lsp, 5, LSP_DELTA1);
     _lsp_calls++;
     _lsp_last_roots = roots;
 

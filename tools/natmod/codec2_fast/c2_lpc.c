@@ -201,9 +201,10 @@ void levinson_durbin(float R[],    /* order+1 autocorrelation coeff */
     lpcs[0] = 1.0f;
 }
 
-void levinson_durbin_d(double R[], float lpcs[], int order)
+void levinson_durbin_dd(double R[], double lpcs[], int order)
 {
-    /* Full double precision — R[] input is also double. */
+    /* Full double precision — R[] in, double lpcs[] out.
+       Preserves precision for BW expansion + LSP root-finding. */
     double sum, e, k;
     int i, j;
     double a[LPC_ORD + 1][LPC_ORD + 1];
@@ -224,9 +225,9 @@ void levinson_durbin_d(double R[], float lpcs[], int order)
         e *= (1.0 - k * k);
     }
     for (i = 1; i <= order; i++) {
-        lpcs[i] = (float)a[order][i];
+        lpcs[i] = a[order][i];
     }
-    lpcs[0] = 1.0f;
+    lpcs[0] = 1.0;
 }
 
 /*---------------------------------------------------------------------------*\
