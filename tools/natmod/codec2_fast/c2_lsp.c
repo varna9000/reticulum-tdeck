@@ -258,30 +258,27 @@ void lsp_to_lpc(float *lsp, float *ak, int order)
 /*  int order     	order of LPC coefficients 			*/
 
 {
+    /* Double precision throughout — float cascaded polynomial accumulation
+       causes synthesis filter distortion on ESP32 single-precision FPU. */
     int i, j;
-    float xout1, xout2, xin1, xin2;
-    float *pw, *n1, *n2, *n3, *n4 = 0;
+    double xout1, xout2, xin1, xin2;
+    double *pw, *n1, *n2, *n3, *n4 = 0;
 
-#ifdef LPC_ORD
-    float freq[LPC_ORD];
-    float Wp[(LPC_ORD * 4) + 2];
+    double freq[LPC_ORD];
+    double Wp[(LPC_ORD * 4) + 2];
     assert(order == LPC_ORD);
-#else
-    float freq[order];
-    float Wp[(order * 4) + 2];
-#endif
 
     /* convert from radians to the x=cos(w) domain */
 
     for (i = 0; i < order; i++) {
-        freq[i] = cosf(lsp[i]);
+        freq[i] = (double)cosf(lsp[i]);
     }
 
     pw = Wp;
 
     /* initialise contents of array */
 
-    for (i = 0; i <= 4 * (order / 2) + 1; i++) { /* set contents of buffer to 0 */
+    for (i = 0; i <= 4 * (order / 2) + 1; i++) {
         *pw++ = 0.0;
     }
 
@@ -300,8 +297,8 @@ void lsp_to_lpc(float *lsp, float *ak, int order)
             n2 = n1 + 1;
             n3 = n2 + 1;
             n4 = n3 + 1;
-            xout1 = xin1 - 2 * (freq[2 * i]) * *n1 + *n2;
-            xout2 = xin2 - 2 * (freq[2 * i + 1]) * *n3 + *n4;
+            xout1 = xin1 - 2.0 * freq[2 * i] * *n1 + *n2;
+            xout2 = xin2 - 2.0 * freq[2 * i + 1] * *n3 + *n4;
             *n2 = *n1;
             *n4 = *n3;
             *n1 = xin1;
@@ -311,7 +308,7 @@ void lsp_to_lpc(float *lsp, float *ak, int order)
         }
         xout1 = xin1 + *(n4 + 1);
         xout2 = xin2 - *(n4 + 2);
-        ak[j] = (xout1 + xout2) * 0.5;
+        ak[j] = (float)((xout1 + xout2) * 0.5);
         *(n4 + 1) = xin1;
         *(n4 + 2) = xin2;
 

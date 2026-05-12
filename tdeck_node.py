@@ -838,9 +838,8 @@ async def _play_audio(audio_data, codec_mode):
             if DEBUG >= 1:
                 print("[Audio] decode start:", n_frames, "frames, mode:", codec_mode,
                       "mem:", gc.mem_free())
-            gain = 10
-            # Batch decode in C — keeps codec2 pointer on C stack (GC-safe)
-            pcm = _codec2_mod.decode(audio_data, codec_mode, gain)
+            # Batch decode — gain=1 (no amplification, MAX98357A handles volume)
+            pcm = _codec2_mod.decode(audio_data, codec_mode, 1)
             if DEBUG >= 1:
                 print("[Audio] decoded", len(pcm), "B")
             gc.collect()
@@ -864,7 +863,8 @@ async def _play_audio(audio_data, codec_mode):
         gui.dirty = True
         return
 
-    # Play
+    # Play on thread — I2S write() releases GIL while DMA drains,
+    # so main event loop (LoRa, keyboard) keeps running without gaps
     gc.collect()
     await asyncio.sleep_ms(50)
     gui._audio_status = "playing"
@@ -872,12 +872,25 @@ async def _play_audio(audio_data, codec_mode):
     gui.dirty = True
     if DEBUG >= 1:
         print("[Audio] playing", len(pcm), "B PCM")
-    chunk = 1600  # 100ms at 8kHz 16-bit mono
-    i = 0
-    while i < len(pcm):
-        sound.play_pcm(pcm[i:i + chunk])
-        i += chunk
-        await asyncio.sleep_ms(5)
+
+    import _thread
+    _playing = True
+    def _play_thread(pcm_data):
+        nonlocal _playing
+        try:
+            chunk = 1600  # 100ms at 8kHz 16-bit mono
+            i = 0
+            while i < len(pcm_data):
+                sound.play_pcm(pcm_data[i:i + chunk])
+                i += chunk
+        except:
+            pass
+        _playing = False
+
+    _thread.start_new_thread(_play_thread, (pcm,))
+    while _playing:
+        await asyncio.sleep_ms(50)
+
     if DEBUG >= 1:
         print("[Audio] playback complete")
     gui._audio_status = None

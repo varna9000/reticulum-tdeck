@@ -758,9 +758,9 @@ float speech_to_uq_lsps(float lsp[], float ak[], float Sn[], float w[],
     /* Double-precision autocorrelation and Levinson-Durbin to preserve
        precision for LSP root-finding on ESP32 single-precision float. */
     void autocorrelate_d(float[], double[], int, int);
-    void levinson_durbin_d(double[], float[], int);
+    void levinson_durbin_dd(double[], float[], int);
     autocorrelate_d(Wn, R, m_pitch, order);
-    levinson_durbin_d(R, ak, order);
+    levinson_durbin_dd(R, ak, order);
 
     E = 0.0;
     for (i = 0; i <= order; i++) {
