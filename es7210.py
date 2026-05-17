@@ -119,14 +119,15 @@ class ES7210:
         time.sleep_ms(100)
 
     def start(self):
-        """Enable ADC clock."""
-        self._wr(0x01, 0x00)
+        """Enable ADC clock. ADC+PGA stay powered between recordings
+        to avoid disrupting the analog path with power register writes."""
+        self._wr(0x01, 0x00)  # enable clock
 
     def stop(self):
-        """Disable ADC clock, power down."""
-        self._wr(0x01, 0x7F)
-        self._wr(0x4B, 0xFF)
-        self._wr(0x4C, 0xFF)
+        """Disable ADC clock only. ADC+PGA stay powered so next start()
+        doesn't need to re-power them (writing 0x4B/0x4C while running
+        can glitch the output, and forgetting to restore them was a bug)."""
+        self._wr(0x01, 0x7F)  # stop clock only
 
     def set_gain(self, gain):
         """Set gain on all mics. Use GAIN_* constants."""

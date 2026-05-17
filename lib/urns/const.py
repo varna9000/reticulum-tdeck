@@ -97,6 +97,9 @@ MAX_OUTGOING_RESOURCES = const(2)
 TRANSPORT_HOPLIMIT    = const(128)
 
 # Timing
+PATH_EXPIRY           = const(60 * 30)             # 30 min — default path TTL
+PATH_EXPIRY_ROAMING   = const(60 * 5)              # 5 min — path TTL for roaming interfaces
+ROAMING_ANNOUNCE_INTERVAL = const(90)              # 90 s — re-announce for roaming
 RATCHET_EXPIRY        = const(60 * 60 * 24 * 30)  # 30 days
 RATCHET_COUNT         = const(512)
 RATCHET_INTERVAL      = const(30 * 60)  # 30 min

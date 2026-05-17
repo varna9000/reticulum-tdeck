@@ -21,49 +21,59 @@ Supports both **opportunistic** (single-packet) and **link-based** (direct) mess
 
 ## Setup
 
-### 1. Install mpremote
+### Option A: Flash Pre-built Firmware (Recommended)
 
-`mpremote` is the official MicroPython tool for transferring files and managing the board over USB.
+The pre-built firmware includes everything — MicroPython, the ST7789 C display driver, all frozen Python modules, native C modules, LoRa drivers, and app files. One flash, zero extra steps.
 
-**macOS (Homebrew):**
-```
-brew install mpremote
-```
+**Requirements:** `esptool` (`pip install esptool` or `brew install esptool`)
 
-**pip (any platform):**
-```
-pip install mpremote
+**Flash:**
+```bash
+esptool --chip esp32s3 --port /dev/cu.usbmodem* erase-flash
+esptool --chip esp32s3 --port /dev/cu.usbmodem* write-flash 0x0 tools/firmware_build/tdeck_firmware.bin
 ```
 
-**uv (any platform):**
+The T-Deck must be in **download mode** to flash: short GPIO0 to GND while pressing reset, then release. The device boots automatically after flashing.
+
+**What's in the firmware:**
+
+| Layer | Contents |
+|---|---|
+| **Frozen in ROM** | ui.py, sound.py, es7210.py, vga2_8x16 font, full urns/ stack (reticulum, LXMF, crypto, interfaces) |
+| **C driver in ROM** | Russ Hughes st7789_mpy — DMA-accelerated ST7789 display driver |
+| **On filesystem** | main.py (tdeck_node.py), tdeck_config.py, natmod .mpy files, lora-sx126x + lora-sync drivers, logo.jpg |
+
+Frozen modules execute directly from flash ROM — zero RAM overhead, instant imports. The two user-editable files (`main.py` and `tdeck_config.py`) are on the filesystem so users can modify pin configs, radio parameters, or app behavior without rebuilding firmware.
+
+### Option B: Manual Setup (Development)
+
+For development or if you prefer stock MicroPython without a custom firmware build.
+
+#### 1. Install mpremote
+
 ```
-uv tool install mpremote
+brew install mpremote        # macOS
+pip install mpremote         # any platform
 ```
 
-Verify it works:
-```
-mpremote connect list
-```
-You should see your T-Deck listed as a USB serial device. If not, check your USB cable (must be data-capable, not charge-only).
-
-### 2. Flash MicroPython
+#### 2. Flash MicroPython
 
 Flash MicroPython v1.24+ for ESP32-S3 (with Octal-SPIRAM) to the T-Deck.
 
 Download from: https://micropython.org/download/ESP32_GENERIC_S3/
 
-### 3. Install LoRa driver
+#### 3. Install LoRa driver
 
 ```
 mpremote mip install lora-sx126x
 mpremote mip install lora-sync
 ```
 
-### 4. Upload files
+#### 4. Upload files
 
 Upload pre-compiled `.mpy` modules for best performance. All `.mpy` files are cross-compiled for the `xtensawin` architecture using `mpy-cross -march=xtensawin`.
 
-```
+```bash
 # Upload native C modules (crypto + JPEG + Codec2)
 mpremote cp lib/ed25519_fast_xtensawin.mpy lib/bz2_fast_xtensawin.mpy lib/tjpgd_fast_xtensawin.mpy lib/codec2_fast_xtensawin.mpy :/lib/
 
@@ -80,9 +90,9 @@ mpremote cp logo.jpg :
 
 > **Note**: Upload `.mpy` files instead of `.py` for faster boot, lower RAM usage, and ~65% less flash storage. The entry point `tdeck_node.py` can also be `.mpy`.
 
-### 5. Configure
+### Configure
 
-Edit `tdeck_config.py`:
+Edit `tdeck_config.py` (on-device or before flashing):
 
 - `NODE_NAME` — default display name broadcast in announces (default: `"T-Deck"`). Can be changed at runtime from Settings.
 - `DEBUG` — `0` = silent, `1` = basic, `2` = verbose
@@ -94,14 +104,11 @@ These are compatible with RNode firmware and reference Reticulum.
 
 Default TCP settings: connects to `TCP_CONFIG["target_host"]` on port `4242`. The remote machine needs a Reticulum `TCPServerInterface` listening on that port.
 
-### 6. Run
+### Run
 
-```python
-import tdeck_node
-```
+The pre-built firmware starts automatically — `main.py` runs `tdeck_node` on boot.
 
-Or set as `main.py` for autostart:
-
+For manual setup:
 ```
 mpremote cp tdeck_node.py :/main.py
 ```
@@ -234,17 +241,17 @@ When TCP is activated, LoRa is stopped (only one interface at a time). When TCP 
 ## Architecture
 
 ```
-tdeck_node.py       Main entry: init hardware, wire LXMF callbacks to GUI
-tdeck_config.py     Pin definitions, radio parameters, TCP config, node name
-ui.py               Async GUI: node list, chat, settings, image viewer, diff-based drawing
-sound.py            I2S audio: notification tones, mic capture, PCM playback
-es7210.py           ES7210 ADC microphone driver (I2C register config)
-lib/st7789py.py     ST7789 display driver (pure Python)
-lib/vga2_8x16.py    8x16 VGA font
-lib/urns/           µReticulum networking stack (from micropython-reticulum)
+main.py             App entry (tdeck_node.py renamed) — on filesystem, user-editable
+tdeck_config.py     Pin definitions, radio parameters — on filesystem, user-editable
+ui.py               Async GUI: node list, chat, settings, image viewer  [frozen in ROM]
+sound.py            I2S audio: notification tones, mic capture, playback [frozen in ROM]
+es7210.py           ES7210 ADC microphone driver (I2C register config)  [frozen in ROM]
+lib/vga2_8x16.py    8x16 VGA font                                      [frozen in ROM]
+lib/urns/           µReticulum networking stack                          [frozen in ROM]
+st7789              Russ Hughes C display driver (DMA-accelerated)      [compiled in firmware]
 ```
 
-### Native C Modules (.mpy)
+### Native C Modules (.mpy) — on filesystem
 
 | Module | Size | Purpose |
 |---|---|---|
@@ -252,12 +259,30 @@ lib/urns/           µReticulum networking stack (from micropython-reticulum)
 | `bz2_fast_xtensawin.mpy` | 5 KB | BZ2 compression/decompression for message payloads |
 | `tjpgd_fast_xtensawin.mpy` | 5 KB | TJpgDec JPEG decoder with nearest-neighbor scaling |
 | `codec2_fast_xtensawin.mpy` | 46 KB | Codec2 3200/2400 bps voice codec (full double-precision LSP pipeline) |
+| `webp_fast_xtensawin.mpy` | — | WebP image decoder |
 
 These are compiled as MicroPython native modules using `mpy-cross` and the ESP-IDF Xtensa toolchain. Source and Makefiles are in `tools/natmod/`.
 
 ### SPI Bus Sharing
 
 Display and LoRa share SPI1 (SCK=40, MOSI=41). Bus arbitration is CS-based only — display CS is deasserted during LoRa operations and vice versa. No SPI reinit at runtime.
+
+### ST7789 C Display Driver
+
+The custom firmware embeds the [Russ Hughes st7789_mpy](https://github.com/russhughes/st7789_mpy) C driver as a `USER_C_MODULE`. This provides DMA-accelerated SPI writes — `fill_rect`, `text`, and `blit_buffer` are 10-50x faster than the pure Python `st7789py` driver.
+
+**Key integration details:**
+
+- **Explicit `init()` required.** Unlike the pure Python driver which initializes in `__init__`, the C driver's constructor does not send the ST7789 init sequence. `tft.init()` must be called after constructing the `ST7789` object. Without this, the display stays blank (backlight on, no pixel data).
+- **Fallback mechanism.** `tdeck_node.py` tries `import st7789` (C driver) first, falling back to `import st7789py as st7789` (pure Python). A `_st7789_c` flag tracks which driver loaded so `init()` is only called for the C driver.
+- **API compatibility.** The C driver's `text()`, `fill()`, `fill_rect()`, and `blit_buffer()` have identical signatures to the pure Python driver. The `vga2_8x16` bitmap font works with both.
+- **GIL behavior.** The C driver holds the Python GIL during SPI transfers (all SPI operations happen in C code). The pure Python driver released the GIL on each `spi.write()` call. This affects concurrent I2S mic recording — see below.
+
+### I2S Mic Buffer and GIL Contention
+
+The C display driver creates a GIL contention issue with mic recording. During display updates, the C driver holds the GIL for 10-30ms while pushing pixel data over SPI. The mic capture thread (running on core 1) cannot acquire the GIL during this time, so it cannot read from the I2S DMA buffer. If the DMA buffer fills up and wraps, captured audio has gaps and pitch artifacts.
+
+**Fix:** The I2S mic DMA buffer (`ibuf`) is set to 65536 bytes (~1 second at 16kHz stereo 16-bit) instead of the original 16384 bytes (256ms). This provides sufficient headroom for the mic DMA to buffer audio during any C driver SPI operation without overflow. The pure Python driver never needed this because each `spi.write()` released the GIL, giving the mic thread regular windows to read.
 
 ### Display Optimization
 
@@ -276,21 +301,192 @@ Settings are stored as JSON in `/rns/settings.json` on the device flash. Saved f
 - **DC-DC regulator mode** is required for TX (`use_dcdc: True`). The driver defaults to LDO which produces no RF output on the T-Deck.
 - **TCXO supply** must be set to 3.3V (`dio3_tcxo_millivolts: 3300`). Without it, modem init fails.
 
+## Firmware Integration Fixes
+
+Issues discovered and fixed when integrating the st7789 C driver into the custom firmware build:
+
+### 1. ST7789 C Driver: Missing `init()` Call
+
+**Symptom:** Display blank after boot — backlight on, no pixels.
+
+**Root cause:** The Russ Hughes C driver's `ST7789()` constructor does not auto-call `init()`. The pure Python `st7789py` driver sends the full ST7789 initialization sequence (SLPOUT, COLMOD, porch control, gamma, INVON, DISPON) inside `__init__`. The C driver defers this to an explicit `init()` method.
+
+**Fix:** Added `tft.init()` after `ST7789()` construction in `tdeck_node.py`, guarded by a `_st7789_c` flag so it's only called for the C driver.
+
+### 2. Frozen String/Bytes Concatenation in Link Handler
+
+**Symptom:** Incoming link requests fail with `TypeError: unsupported types for __add__: 'str', 'bytes'`. Outgoing links and opportunistic messages work fine.
+
+**Root cause:** A multi-line log statement in `link.py` line 91-94 used `+` concatenation to build a debug string. When compiled as frozen bytecode, MicroPython's optimizer evaluates multi-line `+` expressions differently, and one intermediate result triggered a `str + bytes` type error that doesn't occur when the same code runs from `.mpy` bytecode files.
+
+**Fix:** Replaced the `+` concatenation chain with `%` format string interpolation, which handles all types safely:
+```python
+# Before (fails when frozen):
+log("Link request on " + destination.hexhash[:8] + " link_id=" + self.link_id.hex()[:8] + ...)
+
+# After:
+_dbg = "Link request on %s link_id=%s mtu=%d ..." % (destination.hexhash[:8], self.link_id.hex()[:8], ...)
+log(_dbg, LOG_VERBOSE)
+```
+
+### 3. I2S Mic DMA Buffer Overflow During Recording
+
+**Symptom:** Voice recordings have gaps and high-pitched artifacts — patches of voice with stretches of silence.
+
+**Root cause:** The C display driver holds the Python GIL during all SPI operations (10-30ms per draw call). The mic capture thread on core 1 cannot acquire the GIL to read from the I2S DMA buffer during this time. With the original 16 KB I2S buffer (256ms at 16kHz stereo), the buffer overflows during display updates, causing the DMA to wrap and corrupt captured audio.
+
+The pure Python driver never had this issue because each `spi.write()` call released the GIL, giving the mic thread regular windows to read.
+
+**Fix:** Increased the I2S mic DMA buffer from 16 KB to 65 KB (~1 second of buffering). This provides sufficient headroom for the DMA to accumulate audio during any C driver GIL hold without overflow.
+
+```python
+# sound.py — I2S mic init
+ibuf=65536,  # 1s buffer — C display driver holds GIL during SPI
+```
+
+### 4. C Driver UTF-8 Font Rendering for Chars > 0x7F
+
+**Symptom:** The `√` delivery checkmark (`\xfb` in the vga2_8x16 bitmap font) renders as two wrong characters.
+
+**Root cause:** The C driver's `text()` method receives Python strings via `mp_obj_str_get_str()`, which returns UTF-8 encoded C strings. Characters above 0x7F (like `\xfb` = U+00FB) become multi-byte UTF-8 sequences (`0xC3 0xBB`). The rendering loop then treats each UTF-8 byte as a separate character index into the font bitmap, producing two wrong glyphs.
+
+The pure Python driver doesn't have this issue because Python's `ord()` correctly returns the single integer 0xFB for indexing.
+
+**Fix:** Added a `_tb()` helper in `ui.py` that converts strings to raw bytes via `ord()` before passing to `tft.text()`. The C driver has a separate code path for `bytes` arguments that reads raw byte values without UTF-8 interpretation. MicroPython lacks a `latin-1` codec (`str.encode('latin-1')` silently falls back to UTF-8), so the conversion must be done manually.
+
+```python
+@staticmethod
+def _tb(text):
+    """Convert text to bytes for C display driver."""
+    return bytes([ord(c) for c in text]) if isinstance(text, str) else text
+```
+
+Applied to all `tft.text()` calls that may contain chars > 0x7F (the full chat row draw and the colored status suffix overlay).
+
+## Building the Firmware
+
+The pre-built `tdeck_firmware.bin` bundles everything into a single flashable image. To rebuild it from source:
+
+### Prerequisites
+
+```bash
+brew install cmake ninja dfu-util    # macOS
+pip install esptool
+```
+
+### Build
+
+```bash
+cd tools && bash build_firmware.sh
+```
+
+First build takes ~20 minutes (clones ESP-IDF v5.2.3 + MicroPython v1.24.1 + st7789_mpy, installs Xtensa toolchain). Subsequent builds take ~30 seconds.
+
+The script:
+1. Clones and installs ESP-IDF v5.2.3 with ESP32-S3 toolchain
+2. Clones MicroPython v1.24.1 and builds `mpy-cross` (with `-Wno-error=gnu-folding-constant` for Apple Clang compatibility)
+3. Clones [Russ Hughes st7789_mpy](https://github.com/russhughes/st7789_mpy) C display driver
+4. Fetches all required submodules (berkeley-db, micropython-lib, tinyusb, micro-ecc, bt/lib_esp32c3_family)
+5. Builds MicroPython for `ESP32_GENERIC_S3` with `SPIRAM_OCT` variant and st7789 as `USER_C_MODULE`
+6. Freezes Python modules via `tdeck_manifest.py`
+7. Creates a FAT filesystem image (`vfs.bin`) with natmod files, LoRa drivers, app files, and logo
+8. Merges bootloader + partition table + app + VFS into a single `tdeck_firmware.bin` using `esptool merge-bin`
+
+### Firmware Image Layout
+
+| Offset | Contents | Size |
+|---|---|---|
+| `0x000000` | Bootloader | 19 KB |
+| `0x008000` | Partition table | 3 KB |
+| `0x010000` | MicroPython app (frozen modules + st7789 C driver) | ~1.7 MB |
+| `0x200000` | FAT VFS filesystem (natmods, lora, main.py, config, logo) | 6 MB |
+
+Total image: 8 MB (matches T-Deck flash size).
+
+### Frozen Module Manifest (`tdeck_manifest.py`)
+
+Modules frozen into the firmware ROM (not editable without rebuild):
+
+| Module | Purpose |
+|---|---|
+| `ui.py` | GUI state machine, cached drawing, image viewer |
+| `sound.py` | I2S audio, mic capture, PCM playback |
+| `es7210.py` | ES7210 ADC microphone I2C driver |
+| `vga2_8x16.py` | 8x16 bitmap font |
+| `urns/` | Full µReticulum stack — transport, LXMF, crypto, all interfaces |
+
+Intentionally **not frozen** (on filesystem, user-editable):
+
+| File | Purpose |
+|---|---|
+| `main.py` | App entry point (tdeck_node.py renamed) — hardware init, callbacks, event loop |
+| `tdeck_config.py` | Pin definitions, radio parameters, TCP config, node name |
+
+### VFS Filesystem Contents
+
+Files on the FAT filesystem partition (editable via mpremote):
+
+| File | Purpose |
+|---|---|
+| `main.py` | App entry — `tdeck_node.py` renamed for auto-start |
+| `tdeck_config.py` | User-editable hardware and radio config |
+| `lib/ed25519_fast_xtensawin.mpy` | Native Ed25519 crypto (natmod) |
+| `lib/bz2_fast_xtensawin.mpy` | Native BZ2 compression (natmod) |
+| `lib/codec2_fast_xtensawin.mpy` | Native Codec2 voice codec (natmod) |
+| `lib/tjpgd_fast_xtensawin.mpy` | Native JPEG decoder (natmod) |
+| `lib/webp_fast_xtensawin.mpy` | Native WebP decoder (natmod) |
+| `lib/lora/__init__.mpy` | lora-sx126x driver |
+| `lib/lora/modem.mpy` | lora-sx126x modem |
+| `lib/lora/sx126x.mpy` | SX1262 radio driver |
+| `lib/lora/sync_modem.mpy` | lora-sync synchronous modem |
+| `logo.jpg` | Splash screen image |
+
+Natmod `.mpy` files contain native machine code and cannot be frozen — they must stay on the filesystem. The LoRa driver packages (`lora-sx126x`, `lora-sync`) are third-party and installed via `mip`; copies are cached in `tools/firmware_build/vfs_staging/` for offline builds.
+
+### Build Options
+
+```bash
+bash build_firmware.sh              # Full build with frozen modules + VFS
+bash build_firmware.sh --no-freeze  # st7789 C driver only, no frozen modules
+```
+
+### Why Not Freeze Natmods?
+
+MicroPython's freeze system compiles `.py` files to bytecode and embeds them in ROM. Natmod `.mpy` files contain **native Xtensa machine code** (compiled C), not bytecode — they are loaded by the dynamic linker at runtime and cannot be frozen. They must remain on the FAT filesystem.
+
 ## Files
+
+### App Files
+
+| File | Location | Description |
+|---|---|---|
+| `tdeck_node.py` | Filesystem (as `main.py`) | Main app — hardware init, Reticulum/LXMF setup, async event loop |
+| `tdeck_config.py` | Filesystem | All pin definitions, radio config, and TCP config |
+| `ui.py` | Frozen in ROM | GUI state machine with cached drawing, image viewer, and async input |
+| `sound.py` | Frozen in ROM | I2S audio: tones, mic capture (ES7210 stride extraction), PCM playback |
+| `es7210.py` | Frozen in ROM | ES7210 ADC mic driver — I2C register config, gain, slave mode |
+| `lib/st7789py.py` | Frozen in ROM | Pure Python ST7789 driver (fallback if C driver unavailable) |
+| `lib/vga2_8x16.py` | Frozen in ROM | Bitmap font (8x16 pixels per character, 40 columns) |
+| `lib/urns/` | Frozen in ROM | µReticulum stack — transport, LXMF, crypto, interfaces |
+
+### Native Modules (on filesystem)
 
 | File | Description |
 |---|---|
-| `tdeck_node.py` | Main app — hardware init, Reticulum/LXMF setup, async event loop |
-| `tdeck_config.py` | All pin definitions, radio config, and TCP config |
-| `ui.py` | GUI state machine with cached drawing, image viewer, and async input |
-| `sound.py` | I2S audio: tones, mic capture (ES7210 stride extraction), PCM playback |
-| `es7210.py` | ES7210 ADC mic driver — I2C register config, gain, slave mode |
-| `lib/st7789py.py` | Pure Python ST7789 driver |
-| `lib/vga2_8x16.py` | Bitmap font (8x16 pixels per character, 40 columns) |
-| `lib/urns/` | µReticulum stack — transport, LXMF, crypto, interfaces |
 | `lib/ed25519_fast_xtensawin.mpy` | Native Ed25519 crypto module |
 | `lib/bz2_fast_xtensawin.mpy` | Native BZ2 compression module |
 | `lib/tjpgd_fast_xtensawin.mpy` | Native JPEG decoder (TJpgDec) |
 | `lib/codec2_fast_xtensawin.mpy` | Native Codec2 voice codec |
+| `lib/webp_fast_xtensawin.mpy` | Native WebP image decoder |
+| `lib/lora/` | SX1262 LoRa driver (lora-sx126x + lora-sync) |
+
+### Build Tools
+
+| File | Description |
+|---|---|
+| `tools/build_firmware.sh` | Builds custom MicroPython firmware with st7789 C driver + frozen modules |
+| `tools/flash_tdeck.sh` | Flashes firmware + uploads natmod files via mpremote |
+| `tools/tdeck_manifest.py` | MicroPython frozen module manifest |
 | `tools/natmod/tjpgd_fast/` | TJpgDec native module source + Makefile |
 | `tools/natmod/codec2_fast/` | Codec2 native module source + Makefile |
+| `tools/natmod/webp_fast/` | WebP native module source + Makefile |

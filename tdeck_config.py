@@ -42,6 +42,12 @@ SPK_BCK  = 7
 SPK_WS   = 5
 SPK_DOUT = 6
 
+# --- Microphone (ES7210 I2S ADC) ---
+MIC_DIN  = 14   # I2S Data In
+MIC_SCK  = 47   # I2S Serial Clock
+MIC_LRCK = 21   # I2S Left/Right Clock
+MIC_MCLK = 48   # Master Clock
+
 # --- LoRa radio config ---
 LORA_CONFIG = {
     "type": "LoRaInterface",

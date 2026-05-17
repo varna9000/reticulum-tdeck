@@ -63,7 +63,12 @@ def spi_release_lora():
 
 
 # --- Init display ---
-import st7789py as st7789
+try:
+    import st7789                       # C driver (firmware-embedded)
+    _st7789_c = True
+except ImportError:
+    import st7789py as st7789           # fallback: pure Python driver
+    _st7789_c = False
 import vga2_8x16 as font
 
 dc = Pin(DISP_DC, Pin.OUT)
@@ -72,6 +77,8 @@ bl.value(1)
 
 spi_acquire_display()
 tft = st7789.ST7789(spi, 240, 320, dc=dc, cs=_disp_cs, backlight=bl, rotation=1)
+if _st7789_c:
+    tft.init()                          # C driver requires explicit init
 tft.fill(0x0821)  # BG_DARK
 
 # Splash: render JPEG logo centered, then "Loading..." below
@@ -716,7 +723,7 @@ _rec_pos = 0
 def _on_record_start():
     global _rec_pos
     _rec_pos = 0
-    sound.start_recording()
+    sound.start_recording(_REC_CHUNK)
     import uasyncio as asyncio
     asyncio.create_task(_recording_loop())
 
@@ -743,17 +750,23 @@ gui._tcp_default = TCP_CONFIG["target_host"] + ":" + str(TCP_CONFIG["target_port
 def _mic_thread():
     """Mic capture thread — runs on core 1, reads I2S continuously.
     I2S readinto() releases the GIL while waiting for DMA data,
-    so the main thread (event loop, LoRa, keyboard) runs freely."""
+    so the main thread (event loop, LoRa, keyboard) runs freely.
+    Uses pre-allocated buffers — no allocations in the hot loop."""
     global _rec_pos
     chunk_bytes = _REC_CHUNK * 2
     try:
+        # Flush stale DMA data — discard first few chunks
+        flush = getattr(sound, '_flush_count', 0)
+        for _ in range(flush):
+            sound.read_mic_chunk(_REC_CHUNK)
+        # Record
+        mv = memoryview(_rec_buf)
         while sound.is_recording:
-            buf = _rec_buf
-            if buf is None or _rec_pos >= len(buf) - chunk_bytes:
+            if _rec_pos >= len(_rec_buf) - chunk_bytes:
                 break
-            chunk = sound.read_mic_chunk(_REC_CHUNK)
-            if chunk and buf is _rec_buf:  # check buf hasn't been freed
-                buf[_rec_pos:_rec_pos + chunk_bytes] = chunk
+            out = sound.read_mic_chunk(_REC_CHUNK)
+            if out:
+                mv[_rec_pos:_rec_pos + chunk_bytes] = out
                 _rec_pos += chunk_bytes
     except:
         pass
@@ -874,11 +887,13 @@ async def _play_audio(audio_data, codec_mode):
     def _play_thread(pcm_data):
         nonlocal _playing
         try:
-            chunk = 1600  # 100ms at 8kHz 16-bit mono
+            chunk = 3200  # 200ms at 8kHz 16-bit mono — larger chunks reduce gaps
+            mv = memoryview(pcm_data)  # zero-copy slicing
             i = 0
             while i < len(pcm_data):
-                sound.play_pcm(pcm_data[i:i + chunk])
-                i += chunk
+                end = min(i + chunk, len(pcm_data))
+                sound.play_pcm(mv[i:end])
+                i = end
         except:
             pass
         _playing = False

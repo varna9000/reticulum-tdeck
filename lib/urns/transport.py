@@ -5,7 +5,9 @@
 import os
 import time
 from . import const
-from .log import log, LOG_VERBOSE, LOG_DEBUG, LOG_ERROR, LOG_EXTREME, LOG_NOTICE, LOG_WARNING
+from .log import log, loglevel, LOG_VERBOSE, LOG_DEBUG, LOG_ERROR, LOG_EXTREME, LOG_NOTICE, LOG_WARNING
+
+_log_debug = loglevel >= LOG_DEBUG
 
 # Transport types (module-level for import compatibility)
 BROADCAST  = const.TRANSPORT_BROADCAST
@@ -24,11 +26,12 @@ class Transport:
     destinations = []
     pending_links = []
     active_links = []
-    packet_hashlist = []
+    packet_hashlist = []       # FIFO order for eviction
+    packet_hashset = set()     # O(1) dedup lookups
     receipts = []
     announce_table = {}
     destination_table = {}
-    path_table = {}          # dest_hash -> transport_id (from HDR_2 announces)
+    path_table = {}          # dest_hash -> (transport_id, timestamp, roaming) (from HDR_2 announces)
     blackholed_identities = []
 
     transport_enabled = False
@@ -91,7 +94,8 @@ class Transport:
             packet.sent = True
             packet.sent_at = time.time()
 
-            log("TX " + str(len(raw)) + "B type=" + str(packet.packet_type) + " ifaces=" + str(len(Transport.interfaces)), LOG_DEBUG)
+            if _log_debug:
+                log("TX " + str(len(raw)) + "B type=" + str(packet.packet_type) + " ifaces=" + str(len(Transport.interfaces)), LOG_DEBUG)
 
             for interface in Transport.interfaces:
                 if interface.online:
@@ -131,8 +135,10 @@ class Transport:
     def _cache_packet_hash(packet):
         packet_hash = packet.get_hash()
         if len(Transport.packet_hashlist) >= 256:
-            Transport.packet_hashlist.pop(0)
+            old = Transport.packet_hashlist.pop(0)
+            Transport.packet_hashset.discard(old)
         Transport.packet_hashlist.append(packet_hash)
+        Transport.packet_hashset.add(packet_hash)
 
     @staticmethod
     def _forward(raw, receiving_interface):
@@ -232,7 +238,8 @@ class Transport:
                 log("Inbound: unpack failed", LOG_DEBUG)
                 return
 
-            log("Inbound: type=" + str(packet.packet_type) + " dest=" + packet.destination_hash.hex(), LOG_DEBUG)
+            if _log_debug:
+                log("Inbound: type=" + str(packet.packet_type) + " dest=" + packet.destination_hash.hex(), LOG_DEBUG)
 
             packet.receiving_interface = interface
             packet.hops += 1
@@ -244,7 +251,7 @@ class Transport:
 
             # Check for duplicate
             packet_hash = packet.get_hash()
-            if packet_hash in Transport.packet_hashlist:
+            if packet_hash in Transport.packet_hashset:
                 log("Inbound: duplicate packet, dropping", LOG_DEBUG)
                 return
 
@@ -282,12 +289,18 @@ class Transport:
             # Record transport path from HDR_2 announces so outbound
             # DATA packets can be routed via the transport node.
             if packet.header_type == const.HDR_2 and packet.transport_id:
-                if len(Transport.path_table) < const.MAX_PATH_TABLE or packet.destination_hash in Transport.path_table:
-                    Transport.path_table[packet.destination_hash] = packet.transport_id
-                    log("Path: " + packet.destination_hash.hex()[:8] + " via transport " + packet.transport_id.hex()[:8], LOG_VERBOSE)
-            elif packet.header_type == const.HDR_1:
-                # Direct announce — remove transport path if any
-                Transport.path_table.pop(packet.destination_hash, None)
+                from .interfaces import Interface
+                roaming = packet.receiving_interface is not None and packet.receiving_interface.mode == Interface.MODE_ROAMING
+                existing = Transport.path_table.get(packet.destination_hash)
+                if existing is None or roaming:
+                    if len(Transport.path_table) < const.MAX_PATH_TABLE or existing is not None:
+                        Transport.path_table[packet.destination_hash] = (packet.transport_id, time.time(), roaming)
+                        log("Path: " + packet.destination_hash.hex()[:8] + " via transport " + packet.transport_id.hex()[:8], LOG_VERBOSE)
+            # NOTE: Do NOT clear path_table on HDR_1 announces.
+            # With LoRa, we may hear a direct HDR_1 announce from a peer
+            # that is too far for reliable data exchange.  Removing the
+            # transport path would force HDR_1 data packets, which
+            # transport nodes do not forward.
 
             app_data = Identity.recall_app_data(packet.destination_hash)
             if app_data:
@@ -358,6 +371,8 @@ class Transport:
     @staticmethod
     async def job_loop():
         """Main transport maintenance loop - run as async task"""
+        import gc
+        import uasyncio as asyncio
         while Transport._jobs_running:
             try:
                 now = time.time()
@@ -393,11 +408,21 @@ class Transport:
                     if l in Transport.active_links:
                         Transport.active_links.remove(l)
 
-                import gc
+                # Expire stale path_table entries
+                expired_paths = []
+                for dest_hash, entry in Transport.path_table.items():
+                    if isinstance(entry, tuple) and len(entry) >= 3:
+                        _, ts, roaming = entry
+                        ttl = const.PATH_EXPIRY_ROAMING if roaming else const.PATH_EXPIRY
+                        if now - ts > ttl:
+                            expired_paths.append(dest_hash)
+                for dh in expired_paths:
+                    del Transport.path_table[dh]
+                    log("Path expired: " + dh.hex()[:8], LOG_DEBUG)
+
                 gc.collect()
 
             except Exception as e:
                 log("Transport job error: " + str(e), LOG_ERROR)
 
-            import uasyncio as asyncio
-            await asyncio.sleep(0.25)
+            await asyncio.sleep(2)

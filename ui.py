@@ -209,21 +209,28 @@ class UI:
 
     # --- Drawing helpers ---
 
+    @staticmethod
+    def _tb(text):
+        """Convert text to bytes for C display driver (avoids UTF-8 mangling
+        of chars > 0x7F like the \\xfb checkmark in vga2_8x16 font).
+        MicroPython lacks latin-1 codec, so we use ord() per char."""
+        return bytes([ord(c) for c in text]) if isinstance(text, str) else text
+
     def _draw_row_cached(self, idx, text, y, fg, bg=None):
         """Draw row only if content changed. Returns True if drawn."""
         if self._cache[idx] == text:
             return False
         self._cache[idx] = text
-        self.tft.text(self.font, _pad(text), 0, y, fg, bg or self.BG_DARK)
+        self.tft.text(self.font, self._tb(_pad(text)), 0, y, fg, bg or self.BG_DARK)
         return True
 
     def _row(self, text, y, fg, bg=None):
         """Draw a full-width padded row — overwrites old content, no flicker."""
-        self.tft.text(self.font, _pad(text), 0, y, fg, bg or self.BG_DARK)
+        self.tft.text(self.font, self._tb(_pad(text)), 0, y, fg, bg or self.BG_DARK)
 
     def _text(self, text, x, y, fg, bg=None):
         """Draw text at pixel position."""
-        self.tft.text(self.font, text, x, y, fg, bg or self.BG_DARK)
+        self.tft.text(self.font, self._tb(text), x, y, fg, bg or self.BG_DARK)
 
     # --- Navbar ---
 
@@ -497,7 +504,7 @@ class UI:
                 row_bg = self.SEL_BG if is_highlighted else self.BG_DARK
 
                 padded = _pad(text)
-                self.tft.text(self.font, padded, 0, y, self.NEON_CYAN, row_bg)
+                self.tft.text(self.font, self._tb(padded), 0, y, self.NEON_CYAN, row_bg)
                 if is_first:
                     if is_mine:
                         self.tft.text(self.font, text[:4], 0, y, self.NEON_GREEN, row_bg)
@@ -534,7 +541,7 @@ class UI:
                                 self.tft.fill_rect(0, y, 3, CHAR_H, self.NEON_GREEN)
                 if slen > 0 and status in _status_color:
                     sx = (len(text) - slen) * CHAR_W
-                    self.tft.text(self.font, text[-slen:], sx, y, _status_color[status], row_bg)
+                    self.tft.text(self.font, self._tb(text[-slen:]), sx, y, _status_color[status], row_bg)
             else:
                 self._draw_row_cached(ci, "", y, self.NEON_CYAN)
 

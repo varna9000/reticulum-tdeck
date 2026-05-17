@@ -34,8 +34,8 @@ class Link:
 
     KEEPALIVE_INTERVAL  = 360   # seconds
     STALE_GRACE         = 720   # seconds
-    ESTABLISHMENT_TIMEOUT = 25  # seconds (extra margin for slow ECDH on ESP32)
-    CREATION_COOLDOWN   = 15    # min seconds between link creations (ESP32: ECDH ~5s)
+    ESTABLISHMENT_TIMEOUT = 75  # seconds (multi-hop LoRa: ~30s RTT + 5s ECDH + margin)
+    CREATION_COOLDOWN   = 5     # min seconds between link creations (allow retries over multi-hop)
     _last_creation      = 0
 
     def __init__(self, destination, packet):
@@ -82,15 +82,17 @@ class Link:
         self.incoming_resources = []
         self.outgoing_resources = []
         self.resource_concluded_callback = None
+        self.resource_started_callback = None
         self.remote_identified_callback = None
         self.packet_callback = None
         self.remote_identity = None
         self.sdu = self.mtu - const.HEADER_MAXSIZE - const.IFAC_MIN_SIZE
 
-        log("Link request on " + destination.hexhash[:8] + " link_id=" + self.link_id.hex()[:8] + " mtu=" + str(self.mtu)
-            + " hashable=" + str(len(hashable_part)) + "B pkt_data=" + str(len(packet.data)) + "B"
-            + " signalling=" + self._signalling_bytes.hex()
-            + " raw[0]=0x" + ("%02x" % packet.raw[0]), LOG_VERBOSE)
+        _dbg = "Link request on %s link_id=%s mtu=%d hashable=%dB pkt_data=%dB signalling=%s raw[0]=0x%02x" % (
+            destination.hexhash[:8], self.link_id.hex()[:8], self.mtu,
+            len(hashable_part), len(packet.data),
+            self._signalling_bytes.hex(), packet.raw[0])
+        log(_dbg, LOG_VERBOSE)
 
         # --- Check capacity and rate limit BEFORE expensive crypto ---
         # ECDH + signing takes ~5s on ESP32, blocking the entire event loop.
@@ -191,7 +193,9 @@ class Link:
         try:
             plaintext = self._token.decrypt(packet.data)
         except Exception as e:
-            log("Link " + self.link_id.hex()[:8] + " decrypt failed: " + str(e), LOG_DEBUG)
+            log("Link " + self.link_id.hex()[:8] + " decrypt failed ctx=0x"
+                + ("%02x" % packet.context) + " data=" + str(len(packet.data))
+                + "B: " + str(e), LOG_DEBUG)
             return
 
         self.last_activity = time.time()
@@ -356,7 +360,12 @@ class Link:
         if len(self.incoming_resources) >= const.MAX_INCOMING_RESOURCES:
             log("Link " + self.link_id.hex()[:8] + " too many incoming resources", LOG_DEBUG)
             return
-        Resource.accept(plaintext, self)
+        r = Resource.accept(plaintext, self)
+        if r and self.resource_started_callback:
+            try:
+                self.resource_started_callback(r)
+            except Exception as e:
+                log("Resource started callback error: " + str(e), LOG_ERROR)
 
     def _handle_resource_req(self, plaintext):
         """Handle resource part request (sender mode)."""
@@ -457,6 +466,18 @@ class Link:
         if self.status != Link.CLOSED:
             self.status = Link.CLOSED
             log("Link " + self.link_id.hex()[:8] + " torn down", LOG_VERBOSE)
+        # Break circular refs (MicroPython GC can't collect cycles)
+        self.destination = None
+        self.packet_callback = None
+        self.resource_concluded_callback = None
+        self.resource_started_callback = None
+        self.remote_identified_callback = None
+        for r in self.incoming_resources:
+            r.link = None
+        for r in self.outgoing_resources:
+            r.link = None
+        self.incoming_resources = []
+        self.outgoing_resources = []
 
     def __repr__(self):
         states = {0: "PENDING", 1: "ACTIVE", 2: "CLOSED"}
@@ -469,7 +490,7 @@ class OutgoingLink:
     PENDING = 0x00
     ACTIVE  = 0x01
     CLOSED  = 0x02
-    ESTABLISHMENT_TIMEOUT = 30  # seconds (ECDH verify ~7s on ESP32 + network RTT)
+    ESTABLISHMENT_TIMEOUT = 75  # seconds (multi-hop LoRa: ~30s RTT + ECDH + margin)
 
     def __init__(self, destination, established_callback=None, closed_callback=None):
         from .identity import Identity
@@ -735,6 +756,18 @@ class OutgoingLink:
                     self.closed_callback(self)
                 except:
                     pass
+        # Break circular refs (MicroPython GC can't collect cycles)
+        self.destination = None
+        self.established_callback = None
+        self.closed_callback = None
+        self.packet_callback = None
+        self.resource_concluded_callback = None
+        for r in self.incoming_resources:
+            r.link = None
+        for r in self.outgoing_resources:
+            r.link = None
+        self.incoming_resources = []
+        self.outgoing_resources = []
 
     def __repr__(self):
         states = {0: "PENDING", 1: "ACTIVE", 2: "CLOSED"}

@@ -188,6 +188,7 @@ class Resource:
         r.status = TRANSFERRING
         r.last_request_at = 0
         r.request_retries = 0
+        r.progress_callback = None
 
         # Register with link
         link.register_incoming_resource(r)
@@ -276,6 +277,12 @@ class Resource:
                 self.window_count += 1
                 log("Resource part " + str(i + 1) + "/" + str(self.total_parts) +
                     " for " + self.hash.hex()[:8], LOG_DEBUG)
+
+                if self.progress_callback:
+                    try:
+                        self.progress_callback(self.received_count, self.total_parts)
+                    except Exception:
+                        pass
 
                 if self.received_count == self.total_parts:
                     self.assemble()
