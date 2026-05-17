@@ -620,8 +620,6 @@ class UI:
                 import tjpgd_fast_xtensawin as _dec
             # Decode and scale to screen size in native C
             w, h, rgb565 = _dec.decode(data, SCREEN_W, SCREEN_H)
-            # Reset display window to full screen before blit
-            self.tft._set_window(0, 0, SCREEN_W - 1, SCREEN_H - 1)
             self.tft.fill(0x0000)
             self.tft.blit_buffer(rgb565, 0, 0, w, h)
             del rgb565
