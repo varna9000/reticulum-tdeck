@@ -49,18 +49,14 @@ MIC_LRCK = 21   # I2S Left/Right Clock
 MIC_MCLK = 48   # Master Clock
 
 # --- LoRa radio config ---
+# Board wiring (pins, TCXO, DC-DC, battery sense) comes from the
+# "tdeck_v1_sx1262" preset in lora_boards.py; explicit keys here override it.
 LORA_CONFIG = {
     "type": "LoRaInterface",
     "name": "T-Deck LoRa",
     "enabled": True,
-    "spi_bus": 1,
-    "sck_pin": LORA_SCK,
-    "mosi_pin": LORA_MOSI,
-    "miso_pin": LORA_MISO,
-    "cs_pin": LORA_CS,
-    "busy_pin": LORA_BUSY,
-    "dio1_pin": LORA_DIO1,
-    "reset_pin": LORA_RST,
+    "board": "tdeck_v1_sx1262",
+    # Mesh radio params — must match every node on the mesh
     "freq_khz": 868800,
     "sf": 8,
     "bw": "125",
@@ -69,10 +65,11 @@ LORA_CONFIG = {
     "preamble_len": 8,
     "crc_en": True,
     "syncword": 0x1424,
-    "dio2_rf_sw": True,
-    "dio3_tcxo_millivolts": 3300,  # T-Deck SX1262 TCXO supply voltage
-    "use_dcdc": True,  # DC-DC regulator mode (required for T-Deck TX)
-    # spi, spi_acquire, spi_release injected at runtime by tdeck_node.py
+    # Listen-before-talk (CSMA): defer TX while the channel reads at or
+    # above lbt_rssi dBm, up to lbt_max_ms. Set "lbt_rssi": None to disable.
+    "lbt_rssi": -100,
+    "lbt_max_ms": 2000,
+    # spi, spi_acquire, spi_release, on_status injected at runtime by tdeck_node.py
 }
 
 # --- TCP interface config (WiFi) ---
@@ -85,8 +82,23 @@ TCP_CONFIG = {
 }
 
 # --- Reticulum config ---
+from lora_boards import LORA_BOARDS
+
 CONFIG = {
     "loglevel": 3,
     "enable_transport": False,
+    "lora_boards": LORA_BOARDS,
     "interfaces": [LORA_CONFIG],
+    # Network time sync: adopt mesh time once per boot when min_sources
+    # independent peers agree within tolerance seconds (the T-Deck has no
+    # battery-backed RTC, and no NTP when LoRa-only). After a sync the
+    # stack re-announces so peers accept our post-boot announces.
+    "time_sync": {
+        "enabled": True,
+        "min_sources": 2,
+        "tolerance": 120,
+        # "trusted_nodes": ["<identity hash hex>"],  # optional authority mode
+    },
+    # Answer rnprobe probes (field debugging of multi-hop paths)
+    "probe": {"enabled": True},
 }

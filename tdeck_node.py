@@ -199,6 +199,10 @@ rns.setup_interfaces()
 spi_release_lora()
 gc.collect()
 
+# --- Battery sense (board-declared pin/divider; self-disabling) ---
+import adc_reader
+adc_reader.init_battery(CONFIG)
+
 if DEBUG >= 1:
     print("LXMF address:", dest.hexhash)
     print("Free memory:", gc.mem_free(), "bytes")
@@ -417,7 +421,12 @@ async def _async_send(dest_hash, text, msg_idx=None):
 
     try:
         msg = router.send_message(dest_hash, text)
-        if msg:
+        if msg is True:
+            # Queued behind a path request — leave status pending; the
+            # router re-sends by itself once a path is found.
+            if DEBUG >= 1:
+                print("[TX] Queued (path request) for", dest_hash.hex()[:8])
+        elif msg:
             sound.play_tx()
             if DEBUG >= 1:
                 print("[TX] Sent to", dest_hash.hex()[:8])
@@ -601,7 +610,9 @@ def _start_lora():
         for iface_config in rns.config.get("interfaces", []):
             if iface_config.get("type") == "LoRaInterface":
                 from urns.interfaces.lora import LoRaInterface
-                iface = LoRaInterface(iface_config)
+                # Manual path bypasses setup_interfaces(): resolve the
+                # board pinout preset here too
+                iface = LoRaInterface(rns._resolve_board(iface_config))
                 rns.interfaces.append(iface)
                 Transport.register_interface(iface)
                 _lora_task = asyncio.create_task(iface.poll_loop())
@@ -689,12 +700,22 @@ def tcp_toggle(enabled, host=None, port=None):
         return False
 
 
+def _apply_display_name(name):
+    """Propagate a new display name into the LXMF router and the announce
+    app_data (announce() and path responses read the router/default data,
+    not dest.display_name)."""
+    from urns import umsgpack
+    router.display_name = name
+    dest.display_name = name
+    dest.set_default_app_data(umsgpack.packb([name.encode("utf-8"), None, []]))
+
+
 def set_node_name(name):
     """Called by GUI when user changes node name."""
     global NODE_NAME
     NODE_NAME = name
     gui.node_name = name
-    dest.display_name = name
+    _apply_display_name(name)
     settings = _load_settings()
     settings["node_name"] = name
     _save_settings(settings)
@@ -811,7 +832,10 @@ async def _encode_and_send_voice(dest_hash, pcm_bytes):
         msg_idx = gui.add_chat_message(dest_hash, True, "[voice]", status=1)
         msg = router.send_message(dest_hash, "[voice]", fields=fields,
                                   desired_method=LXMessage.DIRECT)
-        if msg:
+        if msg is True:
+            # Queued behind a path request — leave status pending
+            pass
+        elif msg:
             gui.update_message_status(dest_hash, msg_idx, 2)
             sound.play_tx()
         else:
@@ -924,8 +948,7 @@ async def initial_announce():
 
 async def reannounce_loop():
     import uasyncio as asyncio
-    from lib.urns import const as _c
-    _interval = _c.ROAMING_ANNOUNCE_INTERVAL  # 90s for roaming, was 300s
+    _interval = 90  # seconds between periodic re-announces
     while True:
         await asyncio.sleep(_interval)
         try:
@@ -951,7 +974,7 @@ def _auto_connect_wifi():
     if saved_name:
         NODE_NAME = saved_name
         gui.node_name = saved_name
-        dest.display_name = saved_name
+        _apply_display_name(saved_name)
     ssid = settings.get("wifi_ssid")
     password = settings.get("wifi_pass")
     if ssid and password:

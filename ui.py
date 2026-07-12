@@ -5,7 +5,7 @@
 import time
 import gc
 import uasyncio as asyncio
-from machine import Pin, ADC
+from machine import Pin
 
 # Screen states
 STATE_NODES    = 0
@@ -135,9 +135,8 @@ class UI:
         self._tb_down.irq(trigger=Pin.IRQ_FALLING, handler=self._irq_handler_down)
         self._tb_click.irq(trigger=Pin.IRQ_FALLING, handler=self._irq_handler_click)
 
-        # Battery ADC
-        self._bat_adc = ADC(Pin(4))
-        self._bat_adc.atten(ADC.ATTN_11DB)
+        # Battery voltage comes from adc_reader (board-declared pin/divider,
+        # initialized by tdeck_node via adc_reader.init_battery)
 
         # Unread message tracking: dest_hash -> count
         self.unread = {}
@@ -1354,9 +1353,14 @@ class UI:
                 self.dirty = True
 
     def update_battery(self):
-        """Read battery voltage from ADC. T-Deck has voltage divider (x2)."""
-        raw = self._bat_adc.read()
-        self.bat_v = raw * 3.3 * 2 / 4095
+        """Read battery voltage via adc_reader (None if no battery sense)."""
+        try:
+            import adc_reader
+            v = adc_reader.battery_voltage()
+        except Exception:
+            v = None
+        if v is not None:
+            self.bat_v = v
 
     # --- Main draw ---
 

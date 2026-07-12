@@ -24,6 +24,8 @@ _root = os.environ["TDECK_ROOT"]
 freeze(_root, "ui.py")
 freeze(_root, "sound.py")
 freeze(_root, "es7210.py")
+freeze(_root, "lora_boards.py")
+freeze(_root, "adc_reader.py")
 
 # --- Font ---
 freeze(_root + "/lib", "vga2_8x16.py")
