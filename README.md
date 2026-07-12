@@ -81,7 +81,7 @@ mpremote cp lib/ed25519_fast_xtensawin.mpy lib/bz2_fast_xtensawin.mpy lib/tjpgd_
 mpremote cp -r lib/urns/ :/lib/urns/
 
 # Upload T-Deck app files
-mpremote cp tdeck_node.py ui.py sound.py es7210.py tdeck_config.py :
+mpremote cp tdeck_node.py ui.py sound.py es7210.py tdeck_config.py lora_boards.py adc_reader.py :
 mpremote cp lib/st7789py.mpy lib/vga2_8x16.mpy :/lib/
 
 # Upload assets
@@ -96,8 +96,9 @@ Edit `tdeck_config.py` (on-device or before flashing):
 
 - `NODE_NAME` — default display name broadcast in announces (default: `"T-Deck"`). Can be changed at runtime from Settings.
 - `DEBUG` — `0` = silent, `1` = basic, `2` = verbose
-- `LORA_CONFIG` — radio parameters (frequency, SF, BW, TX power, syncword)
+- `LORA_CONFIG` — mesh radio parameters (frequency, SF, BW, TX power, syncword) and listen-before-talk settings. Board wiring (pins, TCXO, DC-DC, battery sense) comes from the `tdeck_v1_sx1262` preset in `lora_boards.py`.
 - `TCP_CONFIG` — default TCP server address and port for WiFi mode
+- `CONFIG` — Reticulum options: transport mode, network time sync (adopts mesh time once per boot, then re-announces), rnprobe responder
 
 Default radio settings: **868.8 MHz, SF8, BW125, CR5, 22 dBm, syncword 0x1424**.
 These are compatible with RNode firmware and reference Reticulum.
@@ -412,6 +413,8 @@ Modules frozen into the firmware ROM (not editable without rebuild):
 | `ui.py` | GUI state machine, cached drawing, image viewer |
 | `sound.py` | I2S audio, mic capture, PCM playback |
 | `es7210.py` | ES7210 ADC microphone I2C driver |
+| `lora_boards.py` | LoRa board pinout presets (incl. `tdeck_v1_sx1262`) |
+| `adc_reader.py` | Board-declared battery/ADC voltage reader |
 | `vga2_8x16.py` | 8x16 bitmap font |
 | `urns/` | Full µReticulum stack — transport, LXMF, crypto, all interfaces |
 
@@ -465,9 +468,11 @@ MicroPython's freeze system compiles `.py` files to bytecode and embeds them in 
 | `ui.py` | Frozen in ROM | GUI state machine with cached drawing, image viewer, and async input |
 | `sound.py` | Frozen in ROM | I2S audio: tones, mic capture (ES7210 stride extraction), PCM playback |
 | `es7210.py` | Frozen in ROM | ES7210 ADC mic driver — I2C register config, gain, slave mode |
-| `lib/st7789py.py` | Frozen in ROM | Pure Python ST7789 driver (fallback if C driver unavailable) |
+| `lib/st7789py.py` | Filesystem (`/lib`, as `.mpy`) | Pure Python ST7789 driver (fallback if C driver unavailable) |
 | `lib/vga2_8x16.py` | Frozen in ROM | Bitmap font (8x16 pixels per character, 40 columns) |
-| `lib/urns/` | Frozen in ROM | µReticulum stack — transport, LXMF, crypto, interfaces |
+| `lib/urns/` | Frozen in ROM | µReticulum stack — transport, LXMF, crypto, interfaces. Synced from [uP-reticulum](https://github.com/varna9000/micropython-reticulum) @ `b2bc4f7`; the T-Deck-specific delta is documented in `TDECK-PATCHES.md` |
+| `lora_boards.py` | Frozen in ROM | Board pinout presets (T-Deck preset also contributed upstream) |
+| `adc_reader.py` | Frozen in ROM | Battery voltage via board-declared ADC pin + divider |
 
 ### Native Modules (on filesystem)
 
