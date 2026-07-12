@@ -65,9 +65,11 @@ LORA_CONFIG = {
     "preamble_len": 8,
     "crc_en": True,
     "syncword": 0x1424,
-    # Listen-before-talk (CSMA): defer TX while the channel reads at or
-    # above lbt_rssi dBm, up to lbt_max_ms. Set "lbt_rssi": None to disable.
-    "lbt_rssi": -100,
+    # Listen-before-talk (CSMA): defer TX while the channel reads busy,
+    # up to lbt_max_ms. "auto" calibrates the threshold 6dB above the
+    # board's own noise floor (T-Deck self-EMI sits near -98dBm); a number
+    # fixes the threshold in dBm; None disables LBT.
+    "lbt_rssi": "auto",
     "lbt_max_ms": 2000,
     # spi, spi_acquire, spi_release, on_status injected at runtime by tdeck_node.py
 }
