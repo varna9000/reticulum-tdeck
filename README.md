@@ -304,6 +304,8 @@ Settings are stored as JSON in `/rns/settings.json` on the device flash. Saved f
 
 - **DC-DC regulator mode** is required for TX (`use_dcdc: True`). The driver defaults to LDO which produces no RF output on the T-Deck.
 - **TCXO supply** must be set to 3.3V (`dio3_tcxo_millivolts: 3300`). Without it, modem init fails.
+- **Cold-boot init is flaky on the shared SPI bus** — `BUSY timeout` / `OpError 0xf100` errors on the first attempts are normal. The stack hardware-resets the radio and retries (3 attempts at init, then 5 more with backoff from the poll loop); a boot log ending in `LoRa ... recovered on retry N` is a healthy boot.
+- **The device re-announces after a recovery** — if the boot announce went out while the radio was still down, the mesh learns the node as soon as the radio comes up (and again after network time sync).
 
 ## Firmware Integration Fixes
 
@@ -459,6 +461,17 @@ bash build_firmware.sh --no-freeze  # st7789 C driver only, no frozen modules
 ### Why Not Freeze Natmods?
 
 MicroPython's freeze system compiles `.py` files to bytecode and embeds them in ROM. Natmod `.mpy` files contain **native Xtensa machine code** (compiled C), not bytecode — they are loaded by the dynamic linker at runtime and cannot be frozen. They must remain on the FAT filesystem.
+
+### Natmod IRAM and Soft Reboots
+
+Natmod machine code is loaded into **IRAM** (`heap_caps` EXEC allocations) — a small executable pool separate from the 8 MB PSRAM heap. A **soft reboot** (Ctrl-D, Thonny Stop/Restart) resets the Python heap but never frees those IRAM blocks, so each soft-rebooted session leaks ~100 KB of the pool.
+
+`main.py` handles this two ways:
+
+1. **Codec2 loads first.** The largest natmod (~40 KB, needs one contiguous block) is imported at the very top of `main.py`, before the splash-screen JPEG decoder and the crypto modules fragment the pool. One leaked session's leftovers still fit the full natmod set this way — a single soft reboot costs nothing.
+2. **Self-heal backstop.** After enough consecutive soft reboots the pool genuinely runs out; the codec2 import then fails with `MemoryError` and the device **hard-resets itself once** (within a second of boot, before display/radio bring-up) to reclaim all leaked IRAM. An RTC-memory flag prevents a reset loop. In an IDE this appears as a brief early disconnect labeled `Codec2 IRAM exhausted (soft-reboot natmod leak) — hard resetting` — reconnect and the session is clean.
+
+A power cycle or reset button always starts with a full pool.
 
 ## Files
 
