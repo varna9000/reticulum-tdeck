@@ -71,17 +71,20 @@ mpremote mip install lora-sync
 
 #### 4. Upload files
 
-Upload pre-compiled `.mpy` modules for best performance. All `.mpy` files are cross-compiled for the `xtensawin` architecture using `mpy-cross -march=xtensawin`.
+The Reticulum stack is not vendored in this repo — it lives in the `vendor/uP-reticulum` git submodule. The shipped `.mpy` files are cross-compiled for the `xtensawin` architecture using `mpy-cross -march=xtensawin`; urns uploads as `.py` (optionally compile it yourself for faster imports).
 
 ```bash
 # Upload native C modules (crypto + JPEG + Codec2)
 mpremote cp lib/ed25519_fast_xtensawin.mpy lib/bz2_fast_xtensawin.mpy lib/tjpgd_fast_xtensawin.mpy lib/codec2_fast_xtensawin.mpy :/lib/
 
-# Upload uP-reticulum library (.mpy)
-mpremote cp -r lib/urns/ :/lib/urns/
+# Upload uP-reticulum library from the submodule
+# (clone with --recursive, or run: git submodule update --init)
+mpremote cp -r vendor/uP-reticulum/firmware/urns/ :/lib/urns/
+mpremote cp vendor/uP-reticulum/firmware/lora_boards.py :
+mpremote cp vendor/uP-reticulum/firmware/peripherals/adc_reader.py :
 
 # Upload T-Deck app files
-mpremote cp tdeck_node.py ui.py sound.py es7210.py tdeck_config.py lora_boards.py adc_reader.py :
+mpremote cp tdeck_node.py ui.py sound.py es7210.py tdeck_config.py :
 mpremote cp lib/st7789py.mpy lib/vga2_8x16.mpy :/lib/
 
 # Upload assets
@@ -248,7 +251,7 @@ ui.py               Async GUI: node list, chat, settings, image viewer  [frozen 
 sound.py            I2S audio: notification tones, mic capture, playback [frozen in ROM]
 es7210.py           ES7210 ADC microphone driver (I2C register config)  [frozen in ROM]
 lib/vga2_8x16.py    8x16 VGA font                                      [frozen in ROM]
-lib/urns/           µReticulum networking stack                          [frozen in ROM]
+vendor/uP-reticulum µReticulum stack submodule (urns/, boards, tests)   [frozen in ROM]
 st7789              Russ Hughes C display driver (DMA-accelerated)      [compiled in firmware]
 ```
 
@@ -470,9 +473,9 @@ MicroPython's freeze system compiles `.py` files to bytecode and embeds them in 
 | `es7210.py` | Frozen in ROM | ES7210 ADC mic driver — I2C register config, gain, slave mode |
 | `lib/st7789py.py` | Filesystem (`/lib`, as `.mpy`) | Pure Python ST7789 driver (fallback if C driver unavailable) |
 | `lib/vga2_8x16.py` | Frozen in ROM | Bitmap font (8x16 pixels per character, 40 columns) |
-| `lib/urns/` | Frozen in ROM | µReticulum stack — transport, LXMF, crypto, interfaces. Synced from [uP-reticulum](https://github.com/varna9000/micropython-reticulum) @ `b2bc4f7`; the T-Deck-specific delta is documented in `TDECK-PATCHES.md` |
-| `lora_boards.py` | Frozen in ROM | Board pinout presets (T-Deck preset also contributed upstream) |
-| `adc_reader.py` | Frozen in ROM | Battery voltage via board-declared ADC pin + divider |
+| `vendor/uP-reticulum/` | Git submodule | The full µReticulum stack (urns/), board presets, adc_reader, and host test suite — [uP-reticulum](https://github.com/varna9000/micropython-reticulum). All former T-Deck patches are upstreamed; see `TDECK-PATCHES.md` for the update procedure |
+| `lora_boards.py` (submodule) | Frozen in ROM | Board pinout presets (incl. `tdeck_v1_sx1262`) |
+| `adc_reader.py` (submodule) | Frozen in ROM | Battery voltage via board-declared ADC pin + divider |
 
 ### Native Modules (on filesystem)
 

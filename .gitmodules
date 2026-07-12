@@ -1,0 +1,3 @@
+[submodule "vendor/uP-reticulum"]
+	path = vendor/uP-reticulum
+	url = ../micropython-reticulum.git

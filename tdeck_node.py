@@ -409,8 +409,9 @@ def on_announce(destination_hash, display_name):
         print("[Peer]", display_name or "?", "[" + destination_hash.hex()[:8] + "]")
 
 
-def on_progress(received, total):
-    gui.transfer_progress = (received, total)
+def on_progress(resource):
+    # Reference-RNS-shaped callback: one resource argument
+    gui.transfer_progress = (resource.received_count, resource.total_parts)
     gui._progress_dirty = True
 
 router.register_delivery_callback(on_message)

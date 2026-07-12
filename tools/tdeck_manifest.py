@@ -17,6 +17,9 @@ include("$(PORT_DIR)/boards/manifest.py")
 # from the -v args. Use TDECK_ROOT env var set by build_firmware.sh.
 import os
 _root = os.environ["TDECK_ROOT"]
+# The Reticulum stack + board presets come from the uP-reticulum submodule
+# (vendor/uP-reticulum) — run `git submodule update --init` before building.
+_vendor = _root + "/vendor/uP-reticulum/firmware"
 
 # --- App modules (top-level) ---
 # tdeck_config.py  — on filesystem, user-editable
@@ -24,50 +27,50 @@ _root = os.environ["TDECK_ROOT"]
 freeze(_root, "ui.py")
 freeze(_root, "sound.py")
 freeze(_root, "es7210.py")
-freeze(_root, "lora_boards.py")
-freeze(_root, "adc_reader.py")
+freeze(_vendor, "lora_boards.py")
+freeze(_vendor + "/peripherals", "adc_reader.py")
 
 # --- Font ---
 freeze(_root + "/lib", "vga2_8x16.py")
 
 # --- urns (Reticulum stack) ---
-freeze(_root + "/lib", "urns/__init__.py")
-freeze(_root + "/lib", "urns/bz2dec.py")
-freeze(_root + "/lib", "urns/const.py")
-freeze(_root + "/lib", "urns/destination.py")
-freeze(_root + "/lib", "urns/identity.py")
-freeze(_root + "/lib", "urns/link.py")
-freeze(_root + "/lib", "urns/log.py")
-freeze(_root + "/lib", "urns/lxmf.py")
-freeze(_root + "/lib", "urns/packet.py")
-freeze(_root + "/lib", "urns/resource.py")
-freeze(_root + "/lib", "urns/reticulum.py")
-freeze(_root + "/lib", "urns/transport.py")
-freeze(_root + "/lib", "urns/umsgpack.py")
+freeze(_vendor, "urns/__init__.py")
+freeze(_vendor, "urns/bz2dec.py")
+freeze(_vendor, "urns/const.py")
+freeze(_vendor, "urns/destination.py")
+freeze(_vendor, "urns/identity.py")
+freeze(_vendor, "urns/link.py")
+freeze(_vendor, "urns/log.py")
+freeze(_vendor, "urns/lxmf.py")
+freeze(_vendor, "urns/packet.py")
+freeze(_vendor, "urns/resource.py")
+freeze(_vendor, "urns/reticulum.py")
+freeze(_vendor, "urns/transport.py")
+freeze(_vendor, "urns/umsgpack.py")
 
 # --- urns/crypto ---
-freeze(_root + "/lib", "urns/crypto/__init__.py")
-freeze(_root + "/lib", "urns/crypto/aes.py")
-freeze(_root + "/lib", "urns/crypto/ed25519.py")
-freeze(_root + "/lib", "urns/crypto/hashes.py")
-freeze(_root + "/lib", "urns/crypto/hkdf.py")
-freeze(_root + "/lib", "urns/crypto/hmac.py")
-freeze(_root + "/lib", "urns/crypto/pkcs7.py")
-freeze(_root + "/lib", "urns/crypto/sha512.py")
-freeze(_root + "/lib", "urns/crypto/token.py")
-freeze(_root + "/lib", "urns/crypto/x25519.py")
+freeze(_vendor, "urns/crypto/__init__.py")
+freeze(_vendor, "urns/crypto/aes.py")
+freeze(_vendor, "urns/crypto/ed25519.py")
+freeze(_vendor, "urns/crypto/hashes.py")
+freeze(_vendor, "urns/crypto/hkdf.py")
+freeze(_vendor, "urns/crypto/hmac.py")
+freeze(_vendor, "urns/crypto/pkcs7.py")
+freeze(_vendor, "urns/crypto/sha512.py")
+freeze(_vendor, "urns/crypto/token.py")
+freeze(_vendor, "urns/crypto/x25519.py")
 
 # --- urns/crypto/pure25519 ---
-freeze(_root + "/lib", "urns/crypto/pure25519/__init__.py")
-freeze(_root + "/lib", "urns/crypto/pure25519/_ed25519.py")
-freeze(_root + "/lib", "urns/crypto/pure25519/basic.py")
-freeze(_root + "/lib", "urns/crypto/pure25519/ed25519_oop.py")
-freeze(_root + "/lib", "urns/crypto/pure25519/eddsa.py")
+freeze(_vendor, "urns/crypto/pure25519/__init__.py")
+freeze(_vendor, "urns/crypto/pure25519/_ed25519.py")
+freeze(_vendor, "urns/crypto/pure25519/basic.py")
+freeze(_vendor, "urns/crypto/pure25519/ed25519_oop.py")
+freeze(_vendor, "urns/crypto/pure25519/eddsa.py")
 
 # --- urns/interfaces ---
-freeze(_root + "/lib", "urns/interfaces/__init__.py")
-freeze(_root + "/lib", "urns/interfaces/e32.py")
-freeze(_root + "/lib", "urns/interfaces/lora.py")
-freeze(_root + "/lib", "urns/interfaces/serial.py")
-freeze(_root + "/lib", "urns/interfaces/tcp.py")
-freeze(_root + "/lib", "urns/interfaces/udp.py")
+freeze(_vendor, "urns/interfaces/__init__.py")
+freeze(_vendor, "urns/interfaces/e32.py")
+freeze(_vendor, "urns/interfaces/lora.py")
+freeze(_vendor, "urns/interfaces/serial.py")
+freeze(_vendor, "urns/interfaces/tcp.py")
+freeze(_vendor, "urns/interfaces/udp.py")
