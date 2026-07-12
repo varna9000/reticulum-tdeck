@@ -155,7 +155,7 @@ Message delivery status is shown after each sent message:
 
 Highlighting a message with the trackball shows its timestamp in the bottom bar (once mesh time is synced).
 
-Settings additionally shows the node's own LXMF address and a live **Radio / Mesh stats** page (RSSI/SNR, TX/RX counters, CRC errors, listen-before-talk stats, path/identity table sizes).
+Settings additionally offers a **keyboard backlight** toggle (persisted; Alt+B on the keyboard still works), shows the node's own LXMF address, and has a live **Radio / Mesh stats** page (RSSI/SNR, TX/RX counters, CRC errors, listen-before-talk stats, path/identity table sizes).
 
 ### Image Viewing
 

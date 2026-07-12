@@ -196,6 +196,7 @@ class UI:
         self._tcp_default = ""  # "host:port" from TCP_CONFIG, set by tdeck_node.py
         self._settings_scroll = 0
         self._volume = 8  # 0-10, synced with sound.volume
+        self._kbd_bl = False  # keyboard backlight state (restored from settings)
 
         # Image viewer state
         self._image_cache = {}  # (peer_hash, msg_idx) -> jpeg/webp bytes
@@ -229,6 +230,7 @@ class UI:
         self.on_node_name = None      # (name) -> None
         self.on_lora_reset = None     # () -> bool
         self.on_volume = None         # (level) -> None
+        self.on_kbd_backlight = None  # (enabled) -> bool
         self.on_audio_play = None     # (codec2_bytes, mode) -> None
         self.on_record_start = None   # () -> None
         self.on_record_stop = None    # (send: bool) -> None
@@ -962,16 +964,23 @@ class UI:
                     self._cache = [''] * 15
                     self.dirty = True
                     return True
-                elif self._settings_idx == 5:  # Radio stats page
+                elif self._settings_idx == 5:  # Keyboard backlight toggle
+                    if self.on_kbd_backlight:
+                        if self.on_kbd_backlight(not self._kbd_bl):
+                            self._kbd_bl = not self._kbd_bl
+                    self._cache = [''] * 15
+                    self.dirty = True
+                    return True
+                elif self._settings_idx == 6:  # Radio stats page
                     self._settings_page = _SET_RADIO
                     self._cache = [''] * 15
                     self.dirty = True
                     return True
-                # idx 6 (address) is informational — Enter does nothing
+                # idx 7 (address) is informational — Enter does nothing
         elif self._settings_page == _SET_RADIO:
             if ch == 0x1B or ch == 0x08:
                 self._settings_page = _SET_MAIN
-                self._settings_idx = 5
+                self._settings_idx = 6
                 self._cache = [''] * 15
                 self.dirty = True
                 return True
@@ -1145,10 +1154,11 @@ class UI:
 
         vol_bar = "#" * self._volume + "." * (10 - self._volume)
         vol_line = "Vol:  [" + vol_bar + "] " + str(self._volume)
+        kbbl_line = "KbBL: " + ("ON" if self._kbd_bl else "OFF")
         radio_line = "Radio stats"
         addr_line = "Addr: " + (self.my_address or "?")
         items = [wifi_line, tcp_line, name_line, lora_line, vol_line,
-                 radio_line, addr_line]
+                 kbbl_line, radio_line, addr_line]
         for i in range(BODY_ROWS - 1):
             y = BODY_Y + (i + 1) * CHAR_H
             if i < len(items):
@@ -1399,7 +1409,7 @@ class UI:
 
     def _settings_scroll_down(self):
         if self._settings_page == _SET_MAIN:
-            if self._settings_idx < 6:  # 7 items: WiFi..Volume, Radio, Addr
+            if self._settings_idx < 7:  # 8 items: WiFi..Vol, KbBL, Radio, Addr
                 self._settings_idx += 1
         elif self._settings_page == _SET_WIFI_SCAN:
             if self._settings_idx < len(self._wifi_networks) - 1:

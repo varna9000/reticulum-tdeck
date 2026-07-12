@@ -836,6 +836,30 @@ def set_node_name(name):
         print("[Settings] Node name:", name)
 
 
+def _kbd_backlight_cmd(on):
+    """Drive the keyboard MCU's backlight PWM over I2C
+    (LILYGO_KB_BRIGHTNESS_CMD 0x01 + value; 0 = off). Keyboards running
+    pre-2023 stock firmware ignore the write — Alt+B still works there.
+    Returns True when the I2C write succeeded."""
+    try:
+        i2c.writeto(KBD_ADDR, bytes([0x01, 160 if on else 0]))
+        return True
+    except OSError as e:
+        if DEBUG >= 1:
+            print("[Kbd] backlight cmd failed:", e)
+        return False
+
+
+def set_kbd_backlight(on):
+    """Called by GUI settings toggle. Returns True if the command was sent."""
+    if _kbd_backlight_cmd(on):
+        settings = _load_settings()
+        settings["kbd_backlight"] = bool(on)
+        _save_settings(settings)
+        return True
+    return False
+
+
 def get_radio_stats():
     """Rows for the GUI's Radio/Mesh stats page: [(label, value), ...]"""
     from urns.transport import Transport
@@ -934,6 +958,7 @@ gui.on_tcp_toggle = tcp_toggle
 gui.on_node_name = set_node_name
 gui.on_lora_reset = lora_reset
 gui.on_volume = lambda v: setattr(sound, 'volume', v)
+gui.on_kbd_backlight = set_kbd_backlight
 gui.on_ping = on_ping
 gui.get_radio_stats = get_radio_stats
 gui.my_address = dest.hexhash
@@ -1186,6 +1211,8 @@ def _auto_connect_wifi():
         NODE_NAME = saved_name
         gui.node_name = saved_name
         _apply_display_name(saved_name)
+    if settings.get("kbd_backlight") and _kbd_backlight_cmd(True):
+        gui._kbd_bl = True
     ssid = settings.get("wifi_ssid")
     password = settings.get("wifi_pass")
     if ssid and password:
