@@ -4,6 +4,7 @@
 
 import struct
 import math
+import micropython
 from machine import Pin, I2S
 
 # I2S config
@@ -14,11 +15,26 @@ _RATE = 8000  # 8kHz sample rate
 _BITS = 16
 
 
+@micropython.viper
+def _scale_pcm(dst, src, n: int, factor: int):
+    """Fixed-point attenuation of 16-bit LE signed PCM: out = in*factor>>8.
+    factor 0..256 (256 = unity) — attenuation only, cannot clip."""
+    d = ptr16(dst)
+    s = ptr16(src)
+    for i in range(n):
+        x = int(s[i])
+        if x >= 0x8000:
+            x -= 0x10000
+        x = (x * factor) >> 8
+        d[i] = x & 0xFFFF
+
+
 class Sound:
 
     def __init__(self):
         self.enabled = True
         self.volume = 8       # 0-10, default 8
+        self._pcm_scratch = None  # reusable buffer for volume-scaled playback
         self._i2s = None
         self._rx_buf = None
         self._tx_buf = None
@@ -41,12 +57,24 @@ class Sound:
             rate=_RATE,
             ibuf=16384,  # 1s buffer — prevents underrun during C driver GIL holds
         )
+        self._regen_tones()
+
+    def _regen_tones(self):
+        """(Re)build the notification tone buffers at the current volume."""
+        v = self.volume
         # RX: gentle two-tone chirp (soft ding)
-        self._rx_buf = self._gen_chirp(660, 880, 120, 4000)
+        self._rx_buf = self._gen_chirp(660, 880, 120, 4000 * v // 10)
         # TX: short soft blip
-        self._tx_buf = self._gen_tone(440, 80, 3000)
+        self._tx_buf = self._gen_tone(440, 80, 3000 * v // 10)
         # Announce: short rising chirp
-        self._ann_buf = self._gen_chirp(440, 660, 100, 3000)
+        self._ann_buf = self._gen_chirp(440, 660, 100, 3000 * v // 10)
+
+    def set_volume(self, v):
+        """Set playback volume 0-10 (0 = mute, 10 = full) and rebuild tones."""
+        v = 0 if v < 0 else (10 if v > 10 else int(v))
+        self.volume = v
+        if self._i2s:
+            self._regen_tones()
 
     @staticmethod
     def _gen_tone(freq, duration_ms, amplitude=4000):
@@ -87,26 +115,6 @@ class Sound:
             struct.pack_into("<h", buf, i * 2, val)
         return buf
 
-    def amplify_pcm(self, pcm_bytes):
-        """Amplify 16-bit LE signed PCM by volume level. Returns new buffer."""
-        if self.volume == 0:
-            return None
-        # Volume gain: 0=mute, 5=1x, 10=4x
-        gain = self.volume / 5.0  # 0..2.0
-        gain *= 4.0               # 0..8.0 — Codec2 output is typically quiet
-        n = len(pcm_bytes) // 2
-        out = bytearray(len(pcm_bytes))
-        for i in range(n):
-            sample = struct.unpack_from("<h", pcm_bytes, i * 2)[0]
-            sample = int(sample * gain)
-            # Clamp to 16-bit range
-            if sample > 32767:
-                sample = 32767
-            elif sample < -32767:
-                sample = -32767
-            struct.pack_into("<h", out, i * 2, sample)
-        return out
-
     def play_rx(self):
         """Play incoming message notification."""
         if self.enabled and self._i2s and self._rx_buf:
@@ -123,9 +131,18 @@ class Sound:
             self._i2s.write(self._ann_buf)
 
     def play_pcm(self, pcm_bytes):
-        """Play raw 16-bit LE signed PCM at 8kHz mono."""
-        if self.enabled and self._i2s and pcm_bytes:
+        """Play raw 16-bit LE signed PCM at 8kHz mono, attenuated by volume."""
+        if not (self.enabled and self._i2s and pcm_bytes) or self.volume == 0:
+            return
+        if self.volume >= 10:
             self._i2s.write(pcm_bytes)
+            return
+        n = len(pcm_bytes)
+        if self._pcm_scratch is None or len(self._pcm_scratch) < n:
+            self._pcm_scratch = bytearray(n)
+        mv = memoryview(self._pcm_scratch)[:n]
+        _scale_pcm(mv, pcm_bytes, n // 2, self.volume * 256 // 10)
+        self._i2s.write(mv)
 
     def init_mic(self, i2c):
         """Initialize ES7210 mic ADC, MCLK, and I2S(1) RX.

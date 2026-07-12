@@ -957,7 +957,15 @@ gui.on_wifi_connect = wifi_connect
 gui.on_tcp_toggle = tcp_toggle
 gui.on_node_name = set_node_name
 gui.on_lora_reset = lora_reset
-gui.on_volume = lambda v: setattr(sound, 'volume', v)
+def on_volume(v):
+    """Settings volume slider: apply (tones regenerate, PCM attenuates)
+    and persist."""
+    sound.set_volume(v)
+    settings = _load_settings()
+    settings["volume"] = int(v)
+    _save_settings(settings)
+
+gui.on_volume = on_volume
 gui.on_kbd_backlight = set_kbd_backlight
 gui.on_ping = on_ping
 gui.get_radio_stats = get_radio_stats
@@ -1213,6 +1221,10 @@ def _auto_connect_wifi():
         _apply_display_name(saved_name)
     if settings.get("kbd_backlight") and _kbd_backlight_cmd(True):
         gui._kbd_bl = True
+    saved_vol = settings.get("volume")
+    if saved_vol is not None:
+        sound.set_volume(saved_vol)
+        gui._volume = sound.volume
     ssid = settings.get("wifi_ssid")
     password = settings.get("wifi_pass")
     if ssid and password:
