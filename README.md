@@ -155,7 +155,7 @@ Message delivery status is shown after each sent message:
 
 Highlighting a message with the trackball shows its timestamp in the bottom bar (once mesh time is synced).
 
-Settings additionally offers a **keyboard backlight** toggle (persisted; Alt+B on the keyboard still works), shows the node's own LXMF address, and has a live **Radio / Mesh stats** page (RSSI/SNR, TX/RX counters, CRC errors, listen-before-talk stats, path/identity table sizes).
+Settings additionally offers a **keyboard backlight** toggle (persisted across boots). It requires keyboard MCU firmware from 2024-12-25 or newer — older shipped keyboards ignore the I2C command (flash [`T-Keyboard_Keyboard_ESP32C3_250620.bin`](https://github.com/Xinyuan-LilyGO/T-Deck/tree/master/firmware) via the internal 6-pin header to enable it); the keyboard-local Alt+B shortcut works regardless. shows the node's own LXMF address, and has a live **Radio / Mesh stats** page (RSSI/SNR, TX/RX counters, CRC errors, listen-before-talk stats, path/identity table sizes).
 
 ### Image Viewing
 
