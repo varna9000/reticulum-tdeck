@@ -188,10 +188,26 @@ gui.set_backlight(bl)
 gc.collect()
 
 # --- Setup interfaces (LoRa comes online) ---
+_announced_once = False  # set after the boot announce; gates recovery re-announce
+
 def _lora_status(online):
     gui.lora_online = online
     gui._nav_mid_cache = ''
     gui.dirty = True
+    if online and _announced_once:
+        # Radio recovered after the boot announce went out into the void —
+        # re-announce so the mesh learns we are here. (Only reached from
+        # poll_loop recovery, so the event loop is running.)
+        import uasyncio as asyncio
+        async def _reannounce():
+            try:
+                router.announce()
+                gui.announce_flash = time.ticks_ms()
+                gui.dirty = True
+            except Exception as e:
+                if DEBUG >= 2:
+                    print("Recovery announce error:", e)
+        asyncio.create_task(_reannounce())
 
 LORA_CONFIG["on_status"] = _lora_status
 spi_acquire_lora()
@@ -935,6 +951,7 @@ async def _play_audio(audio_data, codec_mode):
 
 async def initial_announce():
     import uasyncio as asyncio
+    global _announced_once
     await asyncio.sleep(0.5)
     try:
         router.announce()
@@ -943,6 +960,7 @@ async def initial_announce():
     except Exception as e:
         if DEBUG >= 2:
             print("Initial announce error:", e)
+    _announced_once = True
     gc.collect()
 
 
