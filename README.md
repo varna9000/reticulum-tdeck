@@ -131,7 +131,7 @@ The device starts on the node list screen showing discovered peers. Peers with u
 | Open settings | Press `s` |
 | Ping selected peer | Press `p` |
 
-The footer's right side shows the selected peer's **route** — `direct` or `2h via 1a2b` (hops + next-hop relay, learned from announces) — plus last RSSI and last-seen age. Pinging sends a probe to the peer's `urns.probe` destination and shows the round-trip time (`ping: 2.4s`); peers must run uP-reticulum with the probe responder enabled to answer.
+The footer's right side shows a compact status for the **selected peer** — hop count, last RSSI, and last-seen age (`2h -87dB 5m`), learned from announces. Pinging sends a probe to the peer's `urns.probe` destination and shows the round-trip time (`ping: 2.4s`); peers must run uP-reticulum with the probe responder enabled to answer.
 
 The navbar shows a clock (`HH:MM`) once the node has adopted mesh time via network time sync.
 

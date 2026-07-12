@@ -458,8 +458,11 @@ class UI:
             self.tft.text(self.font, ")ing", 15 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
             self._route_cache = ''
 
-        # Dynamic footer right (cols 20-39): transient ping result, else the
-        # selected peer's route (hops/via from announces) + RSSI + last-seen
+        # Dynamic footer info, right-aligned in the last 14 cols (26-39),
+        # leaving a clear gap after the "(p)ing" hotkey at col 18: transient
+        # ping result, else the selected peer's hops + RSSI + last-seen,
+        # e.g. "2h -87dB 5m". (Next-hop relay detail lives in the path
+        # table; too wide for this line.)
         if self.ping_status and time.ticks_diff(time.ticks_ms(), self._ping_status_ms) < 8000:
             info = self.ping_status
         else:
@@ -467,22 +470,19 @@ class UI:
             if self._peer_keys and self.selected_idx < len(self._peer_keys):
                 p = self.peers.get(self._peer_keys[self.selected_idx])
                 if p:
+                    bits = []
                     hops = p.get("hops")
-                    if hops is None:
-                        route = ""
-                    elif hops <= 1:
-                        route = "direct"
-                    else:
-                        route = str(hops) + "h via " + (p.get("via") or "?")
+                    if hops:
+                        bits.append(str(hops) + "h")
                     rs = p.get("rssi")
-                    bits = [b for b in (route,
-                                        (str(rs) + "dB") if rs is not None else "",
-                                        _age(p.get("seen"))) if b]
+                    if rs is not None:
+                        bits.append(str(rs) + "dB")
+                    bits.append(_age(p.get("seen")))
                     info = " ".join(bits)
-        info = info[-20:]
+        info = info[:14]
         if self._route_cache != info:
             self._route_cache = info
-            self.tft.text(self.font, _pad(info, 20), 20 * CHAR_W, INPUT_Y,
+            self.tft.text(self.font, info.rjust(14), (COLS - 14) * CHAR_W, INPUT_Y,
                           self.DIM_CYAN, self.BG_DARK)
 
     # --- Chat screen ---
