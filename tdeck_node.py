@@ -230,6 +230,26 @@ try:
     _codec2_mod = codec2_fast_xtensawin
     if DEBUG >= 1:
         print("Codec2 module loaded, mem:", gc.mem_free())
+    try:
+        from machine import RTC as _RTC
+        _RTC().memory(b"")  # clear the retry guard below
+    except Exception:
+        pass
+except MemoryError as e:
+    # Natmod machine code lives in IRAM (heap_caps EXEC allocations) that a
+    # soft reboot never frees — the relaunched session then can't fit the
+    # ~40KB codec2 blob even though gc.mem_free() shows megabytes. One hard
+    # reset reclaims it. RTC memory guards against a reset loop when IRAM
+    # is genuinely short (then we just continue without voice).
+    _codec2_mod = None
+    from machine import RTC as _RTC, reset as _hard_reset
+    _rtc = _RTC()
+    if _rtc.memory() != b"c2rst":
+        _rtc.memory(b"c2rst")
+        print("Codec2 IRAM exhausted (soft-reboot natmod leak) — hard resetting")
+        time.sleep_ms(300)
+        _hard_reset()
+    print("Codec2 load failed even after hard reset:", e)
 except Exception as e:
     _codec2_mod = None
     if DEBUG >= 1:
