@@ -4,7 +4,7 @@ Standalone LoRa + TCP messaging device running on the LilyGO T-Deck v1.
 Uses [micropython-reticulum](https://github.com/varna9000/micropython-reticulum/README.md) for Reticulum-compatible encrypted messaging over LoRa or WiFi TCP.
 
 
-Supports both **opportunistic** (single-packet) and **link-based** (direct) messaging, including **JPEG image transfer** with on-device decoding and full-screen display, and **Codec2 voice messages** compatible with meshchat.
+Supports both **opportunistic** (single-packet) and **link-based** (direct) messaging, including **JPEG image transfer** with on-device decoding and full-screen display, and **Codec2 voice messages** compatible with meshchat. Also includes a read-only **NomadNet page browser** — fetch and render micron (`.mu`) pages from NomadNet nodes over LoRa or TCP, with colors, headings, and clickable links.
 
 
 ![splash](images/splash.jpeg "Splash Screen")
@@ -121,19 +121,35 @@ mpremote cp tdeck_node.py :/main.py
 
 ### Node List Screen
 
-The device starts on the node list screen showing discovered peers. Peers with unread messages are marked with `*` and bubbled to the top of the list.
+The device starts on the node list screen with two tabs: **MSG** (LXMF chat peers) and **NET** (browsable NomadNet nodes), both populated from announces. Peers with unread messages are marked with `*`. A NomadNet instance announces both aspects, so it appears in both tabs — chattable in MSG, browsable in NET.
 
 | Action | Input |
 |---|---|
-| Select peer | Trackball up/down |
-| Open chat | Trackball click |
+| Switch MSG/NET tab | Trackball left/right (or `b`) |
+| Select peer/node | Trackball up/down |
+| Open chat / open node page | Trackball click (or Enter) |
 | Send announce | Press `a` |
 | Open settings | Press `s` |
-| Ping selected peer | Press `p` |
+| Ping selected peer (MSG) | Press `p` |
 
-The footer's right side shows a compact status for the **selected peer** — hop count, last RSSI, and last-seen age (`2h -87dB 5m`), learned from announces. Pinging sends a probe to the peer's `urns.probe` destination and shows the round-trip time (`ping: 2.4s`); peers must run uP-reticulum with the probe responder enabled to answer.
+The footer's right side shows a compact status for the **selected entry** — hop count, last RSSI, and last-seen age (`2h -87dB 5m`), learned from announces. Pinging sends a probe to the peer's `urns.probe` destination and shows the round-trip time (`ping: 2.4s`); peers must run uP-reticulum with the probe responder enabled to answer.
 
 The navbar shows a clock (`HH:MM`) once the node has adopted mesh time via network time sync.
+
+### NomadNet Browser (NET tab)
+
+Clicking a node on the NET tab opens its `/page/index.mu` over an encrypted Reticulum link and renders the micron markup — headings, colors, dividers and links. Pages larger than one packet arrive as a resource transfer (progress shows in the navbar); over LoRa a multi-KB page can take a while.
+
+| Action | Input |
+|---|---|
+| Scroll / move cursor | Trackball up/down |
+| Jump to next link | Press `n` |
+| Follow link on cursor row | Trackball click (or Enter) |
+| Back (exit at first page) | Trackball left or Backspace |
+| Reload page | Press `r` |
+| Exit to node list | Esc |
+
+v1 limitations: read-only (form fields render as placeholders), pages are capped at 16 KB, non-ASCII text (e.g. Cyrillic) is stripped — the display font has no glyphs for it — and nodes that require identification will time out.
 
 ### Chat Screen
 

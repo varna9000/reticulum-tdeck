@@ -13,6 +13,7 @@ STATE_CHAT     = 1
 STATE_SETTINGS = 2
 STATE_IMAGE    = 3
 STATE_RECORDING = 4
+STATE_BROWSER  = 5
 
 # Settings sub-pages
 _SET_MAIN      = 0
@@ -40,8 +41,9 @@ MAX_PEERS = 16
 MAX_HISTORY = 30  # per peer
 MAX_CACHED_IMAGES = 3  # max JPEG payloads kept in RAM
 
-# Trackball debounce
+# Trackball debounce (horizontal slower: tab switches, not scrolling)
 _TB_DEBOUNCE_MS = 80
+_TB_H_DEBOUNCE_MS = 150
 
 # Screen power-off timeout
 _SCREEN_TIMEOUT_MS = 10000
@@ -136,6 +138,25 @@ class UI:
         self.ping_status = None  # transient "ping: 2.4s" text
         self._ping_status_ms = 0
 
+        # NET tab: NomadNet nodes (populated by nomad_browser)
+        self.node_tab = 0        # 0 = MSG (LXMF peers), 1 = NET (nomad nodes)
+        self.nomad_nodes = {}    # dest_hash -> {"name": str, "hops": int|None, "seen": ts}
+        self._node_keys = []     # ordered list of dest_hash_bytes
+        self.net_idx = 0
+        self.net_scroll = 0
+
+        # Browser page view (STATE_BROWSER)
+        self.browser_lines = []   # micron.render() rows of styled spans
+        self.browser_links = []   # [(url, label)]
+        self.browser_title = ""
+        self.browser_path = ""
+        self.browser_scroll = 0
+        self.browser_cursor = -1  # -1 = inactive, else visible-row index
+        self.browser_status = None  # transient status/error footer text
+        self._browser_can_back = False
+        self._page_gen = 0        # bumped per page; keys the row cache
+        self._browser_link_rows = {}  # visible row -> link index
+
         # Chat: dest_hash_bytes -> [(is_mine, text, timestamp, status), ...]
         # status: 0=none, 1=pending, 2=delivered, 3=failed
         self.chat_history = {}
@@ -167,14 +188,19 @@ class UI:
         self._irq_up = 0
         self._irq_down = 0
         self._irq_click = 0
+        self._irq_left = 0
+        self._irq_right = 0
         # ISR debounce timestamps (ticks_ms is ISR-safe)
         self._irq_last_scroll = 0
         self._irq_last_click = 0
+        self._irq_last_h = 0
 
         # Register hardware interrupts on trackball pins
         self._tb_up.irq(trigger=Pin.IRQ_FALLING, handler=self._irq_handler_up)
         self._tb_down.irq(trigger=Pin.IRQ_FALLING, handler=self._irq_handler_down)
         self._tb_click.irq(trigger=Pin.IRQ_FALLING, handler=self._irq_handler_click)
+        self._tb_left.irq(trigger=Pin.IRQ_FALLING, handler=self._irq_handler_left)
+        self._tb_right.irq(trigger=Pin.IRQ_FALLING, handler=self._irq_handler_right)
 
         # Battery voltage comes from adc_reader (board-declared pin/divider,
         # initialized by tdeck_node via adc_reader.init_battery)
@@ -234,6 +260,12 @@ class UI:
         self.on_audio_play = None     # (codec2_bytes, mode) -> None
         self.on_record_start = None   # () -> None
         self.on_record_stop = None    # (send: bool) -> None
+        self.on_browse = None         # (dest_hash_bytes) -> None — open node index page
+        self.on_browse_follow = None  # (url_str) -> None — follow a micron link
+        self.on_browse_back = None    # () -> bool — went back (False: at stack bottom)
+        self.on_browse_refresh = None # () -> None
+        self.on_browser_exit = None   # () -> None — left the browser (free the link)
+        self.on_net_seed = None       # () -> None — populate nomad_nodes from storage
 
     # --- Screen power management ---
 
@@ -375,68 +407,108 @@ class UI:
 
     # --- Node list screen ---
 
-    def draw_node_list(self):
-        if not self._peer_keys:
-            _mid = BODY_ROWS // 2 - 1
-            for i in range(BODY_ROWS):
-                y = BODY_Y + i * CHAR_H
-                if i == _mid:
-                    self._draw_row_cached(i + 1, "No peers yet.".center(COLS), y, self.NEON_CYAN)
-                elif i == _mid + 1:
-                    self._draw_row_cached(i + 1, "Waiting for announces...".center(COLS), y, self.DIM_CYAN)
-                else:
-                    self._draw_row_cached(i + 1, "", y, self.NEON_CYAN)
+    def _draw_tab_bar(self):
+        """MSG/NET tab bar — first body row of the node screen."""
+        un = 0
+        for v in self.unread.values():
+            un += v
+        msg = " MSG(" + str(len(self._peer_keys)) + ("*" if un else "") + ") "
+        net = " NET(" + str(len(self._node_keys)) + ") "
+        cache_key = str(self.node_tab) + msg + net
+        if self._cache[1] == cache_key:
+            return
+        self._cache[1] = cache_key
+        y = BODY_Y
+        self.tft.text(self.font, _pad(""), 0, y, self.DIM_CYAN, self.BG_DARK)
+        if self.node_tab == 0:
+            self.tft.text(self.font, msg, 0, y, self.NEON_GREEN, self.SEL_BG)
+            self.tft.text(self.font, net, len(msg) * CHAR_W, y, self.DIM_CYAN, self.BG_DARK)
         else:
-            visible = self._peer_keys[self.node_scroll:self.node_scroll + BODY_ROWS]
-            for i in range(BODY_ROWS):
-                y = BODY_Y + i * CHAR_H
-                if i < len(visible):
-                    key = visible[i]
-                    peer = self.peers[key]
-                    name = _ascii(peer.get("name") or "?")
-                    hash_tag = "[" + key.hex()[:8] + "]"
-                    uc = self.unread.get(key, 0)
-                    marker = str(min(uc, 9)) + "*" if uc > 1 else ("* " if uc == 1 else "  ")
-                    # Hash in brackets, 1 char right padding
-                    _rpad = 1
-                    max_name = COLS - len(marker) - len(hash_tag) - _rpad
-                    left = marker + name[:max_name]
-                    line = left + " " * (COLS - len(left) - len(hash_tag) - _rpad) + hash_tag
-                    hash_x = (COLS - len(hash_tag) - _rpad) * CHAR_W
+            self.tft.text(self.font, msg, 0, y, self.DIM_CYAN, self.BG_DARK)
+            self.tft.text(self.font, net, len(msg) * CHAR_W, y, self.NEON_GREEN, self.SEL_BG)
+        self.tft.fill_rect(0, y + CHAR_H - 1, SCREEN_W, 1, self.DIM_CYAN)
 
-                    abs_idx = self.node_scroll + i
-                    if abs_idx == self.selected_idx:
-                        cache_key = '\x01' + line
-                        if self._cache[i + 1] != cache_key:
-                            self._cache[i + 1] = cache_key
-                            self.tft.text(self.font, _pad(line), 0, y, self.YELLOW, self.SEL_BG)
-                            # Accent bar (clear of corner bracket)
-                            self.tft.fill_rect(4, y, 3, CHAR_H, self.NEON_MAG)
-                            if uc:
-                                self.tft.text(self.font, marker, 0, y, self.NEON_MAG, self.SEL_BG)
-                            # Dim hash on right
-                            self.tft.text(self.font, hash_tag, hash_x, y, self.DIM_CYAN, self.SEL_BG)
-                    else:
-                        self._draw_row_cached(i + 1, line, y, self.NEON_CYAN, self.BG_DARK)
-                        if uc:
-                            self.tft.text(self.font, marker, 0, y, self.NEON_MAG, self.BG_DARK)
-                        # Dim hash on right
-                        self.tft.text(self.font, hash_tag, hash_x, y, self.DIM_CYAN, self.BG_DARK)
+    def _draw_list_rows(self, keys, table, scroll, sel_idx, show_unread, empty_lines):
+        """Shared list body for both tabs: 11 rows below the tab bar."""
+        _rows = BODY_ROWS - 1
+        if not keys:
+            _mid = _rows // 2 - 1
+            for i in range(_rows):
+                y = BODY_Y + (i + 1) * CHAR_H
+                if i == _mid:
+                    self._draw_row_cached(i + 2, empty_lines[0].center(COLS), y, self.NEON_CYAN)
+                elif i == _mid + 1:
+                    self._draw_row_cached(i + 2, empty_lines[1].center(COLS), y, self.DIM_CYAN)
                 else:
-                    self._draw_row_cached(i + 1, "", y, self.NEON_CYAN)
+                    self._draw_row_cached(i + 2, "", y, self.NEON_CYAN)
+            return
+        visible = keys[scroll:scroll + _rows]
+        for i in range(_rows):
+            y = BODY_Y + (i + 1) * CHAR_H
+            ci = i + 2
+            if i < len(visible):
+                key = visible[i]
+                entry = table[key]
+                name = _ascii(entry.get("name") or "?")
+                hash_tag = "[" + key.hex()[:8] + "]"
+                uc = self.unread.get(key, 0) if show_unread else 0
+                marker = str(min(uc, 9)) + "*" if uc > 1 else ("* " if uc == 1 else "  ")
+                # Hash in brackets, 1 char right padding
+                _rpad = 1
+                max_name = COLS - len(marker) - len(hash_tag) - _rpad
+                left = marker + name[:max_name]
+                line = left + " " * (COLS - len(left) - len(hash_tag) - _rpad) + hash_tag
+                hash_x = (COLS - len(hash_tag) - _rpad) * CHAR_W
 
-        # Scroll indicator on right edge
-        _total = len(self._peer_keys)
-        if _total > BODY_ROWS:
-            _track_h = BODY_ROWS * CHAR_H
-            _bar_h = max(6, _track_h * BODY_ROWS // _total)
-            _bar_y = BODY_Y + self.node_scroll * _track_h // _total
-            self.tft.fill_rect(SCREEN_W - 2, BODY_Y, 2, _track_h, self.BG_DARK)
+                abs_idx = scroll + i
+                if abs_idx == sel_idx:
+                    cache_key = '\x01' + line
+                    if self._cache[ci] != cache_key:
+                        self._cache[ci] = cache_key
+                        self.tft.text(self.font, _pad(line), 0, y, self.YELLOW, self.SEL_BG)
+                        # Accent bar (clear of corner bracket)
+                        self.tft.fill_rect(4, y, 3, CHAR_H, self.NEON_MAG)
+                        if uc:
+                            self.tft.text(self.font, marker, 0, y, self.NEON_MAG, self.SEL_BG)
+                        # Dim hash on right
+                        self.tft.text(self.font, hash_tag, hash_x, y, self.DIM_CYAN, self.SEL_BG)
+                else:
+                    self._draw_row_cached(ci, line, y, self.NEON_CYAN, self.BG_DARK)
+                    if uc:
+                        self.tft.text(self.font, marker, 0, y, self.NEON_MAG, self.BG_DARK)
+                    # Dim hash on right
+                    self.tft.text(self.font, hash_tag, hash_x, y, self.DIM_CYAN, self.BG_DARK)
+            else:
+                self._draw_row_cached(ci, "", y, self.NEON_CYAN)
+
+    def draw_node_list(self):
+        self._draw_tab_bar()
+        _rows = BODY_ROWS - 1
+        if self.node_tab == 0:
+            self._draw_list_rows(self._peer_keys, self.peers, self.node_scroll,
+                                 self.selected_idx, True,
+                                 ("No peers yet.", "Waiting for announces..."))
+            _total = len(self._peer_keys)
+            _scroll = self.node_scroll
+        else:
+            self._draw_list_rows(self._node_keys, self.nomad_nodes, self.net_scroll,
+                                 self.net_idx, False,
+                                 ("No nodes yet.", "Waiting for node announces..."))
+            _total = len(self._node_keys)
+            _scroll = self.net_scroll
+
+        # Scroll indicator on right edge (below the tab bar)
+        _track_h = _rows * CHAR_H
+        self.tft.fill_rect(SCREEN_W - 2, BODY_Y + CHAR_H, 2, _track_h, self.BG_DARK)
+        if _total > _rows:
+            _bar_h = max(6, _track_h * _rows // _total)
+            _bar_y = BODY_Y + CHAR_H + _scroll * _track_h // _total
             self.tft.fill_rect(SCREEN_W - 2, _bar_y, 2, _bar_h, self.DIM_CYAN)
 
-        # Neon frame + footer hints — drawn once on state change (cached via _prev_state)
-        if self._cache[13] != "NF":
-            self._cache[13] = "NF"
+        # Neon frame + footer hints — drawn once per state/tab change
+        _nf_key = "NF" + str(self.node_tab)
+        if self._cache[13] != _nf_key:
+            self._cache[13] = _nf_key
             _cx = self.NEON_CYAN
             _L = 12  # corner vertical arm length
             _top = BODY_Y - 3
@@ -455,9 +527,12 @@ class UI:
             self.tft.text(self.font, "(", 7 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
             self.tft.text(self.font, "s", 8 * CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
             self.tft.text(self.font, ")et", 9 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-            self.tft.text(self.font, "(", 13 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-            self.tft.text(self.font, "p", 14 * CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
-            self.tft.text(self.font, ")ing", 15 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+            if self.node_tab == 0:
+                self.tft.text(self.font, "(", 13 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+                self.tft.text(self.font, "p", 14 * CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
+                self.tft.text(self.font, ")ing", 15 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+            else:
+                self.tft.text(self.font, "click=open", 13 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
             self._route_cache = ''
 
         # Dynamic footer info, right-aligned in the last 14 cols (26-39),
@@ -465,8 +540,20 @@ class UI:
         # ping result, else the selected peer's hops + RSSI + last-seen,
         # e.g. "2h -87dB 5m". (Next-hop relay detail lives in the path
         # table; too wide for this line.)
-        if self.ping_status and time.ticks_diff(time.ticks_ms(), self._ping_status_ms) < 8000:
+        if (self.node_tab == 0 and self.ping_status
+                and time.ticks_diff(time.ticks_ms(), self._ping_status_ms) < 8000):
             info = self.ping_status
+        elif self.node_tab == 1:
+            info = ""
+            if self._node_keys and self.net_idx < len(self._node_keys):
+                n = self.nomad_nodes.get(self._node_keys[self.net_idx])
+                if n:
+                    bits = []
+                    hops = n.get("hops")
+                    if hops:
+                        bits.append(str(hops) + "h")
+                    bits.append(_age(n.get("seen")))
+                    info = " ".join(bits)
         else:
             info = ""
             if self._peer_keys and self.selected_idx < len(self._peer_keys):
@@ -486,6 +573,75 @@ class UI:
             self._route_cache = info
             self.tft.text(self.font, info.rjust(14), (COLS - 14) * CHAR_W, INPUT_Y,
                           self.DIM_CYAN, self.BG_DARK)
+
+    # --- Browser page view ---
+
+    def draw_browser(self):
+        # Header row: node name left, page path right (dim), separator
+        title = "> " + _ascii(self.browser_title)[:20]
+        path = self.browser_path
+        if len(path) > 16:
+            path = "..." + path[-13:]
+        cache_key = title + path
+        if self._cache[1] != cache_key:
+            self._cache[1] = cache_key
+            self.tft.text(self.font, _pad(title), 0, BODY_Y, self.NEON_CYAN, self.BG_DARK)
+            self.tft.text(self.font, ">", 0, BODY_Y, self.NEON_GREEN, self.BG_DARK)
+            px = (COLS - len(path) - 1) * CHAR_W
+            self.tft.text(self.font, path, px, BODY_Y, self.DIM_CYAN, self.BG_DARK)
+        self.tft.fill_rect(0, BODY_Y + CHAR_H - 1, SCREEN_W, 1, self.DIM_CYAN)
+
+        _rows = BODY_ROWS - 1
+        lines = self.browser_lines
+        max_scroll = max(0, len(lines) - _rows)
+        if self.browser_scroll > max_scroll:
+            self.browser_scroll = max_scroll
+        visible = lines[self.browser_scroll:self.browser_scroll + _rows]
+        if self.browser_cursor >= len(visible):
+            self.browser_cursor = len(visible) - 1
+
+        self._browser_link_rows = {}
+        for i in range(_rows):
+            y = BODY_Y + (i + 1) * CHAR_H
+            ci = i + 2
+            if i < len(visible):
+                spans = visible[i]
+                for s in spans:
+                    if s[4] is not None:
+                        self._browser_link_rows[i] = s[4]
+                        break
+                hl = (i == self.browser_cursor)
+                ck = str(self._page_gen) + ":" + str(self.browser_scroll + i) + (":h" if hl else "")
+                if self._cache[ci] == ck:
+                    continue
+                self._cache[ci] = ck
+                row_bg = self.SEL_BG if hl else self.BG_DARK
+                self.tft.text(self.font, _pad(""), 0, y, self.NEON_CYAN, row_bg)
+                for col, text, fg, bg, link in spans:
+                    # span bg wins (e.g. h1 bar); default bg follows highlight
+                    bg_use = row_bg if bg == self.BG_DARK else bg
+                    self.tft.text(self.font, self._tb(text), col * CHAR_W, y, fg, bg_use)
+            else:
+                self._draw_row_cached(ci, "", y, self.NEON_CYAN)
+
+        # Scroll indicator on right edge (below the header)
+        _track_h = _rows * CHAR_H
+        self.tft.fill_rect(SCREEN_W - 2, BODY_Y + CHAR_H, 2, _track_h, self.BG_DARK)
+        if len(lines) > _rows:
+            _bar_h = max(6, _track_h * _rows // len(lines))
+            _bar_y = BODY_Y + CHAR_H + self.browser_scroll * _track_h // len(lines)
+            self.tft.fill_rect(SCREEN_W - 2, _bar_y, 2, _bar_h, self.DIM_CYAN)
+
+        # Footer: transient status/error, else key hints
+        if self.browser_status:
+            foot = self.browser_status[:COLS]
+            fcol = self.NEON_MAG
+        else:
+            foot = "(r)eload (n)ext link  click=open  <back"
+            fcol = self.DIM_CYAN
+        if self._cache[13] != foot:
+            self._cache[13] = foot
+            self.tft.text(self.font, self._tb(_pad(foot)), 0, INPUT_Y, fcol, self.BG_DARK)
 
     # --- Chat screen ---
 
@@ -791,6 +947,8 @@ class UI:
             return self._handle_key_nodes(ch, key)
         elif self.state == STATE_SETTINGS:
             return self._handle_key_settings(ch, key)
+        elif self.state == STATE_BROWSER:
+            return self._handle_key_browser(ch, key)
         else:
             return self._handle_key_chat(ch, key)
 
@@ -820,12 +978,146 @@ class UI:
             self._state_change_ms = time.ticks_ms()
             self.dirty = True
             return True
+        elif key == b'b' or key == b'B':
+            # keyboard fallback for trackball left/right tab switch
+            self._switch_tab(1 - self.node_tab)
+            return True
         elif key == b'p' or key == b'P':
-            if self.on_ping and self._peer_keys and self.selected_idx < len(self._peer_keys):
+            if (self.node_tab == 0 and self.on_ping and self._peer_keys
+                    and self.selected_idx < len(self._peer_keys)):
                 self.ping_status = "ping..."
                 self._ping_status_ms = time.ticks_ms()
                 self.dirty = True
                 self.on_ping(self._peer_keys[self.selected_idx])
+            return True
+        elif ch == 0x0D:  # Enter mirrors the trackball click
+            if self.node_tab == 0:
+                self._enter_chat()
+            else:
+                self._open_selected_node()
+            return True
+        return False
+
+    def _switch_tab(self, tab):
+        """Switch MSG/NET tab on the node screen."""
+        if tab == self.node_tab:
+            return
+        self.node_tab = tab
+        if tab == 1 and self.on_net_seed:
+            try:
+                self.on_net_seed()  # populate from persisted announces (once)
+            except Exception:
+                pass
+        self._cache = [''] * 15  # rows, tab bar and footer all change
+        self.dirty = True
+
+    def _open_selected_node(self):
+        """NET tab click/Enter: fetch the selected node's index page."""
+        if not (self._node_keys and 0 <= self.net_idx < len(self._node_keys)):
+            return
+        dest = self._node_keys[self.net_idx]
+        node = self.nomad_nodes.get(dest)
+        title = (node.get("name") if node else None) or dest.hex()[:8]
+        # Enter the page view immediately with an empty page; the fetch
+        # fills it in (or leaves an error in browser_status).
+        self.show_page(title, "/page/index.mu", [], [], can_back=False)
+        self.browser_status = "connecting..."
+        if self.on_browse:
+            self.on_browse(dest)
+
+    # --- Browser page view ---
+
+    def show_page(self, title, path, lines, links, can_back=False):
+        """Display a rendered micron page (called by nomad_browser)."""
+        self.browser_title = title
+        self.browser_path = path
+        self.browser_lines = lines
+        self.browser_links = links
+        self._browser_can_back = can_back
+        self.browser_scroll = 0
+        self.browser_cursor = -1
+        self._browser_link_rows = {}
+        self._page_gen += 1
+        if self.state != STATE_BROWSER:
+            self.state = STATE_BROWSER
+            self._state_change_ms = time.ticks_ms()
+        self.dirty = True
+
+    def _browser_exit(self):
+        """Leave the browser back to the node screen (NET tab)."""
+        if self.on_browser_exit:
+            try:
+                self.on_browser_exit()
+            except Exception:
+                pass
+        self.browser_status = None
+        self.browser_lines = []
+        self.browser_links = []
+        self.node_tab = 1
+        self.state = STATE_NODES
+        self._state_change_ms = time.ticks_ms()
+        self.dirty = True
+
+    def _browser_back(self):
+        went = False
+        if self.on_browse_back:
+            try:
+                went = self.on_browse_back()
+            except Exception:
+                went = False
+        if not went:
+            self._browser_exit()
+
+    def _browser_follow_cursor(self):
+        """Open the first link on the cursor row."""
+        if self.browser_cursor < 0:
+            return
+        li = self._browser_link_rows.get(self.browser_cursor)
+        if li is None or li >= len(self.browser_links):
+            return
+        if self.on_browse_follow:
+            self.browser_status = "opening..."
+            self.dirty = True
+            self.on_browse_follow(self.browser_links[li][0])
+
+    def _jump_next_link(self):
+        """Move the cursor to the next document row containing a link."""
+        _rows = BODY_ROWS - 1
+        lines = self.browser_lines
+        cur = self.browser_cursor if self.browser_cursor >= 0 else -1
+        start = self.browser_scroll + cur + 1
+        for idx in range(start, len(lines)):
+            has_link = False
+            for s in lines[idx]:
+                if s[4] is not None:
+                    has_link = True
+                    break
+            if has_link:
+                if idx < self.browser_scroll or idx >= self.browser_scroll + _rows:
+                    self.browser_scroll = max(0, min(idx, len(lines) - _rows))
+                self.browser_cursor = idx - self.browser_scroll
+                self.dirty = True
+                return
+        self.dirty = True
+
+    def _handle_key_browser(self, ch, key):
+        if ch == 0x08:    # Backspace — back, or exit at stack bottom
+            self._browser_back()
+            return True
+        elif ch == 0x1B:  # Esc — straight out to the NET tab
+            self._browser_exit()
+            return True
+        elif ch == 0x0D:  # Enter mirrors the trackball click
+            self._browser_follow_cursor()
+            return True
+        elif key == b'r' or key == b'R':
+            if self.on_browse_refresh and self.browser_path:
+                self.browser_status = "reloading..."
+                self.dirty = True
+                self.on_browse_refresh()
+            return True
+        elif key == b'n' or key == b'N':
+            self._jump_next_link()
             return True
         return False
 
@@ -1306,6 +1598,18 @@ class UI:
             self._irq_last_click = t
             self._irq_click += 1
 
+    def _irq_handler_left(self, pin):
+        t = time.ticks_ms()
+        if time.ticks_diff(t, self._irq_last_h) >= _TB_H_DEBOUNCE_MS:
+            self._irq_last_h = t
+            self._irq_left += 1
+
+    def _irq_handler_right(self, pin):
+        t = time.ticks_ms()
+        if time.ticks_diff(t, self._irq_last_h) >= _TB_H_DEBOUNCE_MS:
+            self._irq_last_h = t
+            self._irq_right += 1
+
     def handle_trackball(self):
         """Drain IRQ-captured trackball events."""
         # Read and reset counters — no disable_irq needed; worst case
@@ -1313,8 +1617,10 @@ class UI:
         up = self._irq_up;  self._irq_up = 0
         down = self._irq_down;  self._irq_down = 0
         click = self._irq_click;  self._irq_click = 0
+        left = self._irq_left;  self._irq_left = 0
+        right = self._irq_right;  self._irq_right = 0
 
-        if not (up or down or click):
+        if not (up or down or click or left or right):
             return False
 
         # If screen is off, consume the event and just wake
@@ -1324,15 +1630,36 @@ class UI:
 
         self.wake_screen()
 
+        # Diagonal-roll jitter: the ball emits stray pulses on the other
+        # axis — only the dominant axis of this drain cycle counts
+        # (vertical wins ties: scrolling is the common gesture).
+        if up + down >= left + right:
+            left = right = 0
+        else:
+            up = down = 0
+
         for _ in range(up):
             self._scroll_up()
         for _ in range(down):
             self._scroll_down()
+        if left or right:
+            if self.state == STATE_NODES:
+                tab = 0 if left else 1
+                if tab != self.node_tab:
+                    self._switch_tab(tab)
+            elif self.state == STATE_BROWSER:
+                if left:
+                    self._browser_back()
         if click:
             if self.state == STATE_IMAGE:
                 self._exit_image_view()
             elif self.state == STATE_NODES:
-                self._enter_chat()
+                if self.node_tab == 0:
+                    self._enter_chat()
+                else:
+                    self._open_selected_node()
+            elif self.state == STATE_BROWSER:
+                self._browser_follow_cursor()
             elif self.state == STATE_CHAT:
                 # If cursor is on an image line, open it
                 if self.chat_cursor >= 0 and self.chat_cursor in self._visible_image_lines:
@@ -1357,12 +1684,26 @@ class UI:
         if self.state == STATE_IMAGE:
             return
         elif self.state == STATE_NODES:
-            if self.selected_idx > 0:
-                self.selected_idx -= 1
-                if self.selected_idx < self.node_scroll:
-                    self.node_scroll = self.selected_idx
+            if self.node_tab == 0:
+                if self.selected_idx > 0:
+                    self.selected_idx -= 1
+                    if self.selected_idx < self.node_scroll:
+                        self.node_scroll = self.selected_idx
+            else:
+                if self.net_idx > 0:
+                    self.net_idx -= 1
+                    if self.net_idx < self.net_scroll:
+                        self.net_scroll = self.net_idx
         elif self.state == STATE_SETTINGS:
             self._settings_scroll_up()
+        elif self.state == STATE_BROWSER:
+            # Move cursor up; scroll viewport when cursor reaches top
+            if self.browser_cursor > 0:
+                self.browser_cursor -= 1
+            elif self.browser_cursor == 0 and self.browser_scroll > 0:
+                self.browser_scroll -= 1
+            elif self.browser_cursor < 0:
+                self.browser_cursor = 0
         else:
             # Move cursor up; scroll viewport when cursor reaches top
             _chat_rows = BODY_ROWS - 1
@@ -1379,12 +1720,29 @@ class UI:
         if self.state == STATE_IMAGE:
             return
         elif self.state == STATE_NODES:
-            if self.selected_idx < len(self._peer_keys) - 1:
-                self.selected_idx += 1
-                if self.selected_idx >= self.node_scroll + BODY_ROWS:
-                    self.node_scroll = self.selected_idx - BODY_ROWS + 1
+            _rows = BODY_ROWS - 1  # tab bar takes the first body row
+            if self.node_tab == 0:
+                if self.selected_idx < len(self._peer_keys) - 1:
+                    self.selected_idx += 1
+                    if self.selected_idx >= self.node_scroll + _rows:
+                        self.node_scroll = self.selected_idx - _rows + 1
+            else:
+                if self.net_idx < len(self._node_keys) - 1:
+                    self.net_idx += 1
+                    if self.net_idx >= self.net_scroll + _rows:
+                        self.net_scroll = self.net_idx - _rows + 1
         elif self.state == STATE_SETTINGS:
             self._settings_scroll_down()
+        elif self.state == STATE_BROWSER:
+            # Move cursor down; scroll viewport when cursor reaches bottom
+            _rows = BODY_ROWS - 1
+            max_scroll = max(0, len(self.browser_lines) - _rows)
+            if self.browser_cursor < 0:
+                self.browser_cursor = 0
+            elif self.browser_cursor < _rows - 1:
+                self.browser_cursor += 1
+            elif self.browser_scroll < max_scroll:
+                self.browser_scroll += 1
         else:
             # Move cursor down; scroll viewport when cursor reaches bottom
             _chat_rows = BODY_ROWS - 1
@@ -1446,6 +1804,35 @@ class UI:
         if dest_hash not in self._peer_keys:
             self._peer_keys.append(dest_hash)
         self._route_cache = ''  # selected-peer footer may show new route info
+        self.dirty = True
+
+    def add_nomad_node(self, dest_hash, name, hops=None, seen=None):
+        """Add or update a NomadNet node (NET tab, called by nomad_browser)."""
+        prev = self.nomad_nodes.get(dest_hash)
+        if prev is None and len(self.nomad_nodes) >= MAX_PEERS:
+            oldest = self._node_keys[0]
+            del self.nomad_nodes[oldest]
+            self._node_keys.pop(0)
+        if prev:
+            if name is None:
+                name = prev.get("name")
+            # never let a stale storage seed overwrite a fresher announce
+            if seen is not None and prev.get("seen", 0) > seen:
+                seen = prev["seen"]
+        self.nomad_nodes[dest_hash] = {"name": name or "?", "hops": hops,
+                                       "seen": time.time() if seen is None else seen}
+        if dest_hash not in self._node_keys:
+            self._node_keys.append(dest_hash)
+        self._route_cache = ''
+        self.dirty = True
+
+    def clear_nomad_nodes(self):
+        """Clear the NET tab (interface switch)."""
+        self.nomad_nodes.clear()
+        self._node_keys.clear()
+        self.net_idx = 0
+        self.net_scroll = 0
+        self._cache = [''] * 15
         self.dirty = True
 
     def add_chat_message(self, dest_hash, is_mine, text, status=0, image=None, audio=None, audio_mode=None):
@@ -1547,6 +1934,8 @@ class UI:
         elif self.state == STATE_CHAT:
             self.draw_chat()
             self.draw_input()
+        elif self.state == STATE_BROWSER:
+            self.draw_browser()
         elif self.state == STATE_RECORDING:
             self._draw_recording()
         self.dirty = False

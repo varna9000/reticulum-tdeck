@@ -773,6 +773,7 @@ def tcp_toggle(enabled, host=None, port=None):
             _stop_lora()
             gui.clear_peers()
             _lxmf_to_peer.clear()
+            nomad_browser.clear_nodes()
             Transport.register_interface(iface)
             _tcp_task = asyncio.create_task(iface.poll_loop())
             _tcp_iface = iface
@@ -800,6 +801,7 @@ def tcp_toggle(enabled, host=None, port=None):
             _save_settings(settings)
             gui.clear_peers()
             _lxmf_to_peer.clear()
+            nomad_browser.clear_nodes()
             if DEBUG >= 1:
                 print("[TCP] Interface stopped")
             # Disconnect WiFi
@@ -974,6 +976,16 @@ def _on_audio_play(audio_data, audio_mode):
     import uasyncio as asyncio
     asyncio.create_task(_play_audio(audio_data, audio_mode))
 gui.on_audio_play = _on_audio_play
+
+# --- NomadNet page browser (NET tab) ---
+import nomad_browser
+nomad_browser.init(gui)
+gui.on_browse = nomad_browser.browse
+gui.on_browse_follow = nomad_browser.follow
+gui.on_browse_back = nomad_browser.back
+gui.on_browse_refresh = nomad_browser.refresh
+gui.on_browser_exit = nomad_browser.browser_exit
+gui.on_net_seed = nomad_browser.seed_nodes
 
 _MAX_REC_SECS = 15  # max recording duration
 _REC_CHUNK = 640    # samples per mic read (80ms) — larger chunks reduce GIL contention

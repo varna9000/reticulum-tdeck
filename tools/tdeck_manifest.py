@@ -27,6 +27,8 @@ _vendor = _root + "/vendor/uP-reticulum/firmware"
 freeze(_root, "ui.py")
 freeze(_root, "sound.py")
 freeze(_root, "es7210.py")
+freeze(_root, "micron.py")
+freeze(_root, "nomad_browser.py")
 freeze(_vendor, "lora_boards.py")
 freeze(_vendor + "/peripherals", "adc_reader.py")
 
