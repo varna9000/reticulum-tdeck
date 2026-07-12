@@ -20,6 +20,7 @@ _SET_WIFI_SCAN = 1
 _SET_WIFI_PASS = 2
 _SET_TCP_HOST  = 3
 _SET_NODE_NAME = 4
+_SET_RADIO     = 5
 
 # Layout constants (320x240 landscape, 8x16 font)
 SCREEN_W = 320
@@ -57,6 +58,42 @@ def _pad(s, width=COLS):
     return s + ' ' * (width - len(s))
 
 
+# Wall clock is meaningful only after network time sync (no RTC battery)
+def _clock_valid():
+    return time.localtime()[0] >= 2024
+
+
+def _fmt_clock():
+    t = time.localtime()
+    return "%02d:%02d" % (t[3], t[4])
+
+
+def _fmt_time(ts):
+    """Message timestamp: HH:MM today, MM-DD HH:MM otherwise. '' if the
+    clock wasn't synced when the message was stored."""
+    t = time.localtime(int(ts))
+    if t[0] < 2024:
+        return ""
+    now = time.localtime()
+    if (t[0], t[1], t[2]) == (now[0], now[1], now[2]):
+        return "%02d:%02d" % (t[3], t[4])
+    return "%02d-%02d %02d:%02d" % (t[1], t[2], t[3], t[4])
+
+
+def _age(ts):
+    """Compact age: now / 5m / 2h / 3d."""
+    if not ts:
+        return "?"
+    d = int(time.time() - ts)
+    if d < 60:
+        return "now"
+    if d < 3600:
+        return str(d // 60) + "m"
+    if d < 86400:
+        return str(d // 3600) + "h"
+    return str(d // 86400) + "d"
+
+
 class UI:
 
     def __init__(self, tft, font, get_key_func, node_name="T-Deck"):
@@ -89,11 +126,15 @@ class UI:
         self._nav_mid_cache = ''
         self._nav_right_cache = ''
 
-        # Peers: dest_hash_bytes -> {"name": str, "rssi": int}
+        # Peers: dest_hash_bytes -> {"name": str, "rssi": int,
+        #                            "hops": int|None, "via": str|None, "seen": ts}
         self.peers = {}
         self._peer_keys = []  # ordered list of dest_hash_bytes
         self.selected_idx = 0
         self.node_scroll = 0
+        self._route_cache = ''   # footer route/ping line cache (node list)
+        self.ping_status = None  # transient "ping: 2.4s" text
+        self._ping_status_ms = 0
 
         # Chat: dest_hash_bytes -> [(is_mine, text, timestamp, status), ...]
         # status: 0=none, 1=pending, 2=delivered, 3=failed
@@ -163,6 +204,7 @@ class UI:
         self._viewing_image = None  # jpeg_bytes currently displayed
         self._image_drawn = False  # True once JPEG has been blitted
         self._visible_image_lines = {}  # display_row -> msg_idx (populated by draw_chat)
+        self._visible_msg_lines = {}    # display_row -> msg_idx for ALL messages
 
         # Chat lines cache (avoids rebuilding word-wrapped lines on every draw)
         self._chat_lines_cache = None
@@ -173,9 +215,14 @@ class UI:
         self._screen_on = True
         self._bl = None  # backlight pin, set by set_backlight()
 
+        # Node identity/info (set by tdeck_node.py)
+        self.my_address = None       # own LXMF address hex string
+        self.get_radio_stats = None  # () -> [(label, value), ...] for radio page
+
         # Callbacks (set by tdeck_node.py)
         self.on_send = None       # on_send(dest_hash_bytes, text)
         self.on_announce = None   # on_announce()
+        self.on_ping = None       # on_ping(dest_hash_bytes)
         self.on_wifi_scan = None      # () -> [(ssid, rssi), ...]
         self.on_wifi_connect = None   # (ssid, password) -> bool
         self.on_tcp_toggle = None     # (enabled, host, port) -> bool
@@ -252,6 +299,10 @@ class UI:
             center = "[LoRa] snr:" + str(self.snr or 0)
         else:
             center = "[LoRa]"
+
+        # Mesh-synced wall clock (only meaningful after time sync)
+        if _clock_valid():
+            center = center + " " + _fmt_clock()
 
         # Right side: [ann][name] right-aligned
         right_str = (ann + " " if ann else "") + name
@@ -391,10 +442,41 @@ class UI:
             self.tft.text(self.font, _pad(""), 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
             self.tft.text(self.font, "(", 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
             self.tft.text(self.font, "a", CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
-            self.tft.text(self.font, ")nnounce", 2 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+            self.tft.text(self.font, ")nnc", 2 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+            self.tft.text(self.font, "(", 7 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+            self.tft.text(self.font, "s", 8 * CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
+            self.tft.text(self.font, ")et", 9 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
             self.tft.text(self.font, "(", 13 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-            self.tft.text(self.font, "s", 14 * CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
-            self.tft.text(self.font, ")ettings", 15 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+            self.tft.text(self.font, "p", 14 * CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
+            self.tft.text(self.font, ")ing", 15 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+            self._route_cache = ''
+
+        # Dynamic footer right (cols 20-39): transient ping result, else the
+        # selected peer's route (hops/via from announces) + RSSI + last-seen
+        if self.ping_status and time.ticks_diff(time.ticks_ms(), self._ping_status_ms) < 8000:
+            info = self.ping_status
+        else:
+            info = ""
+            if self._peer_keys and self.selected_idx < len(self._peer_keys):
+                p = self.peers.get(self._peer_keys[self.selected_idx])
+                if p:
+                    hops = p.get("hops")
+                    if hops is None:
+                        route = ""
+                    elif hops <= 1:
+                        route = "direct"
+                    else:
+                        route = str(hops) + "h via " + (p.get("via") or "?")
+                    rs = p.get("rssi")
+                    bits = [b for b in (route,
+                                        (str(rs) + "dB") if rs is not None else "",
+                                        _age(p.get("seen"))) if b]
+                    info = " ".join(bits)
+        info = info[-20:]
+        if self._route_cache != info:
+            self._route_cache = info
+            self.tft.text(self.font, _pad(info, 20), 20 * CHAR_W, INPUT_Y,
+                          self.DIM_CYAN, self.BG_DARK)
 
     # --- Chat screen ---
 
@@ -412,7 +494,9 @@ class UI:
         if self._chat_lines_cache is not None and self._chat_lines_peer == self.selected_peer:
             return self._chat_lines_cache
 
-        _suffix_map = {1: " ..", 2: " \xfb", 3: " !"}
+        # 1 pending, 2 delivered, 3 failed, 4 queued (route discovery),
+        # 5 sent — awaiting delivery proof (DIRECT transfers)
+        _suffix_map = {1: " ..", 2: " \xfb", 3: " !", 4: " ~", 5: " >"}
         msgs = self.chat_history.get(self.selected_peer, [])
         lines = []
         for mi, msg in enumerate(msgs):
@@ -473,12 +557,14 @@ class UI:
         # Track which visible lines have images/audio
         self._visible_image_lines = {}  # display_row -> msg_idx
         self._visible_audio_lines = {}  # display_row -> msg_idx
+        self._visible_msg_lines = {}    # display_row -> msg_idx (all messages)
 
         # Clamp chat_cursor to visible range
         if self.chat_cursor >= len(visible):
             self.chat_cursor = len(visible) - 1
 
-        _status_color = {1: self.YELLOW, 2: self.NEON_GREEN, 3: self.NEON_MAG}
+        _status_color = {1: self.YELLOW, 2: self.NEON_GREEN, 3: self.NEON_MAG,
+                         4: self.DIM_CYAN, 5: self.YELLOW}
         for i in range(_chat_rows):
             y = BODY_Y + (i + 1) * CHAR_H
             ci = i + 2  # cache index (1=header, 2..12=chat rows)
@@ -490,6 +576,7 @@ class UI:
                     self._visible_image_lines[i] = msg_idx
                 if has_audio and is_first:
                     self._visible_audio_lines[i] = msg_idx
+                self._visible_msg_lines[i] = msg_idx
 
                 is_highlighted = (i == self.chat_cursor)
                 in_cache = (self.selected_peer, msg_idx) in self._image_cache if has_image and is_first else True
@@ -573,11 +660,22 @@ class UI:
             self.tft.text(self.font, text_padded, 2 * CHAR_W, INPUT_Y, self.NEON_CYAN, self.BG_DARK)
         else:
             _on_image = self.chat_cursor >= 0 and self.chat_cursor in self._visible_image_lines
-            ik = "IMG" if _on_image else "BACK"
+            # Timestamp of the highlighted message (empty pre-time-sync)
+            _ts_txt = ""
+            if self.chat_cursor >= 0 and self.chat_cursor in self._visible_msg_lines:
+                try:
+                    _mi = self._visible_msg_lines[self.chat_cursor]
+                    _ts_txt = _fmt_time(self.chat_history[self.selected_peer][_mi][2])
+                except Exception:
+                    _ts_txt = ""
+            ik = ("IMG" if _on_image else "BACK") + _ts_txt
             if self._cache[14] == ik:
                 return
             self._cache[14] = ik
             self.tft.text(self.font, _pad("> _"), 0, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
+            if _ts_txt:
+                self.tft.text(self.font, _pad(_ts_txt, 16), 6 * CHAR_W, INPUT_Y,
+                              self.DIM_CYAN, self.BG_DARK)
             if _on_image:
                 _hx = (COLS - 12) * CHAR_W
                 self.tft.text(self.font, "[", _hx, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
@@ -712,6 +810,13 @@ class UI:
             self.state = STATE_SETTINGS
             self._state_change_ms = time.ticks_ms()
             self.dirty = True
+            return True
+        elif key == b'p' or key == b'P':
+            if self.on_ping and self._peer_keys and self.selected_idx < len(self._peer_keys):
+                self.ping_status = "ping..."
+                self._ping_status_ms = time.ticks_ms()
+                self.dirty = True
+                self.on_ping(self._peer_keys[self.selected_idx])
             return True
         return False
 
@@ -850,6 +955,19 @@ class UI:
                     self._cache = [''] * 15
                     self.dirty = True
                     return True
+                elif self._settings_idx == 5:  # Radio stats page
+                    self._settings_page = _SET_RADIO
+                    self._cache = [''] * 15
+                    self.dirty = True
+                    return True
+                # idx 6 (address) is informational — Enter does nothing
+        elif self._settings_page == _SET_RADIO:
+            if ch == 0x1B or ch == 0x08:
+                self._settings_page = _SET_MAIN
+                self._settings_idx = 5
+                self._cache = [''] * 15
+                self.dirty = True
+                return True
         elif self._settings_page == _SET_WIFI_SCAN:
             if ch == 0x1B or ch == 0x08:
                 self._settings_page = _SET_MAIN
@@ -999,6 +1117,8 @@ class UI:
             self._draw_tcp_host()
         elif self._settings_page == _SET_NODE_NAME:
             self._draw_node_name()
+        elif self._settings_page == _SET_RADIO:
+            self._draw_settings_radio()
         # Separator
         self.tft.fill_rect(0, SEP_Y, SCREEN_W, 2, self.DIM_CYAN)
 
@@ -1018,7 +1138,10 @@ class UI:
 
         vol_bar = "#" * self._volume + "." * (10 - self._volume)
         vol_line = "Vol:  [" + vol_bar + "] " + str(self._volume)
-        items = [wifi_line, tcp_line, name_line, lora_line, vol_line]
+        radio_line = "Radio stats"
+        addr_line = "Addr: " + (self.my_address or "?")
+        items = [wifi_line, tcp_line, name_line, lora_line, vol_line,
+                 radio_line, addr_line]
         for i in range(BODY_ROWS - 1):
             y = BODY_Y + (i + 1) * CHAR_H
             if i < len(items):
@@ -1034,6 +1157,24 @@ class UI:
             else:
                 self._draw_row_cached(i + 2, "", y, self.NEON_CYAN)
 
+        self._draw_settings_bottom_bar()
+
+    def _draw_settings_radio(self):
+        self._draw_row_cached(1, "< Radio / Mesh", BODY_Y, self.NEON_CYAN)
+        stats = []
+        if self.get_radio_stats:
+            try:
+                stats = self.get_radio_stats()
+            except Exception:
+                stats = [("error", "")]
+        for i in range(BODY_ROWS - 1):
+            y = BODY_Y + (i + 1) * CHAR_H
+            if i < len(stats):
+                label, value = stats[i]
+                line = "  " + _pad(str(label), 14) + str(value)
+                self._draw_row_cached(i + 2, line, y, self.NEON_CYAN)
+            else:
+                self._draw_row_cached(i + 2, "", y, self.NEON_CYAN)
         self._draw_settings_bottom_bar()
 
     def _draw_settings_bottom_bar(self):
@@ -1251,7 +1392,7 @@ class UI:
 
     def _settings_scroll_down(self):
         if self._settings_page == _SET_MAIN:
-            if self._settings_idx < 4:  # 5 items: WiFi, TCP, Name, LoRa, Volume
+            if self._settings_idx < 6:  # 7 items: WiFi..Volume, Radio, Addr
                 self._settings_idx += 1
         elif self._settings_page == _SET_WIFI_SCAN:
             if self._settings_idx < len(self._wifi_networks) - 1:
@@ -1275,7 +1416,7 @@ class UI:
         self._cache = [''] * 15
         self.dirty = True
 
-    def add_peer(self, dest_hash, name, rssi=None):
+    def add_peer(self, dest_hash, name, rssi=None, hops=None, via=None):
         """Add or update a peer from an announce."""
         if dest_hash not in self.peers:
             if len(self.peers) >= MAX_PEERS:
@@ -1283,9 +1424,11 @@ class UI:
                 del self.peers[oldest]
                 self._peer_keys.pop(0)
 
-        self.peers[dest_hash] = {"name": name or "?", "rssi": rssi}
+        self.peers[dest_hash] = {"name": name or "?", "rssi": rssi,
+                                 "hops": hops, "via": via, "seen": time.time()}
         if dest_hash not in self._peer_keys:
             self._peer_keys.append(dest_hash)
+        self._route_cache = ''  # selected-peer footer may show new route info
         self.dirty = True
 
     def add_chat_message(self, dest_hash, is_mine, text, status=0, image=None, audio=None, audio_mode=None):
@@ -1345,7 +1488,8 @@ class UI:
         if hist and 0 <= index < len(hist):
             old = hist[index]
             has_image = old[4] if len(old) > 4 else False
-            hist[index] = (old[0], old[1], old[2], status, has_image)
+            has_audio = old[5] if len(old) > 5 else False
+            hist[index] = (old[0], old[1], old[2], status, has_image, has_audio)
             if self.state == STATE_CHAT and self.selected_peer == dest_hash:
                 self._invalidate_chat_lines()
                 for i in range(1, BODY_ROWS + 1):
@@ -1475,3 +1619,24 @@ class UI:
                 self._nav_bat_cache = ''  # only invalidate battery section
                 self.dirty = True
             await asyncio.sleep(10)
+
+    async def ticker_loop(self):
+        """1s housekeeping tick: refresh the radio stats page while open,
+        expire the transient ping status, and repaint the navbar clock on
+        minute changes. Never draws — row caches skip unchanged text."""
+        _last_min = -1
+        while True:
+            if self._screen_on:
+                if self.state == STATE_SETTINGS and self._settings_page == _SET_RADIO:
+                    self.dirty = True
+                if self.ping_status and time.ticks_diff(
+                        time.ticks_ms(), self._ping_status_ms) >= 8000:
+                    self.ping_status = None
+                    if self.state == STATE_NODES:
+                        self.dirty = True
+                if _clock_valid():
+                    m = time.localtime()[4]
+                    if m != _last_min:
+                        _last_min = m
+                        self.dirty = True
+            await asyncio.sleep(1)

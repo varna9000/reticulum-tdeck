@@ -289,6 +289,11 @@ def _on_message_inner(message):
     content = message.content_as_string() or "(binary)"
     source_hash = message.source_hash
 
+    # Bump the sender's last-seen timestamp in the peer list
+    _pk = _lxmf_to_peer.get(source_hash, source_hash)
+    if _pk in gui.peers:
+        gui.peers[_pk]["seen"] = time.time()
+
     # Extract image if present
     image_data = None
     fields = message.fields if hasattr(message, 'fields') else {}
@@ -407,6 +412,7 @@ def on_announce(destination_hash, display_name):
         if existing and existing != destination_hash and existing in gui.peers:
             # Same node, different destination — update existing peer
             gui.peers[existing]["name"] = display_name or gui.peers[existing].get("name", "?")
+            gui.peers[existing]["seen"] = time.time()
             _lxmf_to_peer[lxmf_hash] = existing
             gui.dirty = True
             if DEBUG >= 1:
@@ -423,10 +429,26 @@ def on_announce(destination_hash, display_name):
             gui.rssi = iface.rssi
             gui.snr = iface.snr
             break
-    gui.add_peer(destination_hash, display_name, rssi=rssi)
+
+    # Route info from the transport path table (hops + next-hop relay)
+    hops = None
+    via = None
+    try:
+        from urns.transport import Transport
+        from urns import const as _uc
+        entry = Transport.path_table.get(destination_hash)
+        if entry:
+            hops = entry[_uc.IDX_PT_HOPS]
+            if hops and hops > 1:
+                via = entry[_uc.IDX_PT_NEXT_HOP].hex()[:4]
+    except Exception:
+        pass
+
+    gui.add_peer(destination_hash, display_name, rssi=rssi, hops=hops, via=via)
     gui.wake_screen()
     if DEBUG >= 1:
-        print("[Peer]", display_name or "?", "[" + destination_hash.hex()[:8] + "]")
+        print("[Peer]", display_name or "?", "[" + destination_hash.hex()[:8] + "]",
+              "hops:", hops)
 
 
 def on_progress(resource):
@@ -447,6 +469,52 @@ def gui_send(dest_hash, text, msg_idx=None):
     asyncio.create_task(_async_send(dest_hash, text, msg_idx))
 
 
+async def _watch_queued(dest_hash, msg_idx):
+    """A send was queued behind a path request (status 4). The router
+    re-sends by itself once a path arrives — reflect that in the GUI."""
+    import uasyncio as asyncio
+    from urns.transport import Transport
+    for _ in range(13):  # ~26s; router's path request times out at 15s
+        await asyncio.sleep(2)
+        if Transport.has_path(dest_hash):
+            gui.update_message_status(dest_hash, msg_idx, 2)
+            gui.dirty = True
+            sound.play_tx()
+            if DEBUG >= 1:
+                print("[TX] Route found, message sent to", dest_hash.hex()[:8])
+            return
+    gui.update_message_status(dest_hash, msg_idx, 3)
+    gui.dirty = True
+    if DEBUG >= 1:
+        print("[TX] No route found for", dest_hash.hex()[:8])
+
+
+async def _track_delivery(msg, dest_hash, msg_idx, timeout=150):
+    """Watch a DIRECT LXMessage (status 5) until the transfer concludes:
+    DELIVERED -> checkmark, FAILED -> '!'. Covers link setup + resource
+    transfer over multi-hop LoRa, hence the generous timeout."""
+    import uasyncio as asyncio
+    from urns.lxmf import LXMessage
+    t = 0
+    while t < timeout:
+        await asyncio.sleep(2)
+        t += 2
+        state = getattr(msg, "state", None)
+        if state == LXMessage.DELIVERED:
+            gui.update_message_status(dest_hash, msg_idx, 2)
+            gui.dirty = True
+            if DEBUG >= 1:
+                print("[TX] Delivered to", dest_hash.hex()[:8])
+            return
+        if state == LXMessage.FAILED:
+            gui.update_message_status(dest_hash, msg_idx, 3)
+            gui.dirty = True
+            if DEBUG >= 1:
+                print("[TX] Delivery failed to", dest_hash.hex()[:8])
+            return
+    # Still unresolved — leave the '>' marker as-is (honest: sent, unproven)
+
+
 async def _async_send(dest_hash, text, msg_idx=None):
     """Send LXMF message as async task (crypto is slow)."""
     import uasyncio as asyncio
@@ -459,8 +527,10 @@ async def _async_send(dest_hash, text, msg_idx=None):
     try:
         msg = router.send_message(dest_hash, text)
         if msg is True:
-            # Queued behind a path request — leave status pending; the
-            # router re-sends by itself once a path is found.
+            # Queued behind a path request
+            gui.update_message_status(dest_hash, msg_idx, 4)
+            gui.dirty = True
+            asyncio.create_task(_watch_queued(dest_hash, msg_idx))
             if DEBUG >= 1:
                 print("[TX] Queued (path request) for", dest_hash.hex()[:8])
         elif msg:
@@ -468,8 +538,14 @@ async def _async_send(dest_hash, text, msg_idx=None):
             if DEBUG >= 1:
                 print("[TX] Sent to", dest_hash.hex()[:8])
 
-            # Mark as sent — receipt tracking not available in upstream API
-            gui.update_message_status(dest_hash, msg_idx, 2)
+            from urns.lxmf import LXMessage
+            if getattr(msg, "method", None) == LXMessage.DIRECT:
+                # DIRECT transfers report real delivery — track it
+                gui.update_message_status(dest_hash, msg_idx, 5)
+                asyncio.create_task(_track_delivery(msg, dest_hash, msg_idx))
+            else:
+                # Opportunistic: no delivery proof surfaced — mark sent
+                gui.update_message_status(dest_hash, msg_idx, 2)
             gui.dirty = True
         else:
             gui.update_message_status(dest_hash, msg_idx, 3)
@@ -760,6 +836,96 @@ def set_node_name(name):
         print("[Settings] Node name:", name)
 
 
+def get_radio_stats():
+    """Rows for the GUI's Radio/Mesh stats page: [(label, value), ...]"""
+    from urns.transport import Transport
+    from urns.identity import Identity
+    rows = []
+    lora = None
+    for iface in rns.interfaces:
+        if iface.__class__.__name__ == 'LoRaInterface':
+            lora = iface
+            break
+    if lora:
+        rows.append(("LoRa", "online" if lora.online else "OFFLINE"))
+        rows.append(("RF", str(lora._freq_khz) + "kHz SF" + str(lora._sf)
+                     + " " + str(lora._tx_power) + "dBm"))
+        if gui.rssi is not None:
+            rows.append(("last RX", str(gui.rssi) + "dBm snr " + str(gui.snr)))
+        rows.append(("TX", str(lora.tx) + " pkts " + str(lora.txb) + "B"))
+        rows.append(("RX", str(getattr(lora, 'rx', 0)) + " pkts "
+                     + str(getattr(lora, 'rxb', 0)) + "B"))
+        rows.append(("CRC err", str(getattr(lora._modem, 'crc_errors', 0)
+                                    if lora._modem else "?")))
+        rows.append(("LBT", str(lora._lbt_waits) + " waits "
+                     + str(lora._lbt_forced) + " forced"))
+    else:
+        rows.append(("LoRa", "not running"))
+    rows.append(("paths", str(len(Transport.path_table))))
+    rows.append(("identities", str(len(Identity.known_destinations))))
+    rows.append(("free mem", str(gc.mem_free() // 1024) + "kB"))
+    if time.localtime()[0] >= 2024:
+        rows.append(("clock", "mesh-synced"))
+    return rows
+
+
+def on_ping(dest_hash):
+    """Ping a peer's probe destination; RTT via delivery proof receipt."""
+    import uasyncio as asyncio
+    asyncio.create_task(_ping_task(dest_hash))
+
+
+async def _ping_task(dest_hash):
+    import uasyncio as asyncio
+    import os as _os
+    await asyncio.sleep(0)
+
+    def _show(text):
+        gui.ping_status = text
+        gui._ping_status_ms = time.ticks_ms()
+        gui._route_cache = ''
+        gui.dirty = True
+
+    try:
+        from urns.identity import Identity
+        from urns.destination import Destination
+        from urns.packet import Packet
+
+        identity = Identity.recall(dest_hash)
+        if identity is None:
+            _show("ping: no identity")
+            return
+        # Peers running uP-reticulum answer probes on urns.probe (PROVE_ALL)
+        probe_dest = Destination(identity, Destination.OUT,
+                                 Destination.SINGLE, "urns", "probe")
+        pkt = Packet(probe_dest, _os.urandom(8), create_receipt=True)
+        _t0 = time.ticks_ms()
+        pkt.send()
+        receipt = getattr(pkt, "receipt", None)
+        if receipt is None:
+            _show("ping: send failed")
+            return
+        receipt.timeout = 60  # multi-hop LoRa RTT
+
+        def _delivered(r):
+            rtt = time.ticks_diff(time.ticks_ms(), _t0) / 1000
+            _show("ping: %.1fs" % rtt)
+            if DEBUG >= 1:
+                print("[Ping] reply from", dest_hash.hex()[:8], "in %.1fs" % rtt)
+
+        def _timeout(r):
+            _show("ping: no reply")
+            if DEBUG >= 1:
+                print("[Ping] no reply from", dest_hash.hex()[:8])
+
+        receipt.delivery_callback = _delivered
+        receipt.timeout_callback = _timeout
+    except Exception as e:
+        _show("ping: error")
+        if DEBUG >= 1:
+            print("[Ping] error:", e)
+
+
 gui.on_send = gui_send
 gui.on_announce = gui_announce
 gui.on_wifi_scan = wifi_scan
@@ -768,6 +934,9 @@ gui.on_tcp_toggle = tcp_toggle
 gui.on_node_name = set_node_name
 gui.on_lora_reset = lora_reset
 gui.on_volume = lambda v: setattr(sound, 'volume', v)
+gui.on_ping = on_ping
+gui.get_radio_stats = get_radio_stats
+gui.my_address = dest.hexhash
 def _on_audio_play(audio_data, audio_mode):
     import uasyncio as asyncio
     asyncio.create_task(_play_audio(audio_data, audio_mode))
@@ -870,10 +1039,13 @@ async def _encode_and_send_voice(dest_hash, pcm_bytes):
         msg = router.send_message(dest_hash, "[voice]", fields=fields,
                                   desired_method=LXMessage.DIRECT)
         if msg is True:
-            # Queued behind a path request — leave status pending
-            pass
+            # Queued behind a path request
+            gui.update_message_status(dest_hash, msg_idx, 4)
+            asyncio.create_task(_watch_queued(dest_hash, msg_idx))
         elif msg:
-            gui.update_message_status(dest_hash, msg_idx, 2)
+            # DIRECT: '>' until the resource transfer concludes
+            gui.update_message_status(dest_hash, msg_idx, 5)
+            asyncio.create_task(_track_delivery(msg, dest_hash, msg_idx))
             sound.play_tx()
         else:
             gui.update_message_status(dest_hash, msg_idx, 3)
@@ -1063,6 +1235,7 @@ def main():
         asyncio.create_task(gui.kbd_loop())
         asyncio.create_task(gui.gui_loop(spi_acquire_display, spi_release_display))
         asyncio.create_task(gui.battery_loop(spi_acquire_display, spi_release_display))
+        asyncio.create_task(gui.ticker_loop())
         await _original_run()
 
     try:

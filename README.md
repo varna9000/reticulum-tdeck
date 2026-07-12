@@ -129,6 +129,11 @@ The device starts on the node list screen showing discovered peers. Peers with u
 | Open chat | Trackball click |
 | Send announce | Press `a` |
 | Open settings | Press `s` |
+| Ping selected peer | Press `p` |
+
+The footer's right side shows the selected peer's **route** — `direct` or `2h via 1a2b` (hops + next-hop relay, learned from announces) — plus last RSSI and last-seen age. Pinging sends a probe to the peer's `urns.probe` destination and shows the round-trip time (`ping: 2.4s`); peers must run uP-reticulum with the probe responder enabled to answer.
+
+The navbar shows a clock (`HH:MM`) once the node has adopted mesh time via network time sync.
 
 ### Chat Screen
 
@@ -142,9 +147,15 @@ The device starts on the node list screen showing discovered peers. Peers with u
 | Back to node list | Backspace (empty input) or Escape |
 
 Message delivery status is shown after each sent message:
-- `..` — pending (waiting for delivery confirmation)
-- checkmark — delivered
-- `!` — failed (no acknowledgement received)
+- `..` — pending (send in progress)
+- `~` — queued: no route yet, a path request is out; sends by itself when a route arrives
+- `>` — sent via DIRECT link, awaiting the delivery proof
+- checkmark — delivered (proven for DIRECT voice/images; handed to the mesh for short texts)
+- `!` — failed
+
+Highlighting a message with the trackball shows its timestamp in the bottom bar (once mesh time is synced).
+
+Settings additionally shows the node's own LXMF address and a live **Radio / Mesh stats** page (RSSI/SNR, TX/RX counters, CRC errors, listen-before-talk stats, path/identity table sizes).
 
 ### Image Viewing
 
