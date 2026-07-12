@@ -34,8 +34,8 @@ class Link:
 
     KEEPALIVE_INTERVAL  = 360   # seconds
     STALE_GRACE         = 720   # seconds
-    ESTABLISHMENT_TIMEOUT = 75  # seconds (multi-hop LoRa: ~30s RTT + 5s ECDH + margin)
-    CREATION_COOLDOWN   = 5     # min seconds between link creations (allow retries over multi-hop)
+    ESTABLISHMENT_TIMEOUT = 25  # seconds (extra margin for slow ECDH on ESP32)
+    CREATION_COOLDOWN   = 15    # min seconds between link creations (ESP32: ECDH ~5s)
     _last_creation      = 0
 
     def __init__(self, destination, packet):
@@ -82,17 +82,15 @@ class Link:
         self.incoming_resources = []
         self.outgoing_resources = []
         self.resource_concluded_callback = None
-        self.resource_started_callback = None
         self.remote_identified_callback = None
         self.packet_callback = None
         self.remote_identity = None
         self.sdu = self.mtu - const.HEADER_MAXSIZE - const.IFAC_MIN_SIZE
 
-        _dbg = "Link request on %s link_id=%s mtu=%d hashable=%dB pkt_data=%dB signalling=%s raw[0]=0x%02x" % (
-            destination.hexhash[:8], self.link_id.hex()[:8], self.mtu,
-            len(hashable_part), len(packet.data),
-            self._signalling_bytes.hex(), packet.raw[0])
-        log(_dbg, LOG_VERBOSE)
+        log("Link request on " + destination.hexhash[:8] + " link_id=" + self.link_id.hex()[:8] + " mtu=" + str(self.mtu)
+            + " hashable=" + str(len(hashable_part)) + "B pkt_data=" + str(len(packet.data)) + "B"
+            + " signalling=" + (self._signalling_bytes.hex() if self._signalling_bytes else "")
+            + " raw[0]=0x" + ("%02x" % packet.raw[0]), LOG_VERBOSE)
 
         # --- Check capacity and rate limit BEFORE expensive crypto ---
         # ECDH + signing takes ~5s on ESP32, blocking the entire event loop.
@@ -190,12 +188,24 @@ class Link:
                 r.receive_part(packet.data)
             return
 
+        # Keepalives are raw 1-byte probes (0xFF -> reply 0xFE), never
+        # Token-encrypted — handle before decrypt (reference RNS Link).
+        if packet.context == const.CTX_KEEPALIVE:
+            self.last_activity = time.time()
+            if packet.data == b"\xff":
+                from .packet import Packet, LinkDestination
+                Packet(
+                    LinkDestination(self.link_id), b"\xfe",
+                    const.PKT_DATA, context=const.CTX_KEEPALIVE,
+                    create_receipt=False,
+                ).send()
+                log("Link " + self.link_id.hex()[:8] + " keepalive answered", LOG_DEBUG)
+            return
+
         try:
             plaintext = self._token.decrypt(packet.data)
         except Exception as e:
-            log("Link " + self.link_id.hex()[:8] + " decrypt failed ctx=0x"
-                + ("%02x" % packet.context) + " data=" + str(len(packet.data))
-                + "B: " + str(e), LOG_DEBUG)
+            log("Link " + self.link_id.hex()[:8] + " decrypt failed: " + str(e), LOG_DEBUG)
             return
 
         self.last_activity = time.time()
@@ -215,8 +225,6 @@ class Link:
             self._handle_resource_cancel(plaintext)
         elif packet.context == const.CTX_RESOURCE_RCL:
             self._handle_resource_cancel(plaintext)
-        elif packet.context == const.CTX_KEEPALIVE:
-            log("Link " + self.link_id.hex()[:8] + " keepalive", LOG_DEBUG)
         elif packet.context == const.CTX_LINKCLOSE:
             log("Link " + self.link_id.hex()[:8] + " close received", LOG_VERBOSE)
             self.status = Link.CLOSED
@@ -360,12 +368,7 @@ class Link:
         if len(self.incoming_resources) >= const.MAX_INCOMING_RESOURCES:
             log("Link " + self.link_id.hex()[:8] + " too many incoming resources", LOG_DEBUG)
             return
-        r = Resource.accept(plaintext, self)
-        if r and self.resource_started_callback:
-            try:
-                self.resource_started_callback(r)
-            except Exception as e:
-                log("Resource started callback error: " + str(e), LOG_ERROR)
+        Resource.accept(plaintext, self)
 
     def _handle_resource_req(self, plaintext):
         """Handle resource part request (sender mode)."""
@@ -373,9 +376,12 @@ class Link:
             r.handle_request(plaintext)
 
     def _handle_resource_prf(self, proof_data):
-        """Handle resource proof (sender mode). Called from transport."""
+        """Handle resource proof (sender mode). Called from transport.
+        Routed by resource hash so stale transfers don't log mismatches."""
+        rhash = proof_data[:32]
         for r in list(self.outgoing_resources):
-            if r.validate_proof(proof_data):
+            if r.hash == rhash:
+                r.validate_proof(proof_data)
                 return
 
     def _handle_resource_cancel(self, plaintext):
@@ -466,18 +472,6 @@ class Link:
         if self.status != Link.CLOSED:
             self.status = Link.CLOSED
             log("Link " + self.link_id.hex()[:8] + " torn down", LOG_VERBOSE)
-        # Break circular refs (MicroPython GC can't collect cycles)
-        self.destination = None
-        self.packet_callback = None
-        self.resource_concluded_callback = None
-        self.resource_started_callback = None
-        self.remote_identified_callback = None
-        for r in self.incoming_resources:
-            r.link = None
-        for r in self.outgoing_resources:
-            r.link = None
-        self.incoming_resources = []
-        self.outgoing_resources = []
 
     def __repr__(self):
         states = {0: "PENDING", 1: "ACTIVE", 2: "CLOSED"}
@@ -490,7 +484,7 @@ class OutgoingLink:
     PENDING = 0x00
     ACTIVE  = 0x01
     CLOSED  = 0x02
-    ESTABLISHMENT_TIMEOUT = 75  # seconds (multi-hop LoRa: ~30s RTT + ECDH + margin)
+    ESTABLISHMENT_TIMEOUT = 30  # seconds (ECDH verify ~7s on ESP32 + network RTT)
 
     def __init__(self, destination, established_callback=None, closed_callback=None):
         from .identity import Identity
@@ -562,23 +556,19 @@ class OutgoingLink:
         sig_len = 64
         key_len = 32
 
+        # Discard malformed/corrupt LRPROOFs without killing the link. A
+        # second, intact copy of the same proof may still arrive (multi-path
+        # RF, transport relay echo). If none ever does, the establishment
+        # timeout will close us.
         if len(proof_data) < sig_len + key_len:
-            log("OutLink proof too short: " + str(len(proof_data)), LOG_ERROR)
-            self._close()
+            log("OutLink proof too short: " + str(len(proof_data)) + ", ignoring", LOG_DEBUG)
             return
 
+        # Tentative parse — do NOT mutate self.mtu/sdu until signature verifies,
+        # otherwise a corrupt proof can silently shrink our MTU.
         signature = proof_data[:sig_len]
         peer_ecdh_pub_bytes = proof_data[sig_len:sig_len + key_len]
-
-        # Parse signalling from proof if present — negotiate link MTU
-        if len(proof_data) > sig_len + key_len:
-            signalling_bytes = proof_data[sig_len + key_len:]
-            peer_mtu, _ = _parse_signalling(signalling_bytes)
-            if peer_mtu > 0:
-                self.mtu = min(self.mtu, peer_mtu)
-                self.sdu = self.mtu - const.HEADER_MAXSIZE - const.IFAC_MIN_SIZE
-        else:
-            signalling_bytes = b""
+        signalling_bytes = proof_data[sig_len + key_len:] if len(proof_data) > sig_len + key_len else b""
 
         # Verify server's signature: sign(link_id + server_ecdh_pub + server_ed25519_pub + signalling)
         peer_sig_pub_bytes = self.destination.identity.sig_pub_bytes
@@ -586,10 +576,16 @@ class OutgoingLink:
 
         gc.collect()
         if not self.destination.identity.validate(signature, signed_data):
-            log("OutLink proof signature invalid", LOG_ERROR)
-            self._close()
+            log("OutLink proof signature invalid, ignoring (link " + self.link_id.hex()[:8] + " still pending)", LOG_DEBUG)
             return
         gc.collect()
+
+        # Signature OK — commit MTU negotiation.
+        if signalling_bytes:
+            peer_mtu, _ = _parse_signalling(signalling_bytes)
+            if peer_mtu > 0:
+                self.mtu = min(self.mtu, peer_mtu)
+                self.sdu = self.mtu - const.HEADER_MAXSIZE - const.IFAC_MIN_SIZE
 
         # ECDH key exchange
         peer_pub = X25519PublicKey.from_public_bytes(peer_ecdh_pub_bytes)
@@ -648,6 +644,12 @@ class OutgoingLink:
                 r.receive_part(packet.data)
             return
 
+        # Keepalive responses (0xFE) are raw, never Token-encrypted — the
+        # peer answers our 0xFF probes; just refresh activity.
+        if packet.context == const.CTX_KEEPALIVE:
+            self.last_activity = time.time()
+            return
+
         try:
             plaintext = self._token.decrypt(packet.data)
         except Exception as e:
@@ -685,8 +687,10 @@ class OutgoingLink:
             r.handle_request(plaintext)
 
     def _handle_resource_prf(self, proof_data):
+        rhash = proof_data[:32]
         for r in list(self.outgoing_resources):
-            if r.validate_proof(proof_data):
+            if r.hash == rhash:
+                r.validate_proof(proof_data)
                 return
 
     def _handle_resource_cancel(self, plaintext):
@@ -756,18 +760,6 @@ class OutgoingLink:
                     self.closed_callback(self)
                 except:
                     pass
-        # Break circular refs (MicroPython GC can't collect cycles)
-        self.destination = None
-        self.established_callback = None
-        self.closed_callback = None
-        self.packet_callback = None
-        self.resource_concluded_callback = None
-        for r in self.incoming_resources:
-            r.link = None
-        for r in self.outgoing_resources:
-            r.link = None
-        self.incoming_resources = []
-        self.outgoing_resources = []
 
     def __repr__(self):
         states = {0: "PENDING", 1: "ACTIVE", 2: "CLOSED"}

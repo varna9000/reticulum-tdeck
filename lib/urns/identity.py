@@ -104,17 +104,19 @@ class Identity:
     @staticmethod
     def _remember_ratchet(destination_hash, ratchet):
         try:
-            if destination_hash in Identity.known_ratchets:
-                if Identity.known_ratchets[destination_hash] == ratchet:
-                    return
-            Identity.known_ratchets[destination_hash] = ratchet
+            # Re-announces refresh the received time, like upstream.
+            Identity.known_ratchets[destination_hash] = (ratchet, time.time())
         except Exception as e:
             log("Could not remember ratchet: " + str(e), LOG_ERROR)
 
     @staticmethod
     def get_ratchet(destination_hash):
-        if destination_hash in Identity.known_ratchets:
-            return Identity.known_ratchets[destination_hash]
+        entry = Identity.known_ratchets.get(destination_hash)
+        if entry:
+            ratchet, received = entry
+            if time.time() < received + const.RATCHET_EXPIRY:
+                return ratchet
+            del Identity.known_ratchets[destination_hash]
         return None
 
     @staticmethod
@@ -187,6 +189,7 @@ class Identity:
             # Some transport paths or older Reticulum versions may encode the
             # context_flag differently, causing ratchet field misalignment.
             if not sig_valid:
+                alternate_layout = False
                 if has_ratchet:
                     log("Ratchet path failed, retrying without ratchet", LOG_DEBUG)
                     ratchet = b""
@@ -194,6 +197,7 @@ class Identity:
                     app_data = b""
                     if len(packet.data) > base + sig_len:
                         app_data = packet.data[base + sig_len:]
+                    alternate_layout = True
                 elif len(packet.data) >= base + ratchetsize + sig_len:
                     log("No-ratchet path failed, retrying with ratchet", LOG_DEBUG)
                     ratchet = packet.data[base:base + ratchetsize]
@@ -201,7 +205,8 @@ class Identity:
                     app_data = b""
                     if len(packet.data) > base + ratchetsize + sig_len:
                         app_data = packet.data[base + ratchetsize + sig_len:]
-                if len(signature) == sig_len:
+                    alternate_layout = True
+                if alternate_layout and len(signature) == sig_len:
                     signed_data = destination_hash + public_key + name_hash + random_hash + ratchet + app_data
                     sig_valid = announced_identity.validate(signature, signed_data)
                     try:

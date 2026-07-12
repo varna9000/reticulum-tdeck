@@ -113,6 +113,13 @@ class Resource:
         if is_response:
             self.flags |= FLAG_IS_RESPONSE
 
+        self.sent_count = 0
+        # Per-part "have we ever served this part?" tracker so the progress
+        # log reflects unique parts delivered, not raw TX events including
+        # retransmits.
+        self._parts_served = [False] * self.total_parts
+        self._unique_parts_served = 0
+
         # Register with link
         self.link.register_outgoing_resource(self)
 
@@ -157,9 +164,17 @@ class Resource:
         r.flags = adv["f"]
         hashmap_raw = adv["m"]
 
-        # Check size limit
+        # Reject what we can't assemble. Multi-segment transfers are what
+        # upstream RNS uses for data above its single-segment limit — chaining
+        # them here would blow past MAX_RESOURCE_SIZE anyway. Cancel so the
+        # sender fails fast instead of both sides stalling until timeout.
+        reject = None
         if r.total_data_size > MAX_RESOURCE_SIZE:
-            log("Resource rejected: too large (" + str(r.total_data_size) + "B)", LOG_ERROR)
+            reject = "too large (" + str(r.total_data_size) + "B)"
+        elif r.total_segments > 1 or r.segment_index > 1:
+            reject = "multi-segment (" + str(r.segment_index) + "/" + str(r.total_segments) + ")"
+        if reject:
+            log("Resource rejected: " + reject, LOG_ERROR)
             cancel_data = link._token.encrypt(r.hash)
             from .packet import Packet, LinkDestination
             cancel_pkt = Packet(
@@ -182,13 +197,12 @@ class Resource:
         r.parts = [None] * r.total_parts
         r.received_count = 0
         r.window_count = 0  # parts received since last request
+        r.last_request_at = 0
+        r.request_retries = 0
         r.sdu = link.sdu
         r.encrypted = None
         r.expected_proof = None
         r.status = TRANSFERRING
-        r.last_request_at = 0
-        r.request_retries = 0
-        r.progress_callback = None
 
         # Register with link
         link.register_incoming_resource(r)
@@ -259,8 +273,31 @@ class Resource:
         self.last_request_at = time.time()
         self.request_retries += 1
         self.link.send(req_data, const.CTX_RESOURCE_REQ)
-        log("Resource request: " + str(len(missing)) + " parts for " + self.hash.hex()[:8]
-            + " (try " + str(self.request_retries) + ")", LOG_DEBUG)
+        log("Resource request: " + str(len(missing)) + " parts for " + self.hash.hex()[:8], LOG_DEBUG)
+
+    def get_progress(self):
+        """Return transfer progress as a float 0.0 to 1.0."""
+        if self.total_parts == 0:
+            return 0.0
+        if self.is_initiator:
+            return self.sent_count / self.total_parts
+        else:
+            return self.received_count / self.total_parts
+
+    def check_request_timeout(self):
+        """(Receiver) Retry resource request if no parts arrived within interval."""
+        if self.status != TRANSFERRING:
+            return
+        if self.last_request_at == 0:
+            return
+        if time.time() - self.last_request_at < REQUEST_RETRY_INTERVAL:
+            return
+        if self.request_retries >= MAX_REQUEST_RETRIES:
+            log("Resource request max retries reached: " + self.hash.hex()[:8], LOG_ERROR)
+            self.cancel()
+            return
+        log("Resource request retry " + str(self.request_retries) + "/" + str(MAX_REQUEST_RETRIES) + " for " + self.hash.hex()[:8], LOG_DEBUG)
+        self.request_next()
 
     def receive_part(self, data):
         """(Receiver) Receive a raw resource part."""
@@ -275,14 +312,9 @@ class Resource:
                 self.parts[i] = data
                 self.received_count += 1
                 self.window_count += 1
-                log("Resource part " + str(i + 1) + "/" + str(self.total_parts) +
-                    " for " + self.hash.hex()[:8], LOG_DEBUG)
-
-                if self.progress_callback:
-                    try:
-                        self.progress_callback(self.received_count, self.total_parts)
-                    except Exception:
-                        pass
+                pct = int(self.received_count * 100 / self.total_parts)
+                log("Resource RX " + str(self.received_count) + "/" + str(self.total_parts) +
+                    " (" + str(pct) + "%) " + self.hash.hex()[:8], LOG_DEBUG)
 
                 if self.received_count == self.total_parts:
                     self.assemble()
@@ -399,9 +431,10 @@ class Resource:
         if self.status not in (ADVERTISED, TRANSFERRING):
             return
 
-        self.status = TRANSFERRING
-
         # Parse request: exhausted(1) + [last_map(4)] + hash(32) + requested(4 each)
+        # NOTE: Link dispatches every resource_req to all outgoing_resources,
+        # so we MUST check the hash before mutating state — otherwise we'd
+        # transition status / log misleading errors for unrelated resources.
         offset = 0
         exhausted = plaintext[offset]
         offset += 1
@@ -414,8 +447,11 @@ class Resource:
         offset += hash_len
 
         if req_hash != self.hash:
-            log("Resource request hash mismatch", LOG_DEBUG)
+            # Not for us — Link iterates all outgoing resources, so a request
+            # for a sibling resource lands here too. Silent return.
             return
+
+        self.status = TRANSFERRING
 
         # Extract requested part hashes
         requested_hashes = []
@@ -423,10 +459,8 @@ class Resource:
             requested_hashes.append(plaintext[offset:offset + MAPHASH_LEN])
             offset += MAPHASH_LEN
 
-        log("Resource sending " + str(len(requested_hashes)) + " parts for " +
-            self.hash.hex()[:8], LOG_DEBUG)
-
-        # Send matching parts
+        # Send matching parts. Count unique parts served (not raw TX events)
+        # so progress stays in [0, total_parts].
         from .packet import Packet, LinkDestination
         for req_hash_part in requested_hashes:
             for i in range(self.total_parts):
@@ -441,7 +475,18 @@ class Resource:
                     )
                     pkt.MTU = self.link.mtu
                     pkt.send()
+                    self.sent_count += 1
+                    if not self._parts_served[i]:
+                        self._parts_served[i] = True
+                        self._unique_parts_served += 1
                     break
+
+        served = self._unique_parts_served
+        pct = int(served * 100 / self.total_parts)
+        retx = self.sent_count - served
+        suffix = " retx=" + str(retx) if retx else ""
+        log("Resource TX " + str(served) + "/" + str(self.total_parts) +
+            " (" + str(pct) + "%) " + self.hash.hex()[:8] + suffix, LOG_DEBUG)
 
     def cancel(self):
         """Cancel this resource transfer."""
@@ -449,21 +494,6 @@ class Resource:
             self.status = FAILED
             log("Resource cancelled: " + self.hash.hex()[:8], LOG_DEBUG)
             self._conclude()
-
-    def check_request_timeout(self):
-        """(Receiver) Retry resource request if no parts arrived within interval."""
-        if self.status != TRANSFERRING:
-            return
-        if self.last_request_at == 0:
-            return
-        if time.time() - self.last_request_at < REQUEST_RETRY_INTERVAL:
-            return
-        if self.request_retries >= MAX_REQUEST_RETRIES:
-            log("Resource " + self.hash.hex()[:8] + " max retries exceeded, cancelling", LOG_ERROR)
-            self.cancel()
-            return
-        log("Resource " + self.hash.hex()[:8] + " request timeout, retrying", LOG_NOTICE)
-        self.request_next()
 
     def is_timed_out(self):
         return time.time() - self.created_at > TIMEOUT

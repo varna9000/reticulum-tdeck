@@ -10,6 +10,7 @@ from .packet import Packet
 from .transport import Transport
 from .log import log, LOG_VERBOSE, LOG_DEBUG, LOG_ERROR, LOG_NOTICE, LOG_INFO
 from .crypto.hashes import sha256
+from .crypto import ed25519
 
 APP_NAME = "lxmf"
 
@@ -313,6 +314,15 @@ class LXMessage:
             message.signature_validated = False
             message.unverified_reason = LXMessage.SOURCE_UNKNOWN
 
+        # Bootstrap the clock from a trusted, signature-validated sender.
+        # No-op unless time sync is enabled and the clock is still unset.
+        if message.signature_validated:
+            try:
+                from .transport import Transport
+                Transport.sync_clock_from(timestamp, source_hash)
+            except Exception:
+                pass
+
         return message
 
     def __str__(self):
@@ -331,7 +341,10 @@ class LXMRouter:
     - Peer announce tracking
     """
 
-    verify_signatures = False  # Skip Ed25519 verify on constrained devices
+    # Verify sender signatures when the native Ed25519 module makes it cheap
+    # (milliseconds). Pure Python verify costs ~2s/message on ESP32, so fall
+    # back to trusting the encryption layer (X25519 ECDH + HMAC-SHA256) there.
+    verify_signatures = ed25519.have_native()
 
     def __init__(self, identity=None, storagepath=None):
         self.identity = identity
@@ -343,7 +356,6 @@ class LXMRouter:
 
         self._delivery_callback = None
         self._announce_callback = None
-        self._progress_callback = None
 
         self.peers = {}  # hash -> {name, timestamp, identity}
         self.delivered_ids = {}  # message_hash -> timestamp (dedup)
@@ -373,7 +385,13 @@ class LXMRouter:
         # Set app_data for announces
         if display_name is not None:
             dn = display_name.encode("utf-8") if isinstance(display_name, str) else display_name
-            self.delivery_destination._default_app_data = umsgpack.packb([dn, stamp_cost])
+            # [display_name, stamp_cost, supported_functionality] — upstream
+            # LXMF shape; empty functionality list = no LXMF compression.
+            # set_default_app_data so plain Destination.announce() calls (path
+            # responses, post-clock-sync re-announces) also carry the LXMF
+            # app_data — announce() falls back to default_app_data.
+            self.delivery_destination.set_default_app_data(
+                umsgpack.packb([dn, stamp_cost, []]))
 
         log("LXMF delivery registered: " + self.delivery_destination.hexhash, LOG_NOTICE)
         return self.delivery_destination
@@ -386,10 +404,6 @@ class LXMRouter:
         """Register callback for peer announces: callback(destination_hash, display_name)"""
         self._announce_callback = callback
 
-    def register_progress_callback(self, callback):
-        """Register callback for resource progress: callback(received, total)"""
-        self._progress_callback = callback
-
     def announce(self):
         """Announce our LXMF delivery destination"""
         if self.delivery_destination:
@@ -398,20 +412,47 @@ class LXMRouter:
             log("LXMF announced as: " + (self.display_name or "unnamed"), LOG_NOTICE)
 
     def _get_announce_app_data(self):
-        """Build announce app_data: msgpack([display_name_bytes, stamp_cost])"""
+        """Build announce app_data: msgpack([display_name_bytes, stamp_cost,
+        supported_functionality]) — matches upstream LXMF; the empty
+        functionality list tells peers we don't support LXMF compression."""
         dn = None
         if self.display_name:
             dn = self.display_name.encode("utf-8") if isinstance(self.display_name, str) else self.display_name
-        return umsgpack.packb([dn, None])
+        return umsgpack.packb([dn, None, []])
 
     def send_message(self, destination_hash, content, title="",
                      fields=None, desired_method=None):
         """Send an LXMF message to a destination hash.
 
-        Returns the LXMessage, or None if path/identity not known.
-        Automatically uses DIRECT delivery for messages too large for opportunistic.
+        Resilient delivery chain:
+          1. reuse a link we previously opened to the peer (DIRECT), else
+          2. send opportunistically if a path is known (auto-upgrades to
+             DIRECT via a fresh OutgoingLink when the payload is too big), else
+          3. request a path and defer the send until the route is learned.
+
+        Returns the LXMessage when sent/started, True when queued pending a path,
+        or None on hard failure (reachable but identity still unknown).
         """
-        # Look up destination identity
+        from .transport import Transport
+
+        have_link = self._find_active_link_for(destination_hash) is not None
+
+        # No route yet: solicit a path and defer the send. The retry re-enters
+        # this method once the path (and the peer's identity, carried in the
+        # path-response announce) is known.
+        if not have_link and not Transport.has_path(destination_hash):
+            log("No path to " + destination_hash.hex()[:8] + ", requesting path", LOG_VERBOSE)
+            Transport.ensure_path(
+                destination_hash,
+                on_found=lambda: self.send_message(
+                    destination_hash, content, title, fields, desired_method),
+                on_timeout=lambda: log(
+                    "LXMF send to " + destination_hash.hex()[:8]
+                    + " failed: no path", LOG_ERROR),
+            )
+            return True   # queued
+
+        # Reachable — we need the peer's keys to encrypt.
         dest_identity = Identity.recall(destination_hash)
         if dest_identity is None:
             log("Cannot send LXMF: unknown identity for " + destination_hash.hex()[:8], LOG_ERROR)
@@ -422,6 +463,11 @@ class LXMRouter:
 
         source = Destination(self.delivery_identity, Destination.OUT,
                              Destination.SINGLE, APP_NAME, "delivery")
+
+        # Prefer an already-open link when the caller hasn't forced a method:
+        # avoids a redundant path request when we can answer over the link.
+        if have_link and desired_method is None:
+            desired_method = LXMessage.DIRECT
 
         msg = LXMessage(
             destination=dest,
@@ -441,24 +487,66 @@ class LXMRouter:
 
         return msg
 
+    def _find_active_link_for(self, destination_hash):
+        """Return an ACTIVE OutgoingLink we previously opened to this LXMF
+        peer, or None. Only initiator links qualify: reference LXMF wires
+        delivery callbacks on links it ACCEPTS at its delivery destination,
+        not on links it OPENED — a message sent back over the peer's own
+        link transfers and proves at the Resource layer but is silently
+        discarded by the peer's app (observed with MeshChat image replies)."""
+        from .transport import Transport
+        from .link import OutgoingLink
+        for link in Transport.active_links:
+            if link.status != 0x01:  # ACTIVE
+                continue
+            if isinstance(link, OutgoingLink) and link.destination.hash == destination_hash:
+                return link
+        return None
+
     def _send_direct(self, message, destination):
-        """Send LXMF message via DIRECT link delivery (link + Resource)."""
+        """Send LXMF message via DIRECT link delivery (link + Resource).
+
+        Reuses an OutgoingLink we already hold to the peer, else opens a
+        fresh one (path availability is guaranteed by the has_path/
+        ensure_path gate in send_message). Never sends over a peer-initiated
+        link — see _find_active_link_for.
+        """
         from .link import OutgoingLink
         from . import const
 
-        def on_established(link):
+        def deliver_on(link, owns_link):
             packed = message.packed
             # Single link packet capacity: ~415B after Token encryption
             if len(packed) <= 415:
                 link.send(packed, const.CTX_NONE)
                 message.state = LXMessage.SENT
                 log("LXMF DIRECT sent as packet: " + str(len(packed)) + "B", LOG_VERBOSE)
-                link.teardown()
+                if owns_link:
+                    link.teardown()
             else:
                 from .resource import Resource
-                link.resource_concluded_callback = lambda r: self._direct_resource_concluded(r, message, link)
+                # Chain with any existing resource-concluded callback (e.g. the
+                # router's incoming-delivery handler on a peer-initiated link)
+                # so future incoming resources still fire their handler.
+                previous_cb = link.resource_concluded_callback
+                def on_resource_done(r):
+                    if getattr(r, "is_initiator", False):
+                        self._direct_resource_concluded(r, message, link, owns_link)
+                    elif previous_cb is not None:
+                        previous_cb(r)
+                link.resource_concluded_callback = on_resource_done
                 Resource(link, packed, is_response=False)
                 log("LXMF DIRECT sending as resource: " + str(len(packed)) + "B", LOG_VERBOSE)
+
+        existing = self._find_active_link_for(message.destination_hash)
+        if existing is not None:
+            log("LXMF DIRECT reusing active link " + existing.link_id.hex()[:8] +
+                " to " + message.destination_hash.hex()[:8], LOG_NOTICE)
+            deliver_on(existing, owns_link=False)
+            return
+
+        def on_established(link):
+            deliver_on(link, owns_link=True)
 
         def on_closed(link):
             if message.state < LXMessage.SENT:
@@ -468,7 +556,7 @@ class LXMRouter:
         OutgoingLink(destination, established_callback=on_established, closed_callback=on_closed)
         log("LXMF DIRECT delivery initiated to " + message.destination_hash.hex()[:8], LOG_NOTICE)
 
-    def _direct_resource_concluded(self, resource, message, link):
+    def _direct_resource_concluded(self, resource, message, link, owns_link=True):
         """Called when outgoing DIRECT Resource transfer completes."""
         from .resource import COMPLETE
         if resource.status == COMPLETE:
@@ -477,19 +565,16 @@ class LXMRouter:
         else:
             message.state = LXMessage.FAILED
             log("LXMF DIRECT resource failed", LOG_ERROR)
-        link.teardown()
+        # Only teardown links we opened ourselves — if we reused a peer-
+        # initiated link, tearing it down would close their channel.
+        if owns_link:
+            link.teardown()
 
     def _on_link_established(self, link):
         """Called when a link is established to our delivery destination."""
         link.set_packet_callback(self._link_packet_received)
         link.resource_concluded_callback = self._handle_resource_concluded
-        if self._progress_callback:
-            link.resource_started_callback = self._on_resource_started
         log("LXMF link established: " + link.link_id.hex()[:8], LOG_DEBUG)
-
-    def _on_resource_started(self, resource):
-        """Set progress callback on newly accepted resource."""
-        resource.progress_callback = self._progress_callback
 
     def _link_packet_received(self, plaintext, packet):
         """Handle single-packet LXMF message received on a link (CTX_NONE)."""
@@ -561,6 +646,11 @@ class LXMRouter:
                 reason = "unknown source" if message.unverified_reason == LXMessage.SOURCE_UNKNOWN else "invalid signature"
                 log("LXMF unverified resource message (" + reason + ") from " +
                     message.source_hash.hex()[:8], LOG_NOTICE)
+
+            # Remember which LXMF peer this link carries (see _link_packet_received).
+            link = getattr(resource, "link", None)
+            if link is not None:
+                link.lxmf_source_hash = message.source_hash
 
             # Dedup check
             if message.hash in self.delivered_ids:

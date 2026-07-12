@@ -31,6 +31,7 @@ class Reticulum:
         self.is_connected_to_shared_instance = False
         self.config = {}
         self.interfaces = []
+        self.probe_destination = None
 
         # Derive storage directory from config path
         if "/" in config_path:
@@ -129,6 +130,25 @@ class Reticulum:
         "TCPClientInterface": "tcp",
     }
 
+    def _resolve_board(self, iface_config):
+        """Merge a named board pinout preset into an interface config.
+
+        An interface may set "board": "<name>" to pull a hardware pinout from
+        the "lora_boards" registry (see firmware/lora_boards.py). Preset values
+        are applied first; any key set explicitly on the interface overrides the
+        preset. Returns the config unchanged if no board is referenced."""
+        board = iface_config.get("board")
+        if not board:
+            return iface_config
+        preset = self.config.get("lora_boards", {}).get(board)
+        if preset is None:
+            log("Unknown board preset: " + str(board), LOG_ERROR)
+            return iface_config
+        merged = {}
+        merged.update(preset)
+        merged.update(iface_config)   # explicit interface keys win
+        return merged
+
     def setup_interfaces(self):
         """Initialize network interfaces from config. Call after WiFi is connected.
         Only the modules for configured interfaces are imported."""
@@ -136,9 +156,26 @@ class Reticulum:
         if Transport.transport_enabled:
             log("Transport mode enabled", LOG_NOTICE)
 
+        # Time sync (for nodes with no RTC/NTP). Learn wall-clock time once per
+        # boot from a trusted peer's announce/message timestamp.
+        ts_cfg = self.config.get("time_sync", {})
+        Transport.time_sync_enabled = ts_cfg.get("enabled", False)
+        Transport.time_sync_trusted = set(
+            h.lower() for h in ts_cfg.get("trusted_nodes", [])
+        )
+        Transport.time_sync_min_sources = ts_cfg.get("min_sources", 2)
+        Transport.time_sync_tolerance = ts_cfg.get("tolerance", 120)
+        if Transport.time_sync_enabled:
+            if Transport.time_sync_trusted:
+                _mode = "trusted: " + str(len(Transport.time_sync_trusted))
+            else:
+                _mode = "corroborate: " + str(Transport.time_sync_min_sources) + " nodes"
+            log("Time sync enabled (" + _mode + ")", LOG_NOTICE)
+
         for iface_config in self.config.get("interfaces", []):
             if not iface_config.get("enabled", True):
                 continue
+            iface_config = self._resolve_board(iface_config)
             itype = iface_config.get("type", "")
             modname = self._INTERFACE_MAP.get(itype)
             if modname is None:
@@ -154,6 +191,38 @@ class Reticulum:
             except Exception as e:
                 log("Interface " + itype + " init failed: " + str(e), LOG_ERROR)
 
+        # Path-table persistence (transport nodes): reload cached routes on boot so
+        # a reboot isn't a mesh blackout. Periodic saves run in job_loop; a final
+        # save runs on shutdown. Interfaces must be registered first (above) so a
+        # restored route can re-resolve its interface by name.
+        _storage = getattr(self, "storagepath", None)
+        if Transport.transport_enabled and _storage:
+            try:
+                Transport.persist_path = _storage + "/path_table"
+                Transport.load_path_table(Transport.persist_path)
+            except Exception as e:
+                log("Path persistence init failed: " + str(e), LOG_ERROR)
+
+        self._setup_probe_destination()
+
+    def _setup_probe_destination(self):
+        """Optionally expose a probe destination that replies to rnprobe.
+        Mirrors upstream Transport.probe_destination (Reticulum Transport.py:399)."""
+        probe_cfg = self.config.get("probe", {})
+        if not probe_cfg.get("enabled", False):
+            return
+        from .destination import Destination
+        app_name = probe_cfg.get("app_name", "urns")
+        aspect = probe_cfg.get("aspect", "probe")
+        self.probe_destination = Destination(
+            self.identity, Destination.IN, Destination.SINGLE,
+            app_name, aspect,
+        )
+        self.probe_destination.accepts_links(False)
+        self.probe_destination.set_proof_strategy(Destination.PROVE_ALL)
+        print("Probe address:", self.probe_destination.hexhash,
+              "(" + app_name + "." + aspect + ")")
+
     async def run(self):
         """Main async event loop. Run with asyncio.run(reticulum.run())"""
         import uasyncio as asyncio
@@ -167,12 +236,44 @@ class Reticulum:
             if hasattr(iface, 'poll_loop'):
                 tasks.append(asyncio.create_task(iface.poll_loop()))
 
+        if self.probe_destination is not None:
+            tasks.append(asyncio.create_task(self._probe_announce_loop()))
+
         log("Event loop running with " + str(len(tasks)) + " tasks", LOG_VERBOSE)
         await asyncio.gather(*tasks)
+
+    async def _probe_announce_loop(self):
+        """Initial + periodic announce for the probe destination."""
+        import uasyncio as asyncio
+
+        await asyncio.sleep(0.5)
+        try:
+            self.probe_destination.announce()
+            log("Probe announced", LOG_NOTICE)
+        except Exception as e:
+            log("Probe initial announce error: " + str(e), LOG_ERROR)
+        gc.collect()
+
+        interval = self.config.get("probe", {}).get("announce_interval", 60 * 60)
+        if interval <= 0:
+            return
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                self.probe_destination.announce()
+                log("Probe re-announced", LOG_VERBOSE)
+            except Exception as e:
+                log("Probe re-announce error: " + str(e), LOG_ERROR)
+            gc.collect()
 
     def shutdown(self):
         """Clean shutdown - persist state and close interfaces"""
         log("Shutting down µReticulum", LOG_NOTICE)
+        if Transport.persist_path is not None:
+            try:
+                Transport.save_path_table(Transport.persist_path)
+            except Exception:
+                pass
         Transport.stop()
         Identity.persist_data()
         for iface in self.interfaces:

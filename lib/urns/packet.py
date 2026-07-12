@@ -123,11 +123,9 @@ class Packet:
             from .transport import Transport
             _entry = Transport.path_table.get(self.destination_hash)
             if _entry is not None:
-                _tid = _entry[0] if isinstance(_entry, tuple) else _entry
                 self.header_type = const.HDR_2
-                self.transport_id = _tid
+                self.transport_id = _entry[const.IDX_PT_NEXT_HOP]
                 self.flags = self._get_packed_flags()
-                log("Packet auto-routed via transport " + _tid.hex()[:8], LOG_DEBUG)
 
         self.header = b""
         self.header += struct.pack("!B", self.flags)
@@ -160,6 +158,7 @@ class Packet:
                     if self.packet_type in (const.PKT_ANNOUNCE, const.PKT_LINKREQUEST):
                         self.ciphertext = self.data
                     else:
+                        # Encrypt data packets (same as HDR_1 path)
                         self.ciphertext = self.destination.encrypt(self.data)
                         if hasattr(self.destination, 'latest_ratchet_id'):
                             self.ratchet_id = self.destination.latest_ratchet_id
