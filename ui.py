@@ -571,7 +571,9 @@ class UI:
         info = info[:14]
         if self._route_cache != info:
             self._route_cache = info
-            self.tft.text(self.font, info.rjust(14), (COLS - 14) * CHAR_W, INPUT_Y,
+            # right-align by hand — MicroPython str has no rjust()
+            info = " " * (14 - len(info)) + info
+            self.tft.text(self.font, info, (COLS - 14) * CHAR_W, INPUT_Y,
                           self.DIM_CYAN, self.BG_DARK)
 
     # --- Browser page view ---
