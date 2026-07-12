@@ -263,10 +263,17 @@ class UI:
         return bytes([ord(c) for c in text]) if isinstance(text, str) else text
 
     def _draw_row_cached(self, idx, text, y, fg, bg=None):
-        """Draw row only if content changed. Returns True if drawn."""
-        if self._cache[idx] == text:
+        """Draw row only if content changed. Returns True if drawn.
+
+        The stored key for an empty row is ' ' (never ''): '' doubles as
+        the invalidation marker, and if it also matched empty text, blank
+        rows would be skipped right after a cache wipe — leaving stale
+        pixels from a previous page (e.g. radio stats rows under a shorter
+        settings menu)."""
+        key = text or ' '
+        if self._cache[idx] == key:
             return False
-        self._cache[idx] = text
+        self._cache[idx] = key
         self.tft.text(self.font, self._tb(_pad(text)), 0, y, fg, bg or self.BG_DARK)
         return True
 
