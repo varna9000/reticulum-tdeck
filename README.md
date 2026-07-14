@@ -12,6 +12,14 @@ Supports both **opportunistic** (single-packet) and **link-based** (direct) mess
 ![splash](images/splash.jpeg "Splash Screen")
 ![node list](images/node_list.jpeg "Node List")
 
+## Recent Updates (July 2026)
+
+- **NomadNet page browser** — new NET tab lists `nomadnetwork.node` announces; click a node to fetch and render its micron pages over an encrypted link (single-packet and resource-transfer responses, bz2, transfer progress, back-stack navigation). The client-side `OutgoingLink.request()` API this rides on was added upstream in [micropython-reticulum](https://github.com/varna9000/micropython-reticulum).
+- **Tabbed node screen** — MSG (LXMF peers) / NET (browsable nodes); the trackball's left/right axis is now wired up and switches tabs (with a dominance filter against diagonal-roll jitter). In the browser, trackball-left navigates back.
+- **Cyrillic display support** — new CP866-layout font + codepoint transcoding; messages, names, WiFi SSIDs, and pages render Bulgarian/Russian/Ukrainian/Belarusian text.
+- **Host-side test suites** — `tests/` runs the real `micron.py` and `ui.py` under CPython with display/hardware shims; the link request API has its own suite in the submodule (`firmware/tests/test_link_request.py`).
+- **Fixes** — GUI crash on `str.rjust` (not implemented in MicroPython), pure-Python display fallback crashing on glyph-byte input.
+
 ## Hardware
 
 - **Board**: LilyGO T-Deck v1 (ESP32-S3)
@@ -41,7 +49,7 @@ The T-Deck must be in **download mode** to flash: short GPIO0 to GND while press
 
 | Layer | Contents |
 |---|---|
-| **Frozen in ROM** | ui.py, sound.py, es7210.py, vga2_8x16 font, full urns/ stack (reticulum, LXMF, crypto, interfaces) |
+| **Frozen in ROM** | ui.py, sound.py, es7210.py, micron.py, nomad_browser.py, vga2_8x16_cp866 font, full urns/ stack (reticulum, LXMF, crypto, interfaces) |
 | **C driver in ROM** | Russ Hughes st7789_mpy — DMA-accelerated ST7789 display driver |
 | **On filesystem** | main.py (tdeck_node.py), tdeck_config.py, natmod .mpy files, lora-sx126x + lora-sync drivers, logo.jpg |
 
@@ -86,8 +94,8 @@ mpremote cp vendor/uP-reticulum/firmware/lora_boards.py :
 mpremote cp vendor/uP-reticulum/firmware/peripherals/adc_reader.py :
 
 # Upload T-Deck app files
-mpremote cp tdeck_node.py ui.py sound.py es7210.py tdeck_config.py :
-mpremote cp lib/st7789py.mpy lib/vga2_8x16.mpy :/lib/
+mpremote cp tdeck_node.py ui.py sound.py es7210.py micron.py nomad_browser.py tdeck_config.py :
+mpremote cp lib/st7789py.mpy lib/vga2_8x16_cp866.mpy :/lib/
 
 # Upload assets
 mpremote cp logo.jpg :
@@ -276,13 +284,27 @@ When TCP is activated, LoRa is stopped (only one interface at a time). When TCP 
 ```
 main.py             App entry (tdeck_node.py renamed) — on filesystem, user-editable
 tdeck_config.py     Pin definitions, radio parameters — on filesystem, user-editable
-ui.py               Async GUI: node list, chat, settings, image viewer  [frozen in ROM]
+ui.py               Async GUI: tabbed node list, chat, browser, settings [frozen in ROM]
+micron.py           Micron (.mu) markup renderer -> styled span rows     [frozen in ROM]
+nomad_browser.py    NomadNet browser: node discovery, page fetch, links  [frozen in ROM]
 sound.py            I2S audio: notification tones, mic capture, playback [frozen in ROM]
-es7210.py           ES7210 ADC microphone driver (I2C register config)  [frozen in ROM]
-lib/vga2_8x16.py    8x16 VGA font                                      [frozen in ROM]
-vendor/uP-reticulum µReticulum stack submodule (urns/, boards, tests)   [frozen in ROM]
-st7789              Russ Hughes C display driver (DMA-accelerated)      [compiled in firmware]
+es7210.py           ES7210 ADC microphone driver (I2C register config)   [frozen in ROM]
+lib/vga2_8x16_cp866.py  8x16 VGA font, CP437 + Cyrillic (CP866 slots)    [frozen in ROM]
+vendor/uP-reticulum µReticulum stack submodule (urns/, boards, tests)    [frozen in ROM]
+st7789              Russ Hughes C display driver (DMA-accelerated)       [compiled in firmware]
 ```
+
+### NomadNet Browser Data Flow
+
+`nomad_browser.py` registers its own transport-level announce observer and
+classifies announces by recomputing the destination hash for the
+`nomadnetwork.node` aspect from the announced identity — the LXMF peer path is
+untouched. A page fetch runs: path request (if needed) → `OutgoingLink` →
+`link.request("/page/x.mu")` → response as a single packet or a bz2 resource
+transfer → `micron.render()` → styled rows handed to the UI. The link stays
+open while browsing the same node and re-establishes transparently after the
+remote stale-closes it (~12 min idle). Pages are capped at 16 KB by the
+resource receiver.
 
 ### Native C Modules (.mpy) — on filesystem
 
@@ -308,7 +330,7 @@ The custom firmware embeds the [Russ Hughes st7789_mpy](https://github.com/russh
 
 - **Explicit `init()` required.** Unlike the pure Python driver which initializes in `__init__`, the C driver's constructor does not send the ST7789 init sequence. `tft.init()` must be called after constructing the `ST7789` object. Without this, the display stays blank (backlight on, no pixel data).
 - **Fallback mechanism.** `tdeck_node.py` tries `import st7789` (C driver) first, falling back to `import st7789py as st7789` (pure Python). A `_st7789_c` flag tracks which driver loaded so `init()` is only called for the C driver.
-- **API compatibility.** The C driver's `text()`, `fill()`, `fill_rect()`, and `blit_buffer()` have identical signatures to the pure Python driver. The `vga2_8x16` bitmap font works with both.
+- **API compatibility.** The C driver's `text()`, `fill()`, `fill_rect()`, and `blit_buffer()` have identical signatures to the pure Python driver. The `vga2_8x16_cp866` bitmap font works with both.
 - **GIL behavior.** The C driver holds the Python GIL during SPI transfers (all SPI operations happen in C code). The pure Python driver released the GIL on each `spi.write()` call. This affects concurrent I2S mic recording — see below.
 
 ### I2S Mic Buffer and GIL Contention
@@ -398,6 +420,8 @@ def _tb(text):
 
 Applied to all `tft.text()` calls that may contain chars > 0x7F (the full chat row draw and the colored status suffix overlay).
 
+*Since extended:* `_tb()` now also transcodes Cyrillic codepoints into the `vga2_8x16_cp866` font's glyph slots (unmapped codepoints render as `?`) — see the Cyrillic display support note at the top.
+
 ## Building the Firmware
 
 The pre-built `tdeck_firmware.bin` bundles everything into a single flashable image. To rebuild it from source:
@@ -444,12 +468,14 @@ Modules frozen into the firmware ROM (not editable without rebuild):
 
 | Module | Purpose |
 |---|---|
-| `ui.py` | GUI state machine, cached drawing, image viewer |
+| `ui.py` | GUI state machine, cached drawing, browser page view, image viewer |
+| `micron.py` | Micron markup renderer for the NomadNet browser |
+| `nomad_browser.py` | NomadNet node discovery + page fetch controller |
 | `sound.py` | I2S audio, mic capture, PCM playback |
 | `es7210.py` | ES7210 ADC microphone I2C driver |
 | `lora_boards.py` | LoRa board pinout presets (incl. `tdeck_v1_sx1262`) |
 | `adc_reader.py` | Board-declared battery/ADC voltage reader |
-| `vga2_8x16.py` | 8x16 bitmap font |
+| `vga2_8x16_cp866.py` | 8x16 bitmap font — CP437 base + Cyrillic (CP866 slots) |
 | `urns/` | Full µReticulum stack — transport, LXMF, crypto, all interfaces |
 
 Intentionally **not frozen** (on filesystem, user-editable):
@@ -510,11 +536,15 @@ A power cycle or reset button always starts with a full pool.
 |---|---|---|
 | `tdeck_node.py` | Filesystem (as `main.py`) | Main app — hardware init, Reticulum/LXMF setup, async event loop |
 | `tdeck_config.py` | Filesystem | All pin definitions, radio config, and TCP config |
-| `ui.py` | Frozen in ROM | GUI state machine with cached drawing, image viewer, and async input |
+| `ui.py` | Frozen in ROM | GUI state machine with cached drawing, tabbed node list, browser page view, image viewer |
+| `micron.py` | Frozen in ROM | Micron (`.mu`) renderer — headings, colors, links, wrap to styled 40-col rows |
+| `nomad_browser.py` | Frozen in ROM | NomadNet browser controller — announce capture, link/fetch state machine, history |
 | `sound.py` | Frozen in ROM | I2S audio: tones, mic capture (ES7210 stride extraction), PCM playback |
 | `es7210.py` | Frozen in ROM | ES7210 ADC mic driver — I2C register config, gain, slave mode |
 | `lib/st7789py.py` | Filesystem (`/lib`, as `.mpy`) | Pure Python ST7789 driver (fallback if C driver unavailable) |
-| `lib/vga2_8x16.py` | Frozen in ROM | Bitmap font (8x16 pixels per character, 40 columns) |
+| `lib/vga2_8x16_cp866.py` | Frozen in ROM | Bitmap font (8x16, 40 columns) — CP437 base + Cyrillic; generated by `tools/gen_cp866_font.py` |
+| `lib/vga2_8x16.py` | Repo only | Original CP437 font — kept as the generator's base input |
+| `tests/` | Repo only | Host-side (CPython) suites for `micron.py` and the `ui.py` browser/tab logic |
 | `vendor/uP-reticulum/` | Git submodule | The full µReticulum stack (urns/), board presets, adc_reader, and host test suite — [uP-reticulum](https://github.com/varna9000/micropython-reticulum). All former T-Deck patches are upstreamed; see `TDECK-PATCHES.md` for the update procedure |
 | `lora_boards.py` (submodule) | Frozen in ROM | Board pinout presets (incl. `tdeck_v1_sx1262`) |
 | `adc_reader.py` (submodule) | Frozen in ROM | Battery voltage via board-declared ADC pin + divider |
@@ -537,6 +567,7 @@ A power cycle or reset button always starts with a full pool.
 | `tools/build_firmware.sh` | Builds custom MicroPython firmware with st7789 C driver + frozen modules |
 | `tools/flash_tdeck.sh` | Flashes firmware + uploads natmod files via mpremote |
 | `tools/tdeck_manifest.py` | MicroPython frozen module manifest |
+| `tools/gen_cp866_font.py` | Regenerates the Cyrillic display font from the CP437 base + a BDF source |
 | `tools/natmod/tjpgd_fast/` | TJpgDec native module source + Makefile |
 | `tools/natmod/codec2_fast/` | Codec2 native module source + Makefile |
 | `tools/natmod/webp_fast/` | WebP native module source + Makefile |
