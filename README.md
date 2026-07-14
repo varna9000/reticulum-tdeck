@@ -19,6 +19,7 @@ Supports both **opportunistic** (single-packet) and **link-based** (direct) mess
 - **Cyrillic display support** — new CP866-layout font + codepoint transcoding; messages, names, WiFi SSIDs, and pages render Bulgarian/Russian/Ukrainian/Belarusian text.
 - **Host-side test suites** — `tests/` runs the real `micron.py` and `ui.py` under CPython with display/hardware shims; the link request API has its own suite in the submodule (`firmware/tests/test_link_request.py`).
 - **Fixes** — GUI crash on `str.rjust` (not implemented in MicroPython), pure-Python display fallback crashing on glyph-byte input.
+- **Router web monitor: protocol column** (submodule) — the transport router's LAN dashboard now labels every path-table destination with its protocol (`lxmf`, `lxmf-pn`, `nomad`, `voice-lxst`, `voice-mc`, `probe`, or `?hex` for unknown apps), classified from the announce `name_hash` and backfilled from persisted identities after reboots.
 
 ## Hardware
 
