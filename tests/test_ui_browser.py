@@ -205,11 +205,25 @@ def test_browser_left_goes_back():
     assert g.state == ui.STATE_BROWSER  # back() True -> stays in browser
 
 
-def test_unicode_page_never_reaches_driver():
+def test_cyrillic_transcodes_to_glyph_bytes():
+    # А-Я -> 0x80.., а-п -> 0xA0.., р-я -> 0xE0.., ё -> 0xF1, ѝ -> 0xFD
+    out = ui.UI._tb("Аяё ѝ z\xfb中")
+    assert out == bytes([0x80, 0xEF, 0xF1, 0x20, 0xFD, 0x20, 0x7A, 0xFB, 0x3F])
+    # _ascii keeps Cyrillic now, still strips emoji/CJK
+    assert ui._ascii("Здравей \U0001F600 свят") == "Здравей свят"
+
+
+def test_cyrillic_page_renders():
     g, tft = _mkui()
-    lines, links = micron.render("Здравей свят\nhello", 40)
-    g.show_page("n", "/p", lines, links)
-    g.draw()  # FakeTFT asserts ascii-encodability of every string
+    g.add_nomad_node(b"\x02" * 16, "Възел БГ")  # Cyrillic node name
+    g._switch_tab(1)
+    g.draw()
+    lines, links = micron.render("Здравей свят\n`[Още`:/page/more.mu]", 40)
+    g.show_page("Възел БГ", "/page/index.mu", lines, links)
+    g.draw()  # FakeTFT rejects any non-latin1 str / bad coords
+    # dynamic rows reach the driver as glyph bytes, never > 0xFF
+    byte_calls = [c[1] for c in tft.calls if c[0] == "text" and isinstance(c[1], bytes)]
+    assert byte_calls and all(max(b) < 0x100 for b in byte_calls if b)
 
 
 def _run():

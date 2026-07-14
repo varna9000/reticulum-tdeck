@@ -693,7 +693,7 @@ class ST7789:
         """
 
         for char in text:
-            ch = ord(char)
+            ch = char if isinstance(char, int) else ord(char)  # accept bytes
             if (
                 font.FIRST <= ch < font.LAST
                 and x0 + font.WIDTH <= self.width
@@ -730,7 +730,7 @@ class ST7789:
         """
 
         for char in text:
-            ch = ord(char)
+            ch = char if isinstance(char, int) else ord(char)  # accept bytes
             if (
                 font.FIRST <= ch < font.LAST
                 and x0 + font.WIDTH <= self.width

@@ -24,8 +24,9 @@
 #   `[label`URL] / `[URL]  links (third `fields section ignored)
 #   `<...`name`>  input fields -> non-interactive [____] placeholder
 #
-# All output text is sanitized to printable ASCII 32-126: the vga2_8x16
-# font has no other glyphs and the C display driver rejects chars > 0xFF.
+# All output text is sanitized to printable ASCII 32-126 plus basic
+# Cyrillic (U+0400-U+045F): the display font (vga2_8x16_cp866) covers
+# exactly those, and the UI transcodes codepoints to glyph bytes.
 
 # RGB565 palette (matches ui.py aesthetics)
 FG_DEFAULT = 0xC618  # light grey — body text
@@ -69,8 +70,10 @@ def color565(code):
 
 
 def _clean(s):
-    """Printable ASCII only (32-126) — everything else is dropped."""
-    return "".join(c for c in s if 32 <= ord(c) < 127)
+    """Printable ASCII (32-126) plus basic Cyrillic (U+0400-U+045F, which
+    the UI transcodes to font glyphs; rare unmapped ones render '?') —
+    everything else is dropped."""
+    return "".join(c for c in s if 32 <= ord(c) < 127 or 0x400 <= ord(c) <= 0x45F)
 
 
 class _State:

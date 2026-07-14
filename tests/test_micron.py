@@ -54,11 +54,17 @@ def test_plain_text_and_wrap():
 
 
 def test_unicode_sanitized():
-    # Cyrillic must never reach the display layer (font/driver constraint)
+    # Cyrillic is kept (the UI transcodes it to font glyphs); anything the
+    # font can't show (emoji, CJK, Greek) is dropped
     lines, _ = render("Здравей hello свят", width=40)
     flat = _text(lines)
-    assert all(all(32 <= ord(c) < 127 for c in s) for s in flat)
-    assert "hello" in flat[0]
+    assert "Здравей hello свят" == flat[0]
+
+    lines, _ = render("emoji \U0001F600 CJK 中 Greek α ok", width=40)
+    flat = _text(lines)
+    assert flat[0] == "emoji  CJK  Greek  ok"
+    assert all(all(32 <= ord(c) < 127 or 0x400 <= ord(c) <= 0x45F for c in s)
+               for s in flat)
 
 
 def test_comments_skipped():

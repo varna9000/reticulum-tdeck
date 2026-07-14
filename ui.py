@@ -48,9 +48,27 @@ _TB_H_DEBOUNCE_MS = 150
 # Screen power-off timeout
 _SCREEN_TIMEOUT_MS = 10000
 
-# Strip non-ASCII bytes and collapse whitespace — emoji removal leaves gaps
+# Unicode -> font glyph index for the display driver. The font
+# (lib/vga2_8x16_cp866.py) keeps the CP437 base and adds Cyrillic in the
+# CP866 slots, plus Bulgarian Ѝ/ѝ at 0xFC/0xFD. Generated together with the
+# font by tools/gen_cp866_font.py — keep the two in sync.
+_CYR = {0x401: 0xF0, 0x451: 0xF1,   # Ё ё
+        0x404: 0xF2, 0x454: 0xF3,   # Є є
+        0x407: 0xF4, 0x457: 0xF5,   # Ї ї
+        0x40E: 0xF6, 0x45E: 0xF7,   # Ў ў
+        0x40D: 0xFC, 0x45D: 0xFD}   # Ѝ ѝ
+for _i in range(32):
+    _CYR[0x410 + _i] = 0x80 + _i    # А-Я
+for _i in range(16):
+    _CYR[0x430 + _i] = 0xA0 + _i    # а-п
+    _CYR[0x440 + _i] = 0xE0 + _i    # р-я
+del _i
+
+
+# Keep displayable chars (ASCII + mapped Cyrillic), collapse whitespace —
+# emoji/CJK removal leaves gaps
 def _ascii(s):
-    raw = ''.join(c for c in s if 32 <= ord(c) < 127)
+    raw = ''.join(c for c in s if 32 <= ord(c) < 127 or ord(c) in _CYR)
     return ' '.join(raw.split())
 
 # Pad string to exact width (no clearing needed)
@@ -291,10 +309,15 @@ class UI:
 
     @staticmethod
     def _tb(text):
-        """Convert text to bytes for C display driver (avoids UTF-8 mangling
-        of chars > 0x7F like the \\xfb checkmark in vga2_8x16 font).
-        MicroPython lacks latin-1 codec, so we use ord() per char."""
-        return bytes([ord(c) for c in text]) if isinstance(text, str) else text
+        """Convert text to glyph-index bytes for the display driver (one
+        glyph per byte — a str would be consumed as UTF-8 and mangle
+        anything > 0x7F). ASCII and raw CP437 positions (like the \\xfb
+        checkmark) pass through; Cyrillic transcodes via _CYR into the
+        vga2_8x16_cp866 slots; anything unmapped renders as '?'."""
+        if isinstance(text, str):
+            return bytes([o if o < 0x80 else _CYR.get(o, o if o < 0x100 else 0x3F)
+                          for o in [ord(c) for c in text]])
+        return text
 
     def _draw_row_cached(self, idx, text, y, fg, bg=None):
         """Draw row only if content changed. Returns True if drawn.
@@ -390,7 +413,7 @@ class UI:
             mid_str = center.center(mid_w) if mid_w > len(center) else center[:mid_w]
             center_x = left_w * CHAR_W
             # Pad to full mid_w to clear old text
-            self.tft.text(self.font, _pad(mid_str, mid_w), center_x, NAV_TY, center_color, hb)
+            self.tft.text(self.font, self._tb(_pad(mid_str, mid_w)), center_x, NAV_TY, center_color, hb)
 
         # Right section (announce flash + node name)
         if self._nav_right_cache != right_key:
@@ -465,7 +488,7 @@ class UI:
                     cache_key = '\x01' + line
                     if self._cache[ci] != cache_key:
                         self._cache[ci] = cache_key
-                        self.tft.text(self.font, _pad(line), 0, y, self.YELLOW, self.SEL_BG)
+                        self.tft.text(self.font, self._tb(_pad(line)), 0, y, self.YELLOW, self.SEL_BG)
                         # Accent bar (clear of corner bracket)
                         self.tft.fill_rect(4, y, 3, CHAR_H, self.NEON_MAG)
                         if uc:
@@ -587,10 +610,10 @@ class UI:
         cache_key = title + path
         if self._cache[1] != cache_key:
             self._cache[1] = cache_key
-            self.tft.text(self.font, _pad(title), 0, BODY_Y, self.NEON_CYAN, self.BG_DARK)
+            self.tft.text(self.font, self._tb(_pad(title)), 0, BODY_Y, self.NEON_CYAN, self.BG_DARK)
             self.tft.text(self.font, ">", 0, BODY_Y, self.NEON_GREEN, self.BG_DARK)
             px = (COLS - len(path) - 1) * CHAR_W
-            self.tft.text(self.font, path, px, BODY_Y, self.DIM_CYAN, self.BG_DARK)
+            self.tft.text(self.font, self._tb(path), px, BODY_Y, self.DIM_CYAN, self.BG_DARK)
         self.tft.fill_rect(0, BODY_Y + CHAR_H - 1, SCREEN_W, 1, self.DIM_CYAN)
 
         _rows = BODY_ROWS - 1
@@ -700,7 +723,7 @@ class UI:
         cache_key = header + phash
         if self._cache[1] != cache_key:
             self._cache[1] = cache_key
-            self.tft.text(self.font, _pad(header), 0, BODY_Y, self.NEON_CYAN, self.BG_DARK)
+            self.tft.text(self.font, self._tb(_pad(header)), 0, BODY_Y, self.NEON_CYAN, self.BG_DARK)
             self.tft.text(self.font, "<", 0, BODY_Y, self.NEON_GREEN, self.BG_DARK)
             hx = (COLS - len(phash) - 1) * CHAR_W
             self.tft.text(self.font, phash, hx, BODY_Y, self.DIM_CYAN, self.BG_DARK)
@@ -764,7 +787,7 @@ class UI:
                     else:
                         gt = text.find(">")
                         if gt >= 0:
-                            self.tft.text(self.font, text[:gt + 1], 0, y, self.NEON_MAG, row_bg)
+                            self.tft.text(self.font, self._tb(text[:gt + 1]), 0, y, self.NEON_MAG, row_bg)
                     # Image rendering
                     if has_image:
                         img_pos = text.find("[image]")
@@ -1461,7 +1484,7 @@ class UI:
                     cache_key = '\x01' + line
                     if self._cache[i + 2] != cache_key:
                         self._cache[i + 2] = cache_key
-                        self.tft.text(self.font, _pad(line), 0, y, self.YELLOW, self.SEL_BG)
+                        self.tft.text(self.font, self._tb(_pad(line)), 0, y, self.YELLOW, self.SEL_BG)
                         self.tft.fill_rect(4, y, 3, CHAR_H, self.NEON_MAG)
                 else:
                     self._draw_row_cached(i + 2, line, y, self.NEON_CYAN)
@@ -1519,7 +1542,7 @@ class UI:
                         cache_key = '\x01' + line
                         if self._cache[i + 2] != cache_key:
                             self._cache[i + 2] = cache_key
-                            self.tft.text(self.font, _pad(line), 0, y, self.YELLOW, self.SEL_BG)
+                            self.tft.text(self.font, self._tb(_pad(line)), 0, y, self.YELLOW, self.SEL_BG)
                             self.tft.fill_rect(4, y, 3, CHAR_H, self.NEON_MAG)
                     else:
                         self._draw_row_cached(i + 2, line, y, self.NEON_CYAN)

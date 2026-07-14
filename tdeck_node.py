@@ -96,7 +96,7 @@ try:
 except ImportError:
     import st7789py as st7789           # fallback: pure Python driver
     _st7789_c = False
-import vga2_8x16 as font
+import vga2_8x16_cp866 as font
 
 dc = Pin(DISP_DC, Pin.OUT)
 bl = Pin(DISP_BL, Pin.OUT)
