@@ -36,6 +36,13 @@ BODY_Y = 26       # main area start (6px gap below navbar for frame line)
 BODY_ROWS = 12    # 12 * 16 = 192px, ends at y=218, frame bottom at 219
 SEP_Y = 222       # separator line just above input bar
 
+# Scrollbar lane — kept 1px clear of the frame's right corner arm at x=319
+SBAR_X = SCREEN_W - 3   # 317
+SBAR_W = 2
+
+# Voice recording
+REC_MAX_SECS = 15  # matches tdeck_node _rec_buf sizing
+
 # Data limits
 MAX_PEERS = 16
 MAX_HISTORY = 30  # per peer
@@ -45,8 +52,9 @@ MAX_CACHED_IMAGES = 3  # max JPEG payloads kept in RAM
 _TB_DEBOUNCE_MS = 80
 _TB_H_DEBOUNCE_MS = 150
 
-# Screen power-off timeout
+# Screen power-off timeout options (ms); 0 = never sleep
 _SCREEN_TIMEOUT_MS = 10000
+_TIMEOUT_CHOICES = (10000, 30000, 60000, 0)
 
 # Unicode -> font glyph index for the display driver. The font
 # (lib/vga2_8x16_cp866.py) keeps the CP437 base and adds Cyrillic in the
@@ -131,6 +139,7 @@ class UI:
         self.DIM_CYAN   = 0x0514  # secondary/dimmed text
         self.HEADER_BG  = 0x0011  # very dark blue — navbar background
         self.SEL_BG     = 0x2966  # selection highlight — bright blue tint
+        self.BODY_FG    = 0xC618  # light grey — message body text (matches micron)
 
         # State
         self.state = STATE_NODES
@@ -155,6 +164,7 @@ class UI:
         self._route_cache = ''   # footer route/ping line cache (node list)
         self.ping_status = None  # transient "ping: 2.4s" text
         self._ping_status_ms = 0
+        self.ping_pending = False  # True while a ping is awaiting its receipt
 
         # NET tab: NomadNet nodes (populated by nomad_browser)
         self.node_tab = 0        # 0 = MSG (LXMF peers), 1 = NET (nomad nodes)
@@ -192,7 +202,10 @@ class UI:
         self.lora_online = True
         self.transfer_progress = None  # (received, total) or None
         self._audio_status = None      # None, "decoding", or "playing"
-        self._rec_seconds = 0          # recording duration counter
+        self._rec_seconds = 0          # recording duration counter (driven by node)
+        self._rec_max = REC_MAX_SECS   # max recording length in seconds
+        self._rec_level = 0            # live mic peak, 0..10 bar units
+        self._rec_warming = False      # True while the ADC warms before capture
         self._progress_dirty = False
         self.announce_flash = 0  # timestamp of last announce flash
 
@@ -239,8 +252,14 @@ class UI:
         self._tcp_target = ""  # "host:port" string, set from saved settings on boot
         self._tcp_default = ""  # "host:port" from TCP_CONFIG, set by tdeck_node.py
         self._settings_scroll = 0
+        self._radio_rows = 0  # row count of the radio stats page (for scroll clamp)
         self._volume = 8  # 0-10, synced with sound.volume
         self._kbd_bl = False  # keyboard backlight state (restored from settings)
+        self._auto_announce = False   # periodic re-announce toggle
+        self._wifi_connecting = False  # True while an async WiFi connect is running
+        self._wifi_err = ""            # last connect failure note (shown on scan page)
+        self._tcp_connecting = False   # True while an async TCP connect is running
+        self._screen_timeout_ms = _SCREEN_TIMEOUT_MS  # configurable inactivity sleep
 
         # Image viewer state
         self._image_cache = {}  # (peer_hash, msg_idx) -> jpeg/webp bytes
@@ -269,8 +288,9 @@ class UI:
         self.on_announce = None   # on_announce()
         self.on_ping = None       # on_ping(dest_hash_bytes)
         self.on_wifi_scan = None      # () -> [(ssid, rssi), ...]
-        self.on_wifi_connect = None   # (ssid, password) -> bool
-        self.on_tcp_toggle = None     # (enabled, host, port) -> bool
+        self.on_wifi_connect = None   # (ssid, password) -> None — async; calls set_wifi_result
+        self.on_tcp_toggle = None     # (enabled, host, port) -> bool — sync OFF path
+        self.on_tcp_connect = None    # (host, port) -> None — async; calls set_tcp_result
         self.on_node_name = None      # (name) -> None
         self.on_lora_reset = None     # () -> bool
         self.on_volume = None         # (level) -> None
@@ -284,6 +304,9 @@ class UI:
         self.on_browse_refresh = None # () -> None
         self.on_browser_exit = None   # () -> None — left the browser (free the link)
         self.on_net_seed = None       # () -> None — populate nomad_nodes from storage
+        self.on_screen_timeout = None # (ms) -> None — persist inactivity timeout
+        self.on_auto_announce = None  # (enabled) -> None — start/stop periodic announce
+        self.on_delete_peer = None    # (dest_hash_bytes) -> None — forget a peer/node
 
     # --- Screen power management ---
 
@@ -319,6 +342,19 @@ class UI:
                           for o in [ord(c) for c in text]])
         return text
 
+    @staticmethod
+    def _marker_span(text, keyword):
+        """Locate a '[keyword...]' marker in a chat row and return
+        (start_col, length). Tolerates trailing metadata like '[voice 3s]'.
+        Returns (-1, 0) when absent."""
+        p = text.find("[" + keyword)
+        if p < 0:
+            return (-1, 0)
+        e = text.find("]", p)
+        if e < 0:
+            return (p, len(text) - p)
+        return (p, e - p + 1)
+
     def _draw_row_cached(self, idx, text, y, fg, bg=None):
         """Draw row only if content changed. Returns True if drawn.
 
@@ -342,10 +378,44 @@ class UI:
         """Draw text at pixel position."""
         self.tft.text(self.font, self._tb(text), x, y, fg, bg or self.BG_DARK)
 
+    def _draw_input_line(self, inp):
+        """Draw the '> ...' input at the bottom, showing the tail of a long
+        buffer with a '<' continuation marker so typing past the visible
+        width stays visible (the caret is always the last cell)."""
+        avail = COLS - 3  # cols after "> ", minus 1 for the caret
+        if len(inp) > avail:
+            visible = "<" + inp[-(avail - 1):]
+        else:
+            visible = inp
+        text_padded = _pad(visible + "_", COLS - 2)
+        self.tft.text(self.font, "> ", 0, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
+        self.tft.text(self.font, self._tb(text_padded), 2 * CHAR_W, INPUT_Y,
+                      self.NEON_CYAN, self.BG_DARK)
+
+    def _draw_frame(self):
+        """Neon body frame — top/bottom rails + short corner arms. Drawn last
+        each redraw (over content) so it stays crisp on every screen and the
+        corners never get chewed by full-width rows or the scrollbar."""
+        _cx = self.NEON_CYAN
+        _L = 12  # corner arm length
+        _top = BODY_Y - 3
+        _bot = BODY_Y + BODY_ROWS * CHAR_H + 1
+        self.tft.fill_rect(0, _top, SCREEN_W, 1, _cx)
+        self.tft.fill_rect(0, _bot, SCREEN_W, 1, _cx)
+        self.tft.fill_rect(0, _top, 1, _L, _cx)
+        self.tft.fill_rect(SCREEN_W - 1, _top, 1, _L, _cx)
+        self.tft.fill_rect(0, _bot - _L + 1, 1, _L, _cx)
+        self.tft.fill_rect(SCREEN_W - 1, _bot - _L + 1, 1, _L, _cx)
+
     # --- Navbar ---
 
     def draw_navbar(self):
-        bat_v_str = "{:.1f}V".format(self.bat_v)
+        # Above ~4.3V the pack is on USB/charge — a LiPo never rests that
+        # high, so a bare voltage there reads like a bug. Show "USB" instead.
+        if self.bat_v >= 4.3:
+            bat_v_str = "USB"
+        else:
+            bat_v_str = "{:.1f}V".format(self.bat_v)
         name = self.node_name[:10]
         ann = ">>>" if (self.announce_flash and time.ticks_diff(time.ticks_ms(), self.announce_flash) < 2000) else ""
 
@@ -489,12 +559,12 @@ class UI:
                     if self._cache[ci] != cache_key:
                         self._cache[ci] = cache_key
                         self.tft.text(self.font, self._tb(_pad(line)), 0, y, self.YELLOW, self.SEL_BG)
-                        # Accent bar (clear of corner bracket)
-                        self.tft.fill_rect(4, y, 3, CHAR_H, self.NEON_MAG)
                         if uc:
                             self.tft.text(self.font, marker, 0, y, self.NEON_MAG, self.SEL_BG)
                         # Dim hash on right
                         self.tft.text(self.font, hash_tag, hash_x, y, self.DIM_CYAN, self.SEL_BG)
+                        # Accent bar last, in the blank left margin (over marker cell)
+                        self.tft.fill_rect(0, y, 3, CHAR_H, self.NEON_MAG)
                 else:
                     self._draw_row_cached(ci, line, y, self.NEON_CYAN, self.BG_DARK)
                     if uc:
@@ -522,27 +592,17 @@ class UI:
 
         # Scroll indicator on right edge (below the tab bar)
         _track_h = _rows * CHAR_H
-        self.tft.fill_rect(SCREEN_W - 2, BODY_Y + CHAR_H, 2, _track_h, self.BG_DARK)
+        self.tft.fill_rect(SBAR_X, BODY_Y + CHAR_H, SBAR_W, _track_h, self.BG_DARK)
         if _total > _rows:
             _bar_h = max(6, _track_h * _rows // _total)
             _bar_y = BODY_Y + CHAR_H + _scroll * _track_h // _total
-            self.tft.fill_rect(SCREEN_W - 2, _bar_y, 2, _bar_h, self.DIM_CYAN)
+            self.tft.fill_rect(SBAR_X, _bar_y, SBAR_W, _bar_h, self.DIM_CYAN)
 
-        # Neon frame + footer hints — drawn once per state/tab change
+        # Footer hints — drawn once per state/tab change (frame is drawn
+        # centrally by draw()).
         _nf_key = "NF" + str(self.node_tab)
         if self._cache[13] != _nf_key:
             self._cache[13] = _nf_key
-            _cx = self.NEON_CYAN
-            _L = 12  # corner vertical arm length
-            _top = BODY_Y - 3
-            _bot = BODY_Y + BODY_ROWS * CHAR_H + 1
-            self.tft.fill_rect(0, _top, SCREEN_W, 1, _cx)
-            self.tft.fill_rect(0, _bot, SCREEN_W, 1, _cx)
-            self.tft.fill_rect(0, _top, 1, _L, _cx)
-            self.tft.fill_rect(SCREEN_W - 1, _top, 1, _L, _cx)
-            self.tft.fill_rect(0, _bot - _L + 1, 1, _L, _cx)
-            self.tft.fill_rect(SCREEN_W - 1, _bot - _L + 1, 1, _L, _cx)
-
             self.tft.text(self.font, _pad(""), 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
             self.tft.text(self.font, "(", 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
             self.tft.text(self.font, "a", CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
@@ -554,6 +614,9 @@ class UI:
                 self.tft.text(self.font, "(", 13 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
                 self.tft.text(self.font, "p", 14 * CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
                 self.tft.text(self.font, ")ing", 15 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+                self.tft.text(self.font, "(", 20 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+                self.tft.text(self.font, "d", 21 * CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
+                self.tft.text(self.font, ")el", 22 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
             else:
                 self.tft.text(self.font, "click=open", 13 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
             self._route_cache = ''
@@ -563,8 +626,7 @@ class UI:
         # ping result, else the selected peer's hops + RSSI + last-seen,
         # e.g. "2h -87dB 5m". (Next-hop relay detail lives in the path
         # table; too wide for this line.)
-        if (self.node_tab == 0 and self.ping_status
-                and time.ticks_diff(time.ticks_ms(), self._ping_status_ms) < 8000):
+        if self.node_tab == 0 and self.ping_status:
             info = self.ping_status
         elif self.node_tab == 1:
             info = ""
@@ -574,7 +636,7 @@ class UI:
                     bits = []
                     hops = n.get("hops")
                     if hops:
-                        bits.append(str(hops) + "h")
+                        bits.append(str(hops) + "hp")
                     bits.append(_age(n.get("seen")))
                     info = " ".join(bits)
         else:
@@ -585,7 +647,7 @@ class UI:
                     bits = []
                     hops = p.get("hops")
                     if hops:
-                        bits.append(str(hops) + "h")
+                        bits.append(str(hops) + "hp")
                     rs = p.get("rssi")
                     if rs is not None:
                         bits.append(str(rs) + "dB")
@@ -646,23 +708,31 @@ class UI:
                     # span bg wins (e.g. h1 bar); default bg follows highlight
                     bg_use = row_bg if bg == self.BG_DARK else bg
                     self.tft.text(self.font, self._tb(text), col * CHAR_W, y, fg, bg_use)
+                # Cursor accent bar (magenta on link rows, dim otherwise)
+                if hl:
+                    ac = self.NEON_MAG if i in self._browser_link_rows else self.DIM_CYAN
+                    self.tft.fill_rect(0, y, 3, CHAR_H, ac)
             else:
                 self._draw_row_cached(ci, "", y, self.NEON_CYAN)
 
         # Scroll indicator on right edge (below the header)
         _track_h = _rows * CHAR_H
-        self.tft.fill_rect(SCREEN_W - 2, BODY_Y + CHAR_H, 2, _track_h, self.BG_DARK)
+        self.tft.fill_rect(SBAR_X, BODY_Y + CHAR_H, SBAR_W, _track_h, self.BG_DARK)
         if len(lines) > _rows:
             _bar_h = max(6, _track_h * _rows // len(lines))
             _bar_y = BODY_Y + CHAR_H + self.browser_scroll * _track_h // len(lines)
-            self.tft.fill_rect(SCREEN_W - 2, _bar_y, 2, _bar_h, self.DIM_CYAN)
+            self.tft.fill_rect(SBAR_X, _bar_y, SBAR_W, _bar_h, self.DIM_CYAN)
 
-        # Footer: transient status/error, else key hints
+        # Footer: transient status/error, link position, else key hints
         if self.browser_status:
             foot = self.browser_status[:COLS]
             fcol = self.NEON_MAG
         else:
-            foot = "(r)eload (n)ext link  click=open  <back"
+            _li = self._browser_link_rows.get(self.browser_cursor)
+            if _li is not None and self.browser_links:
+                foot = "link %d/%d  click=open  <back" % (_li + 1, len(self.browser_links))
+            else:
+                foot = "(r)load (n)ext (p)rev  click  <back"
             fcol = self.DIM_CYAN
         if self._cache[13] != foot:
             self._cache[13] = foot
@@ -733,9 +803,11 @@ class UI:
         lines = self._build_chat_lines()
         _chat_rows = BODY_ROWS - 1  # 11 rows for messages
 
-        # Clamp scroll
+        # Clamp scroll. Max is total-_chat_rows so the top-most position still
+        # fills the window with lines[0:_chat_rows]; scrolling further would
+        # shrink the view and make messages vanish off the bottom.
         total = len(lines)
-        max_scroll = max(0, total - 1)
+        max_scroll = max(0, total - _chat_rows)
         if self.chat_scroll > max_scroll:
             self.chat_scroll = max_scroll
 
@@ -780,7 +852,7 @@ class UI:
                 row_bg = self.SEL_BG if is_highlighted else self.BG_DARK
 
                 padded = _pad(text)
-                self.tft.text(self.font, self._tb(padded), 0, y, self.NEON_CYAN, row_bg)
+                self.tft.text(self.font, self._tb(padded), 0, y, self.BODY_FG, row_bg)
                 if is_first:
                     if is_mine:
                         self.tft.text(self.font, text[:4], 0, y, self.NEON_GREEN, row_bg)
@@ -790,29 +862,31 @@ class UI:
                             self.tft.text(self.font, self._tb(text[:gt + 1]), 0, y, self.NEON_MAG, row_bg)
                     # Image rendering
                     if has_image:
-                        img_pos = text.find("[image]")
+                        img_pos, img_len = self._marker_span(text, "image")
                         if img_pos >= 0:
+                            seg = text[img_pos:img_pos + img_len]
                             if not in_cache:
                                 # Expired: dim + strikethrough
-                                self.tft.text(self.font, "[image]", img_pos * CHAR_W, y,
+                                self.tft.text(self.font, self._tb(seg), img_pos * CHAR_W, y,
                                               self.DIM_CYAN, row_bg)
                                 self.tft.fill_rect(img_pos * CHAR_W, y + 7,
-                                                   7 * CHAR_W, 1, self.DIM_CYAN)
+                                                   img_len * CHAR_W, 1, self.DIM_CYAN)
                             elif is_highlighted:
                                 # Highlighted: yellow + accent bar
-                                self.tft.text(self.font, "[image]", img_pos * CHAR_W, y,
+                                self.tft.text(self.font, self._tb(seg), img_pos * CHAR_W, y,
                                               self.YELLOW, row_bg)
                                 self.tft.fill_rect(0, y, 3, CHAR_H, self.NEON_MAG)
                             else:
                                 # Normal: magenta
-                                self.tft.text(self.font, "[image]", img_pos * CHAR_W, y,
+                                self.tft.text(self.font, self._tb(seg), img_pos * CHAR_W, y,
                                               self.NEON_MAG, row_bg)
                     # Voice rendering
                     if has_audio:
-                        vpos = text.find("[voice]")
+                        vpos, vlen = self._marker_span(text, "voice")
                         if vpos >= 0:
                             vc = self.YELLOW if is_highlighted else self.NEON_GREEN
-                            self.tft.text(self.font, "[voice]", vpos * CHAR_W, y, vc, row_bg)
+                            self.tft.text(self.font, self._tb(text[vpos:vpos + vlen]),
+                                          vpos * CHAR_W, y, vc, row_bg)
                             if is_highlighted:
                                 self.tft.fill_rect(0, y, 3, CHAR_H, self.NEON_GREEN)
                 if slen > 0 and status in _status_color:
@@ -831,23 +905,19 @@ class UI:
             _sk = str(_bar_y) + ":" + str(_bar_h)
             if self._cache[13] != _sk:
                 self._cache[13] = _sk
-                self.tft.fill_rect(SCREEN_W - 2, _track_y, 2, _track_h, self.BG_DARK)
-                self.tft.fill_rect(SCREEN_W - 2, _bar_y, 2, _bar_h, self.DIM_CYAN)
+                self.tft.fill_rect(SBAR_X, _track_y, SBAR_W, _track_h, self.BG_DARK)
+                self.tft.fill_rect(SBAR_X, _bar_y, SBAR_W, _bar_h, self.DIM_CYAN)
 
         # Input line drawn by draw() after draw_chat() returns
 
     def draw_input(self):
-        prompt = "> "
         inp = self.cmd_buf.decode()
         if inp:
             ik = "> " + inp
             if self._cache[14] == ik:
                 return
             self._cache[14] = ik
-            text_part = inp[:COLS - 3] + "_"
-            text_padded = _pad(text_part, COLS - 2)
-            self.tft.text(self.font, prompt, 0, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
-            self.tft.text(self.font, text_padded, 2 * CHAR_W, INPUT_Y, self.NEON_CYAN, self.BG_DARK)
+            self._draw_input_line(inp)
         else:
             _on_image = self.chat_cursor >= 0 and self.chat_cursor in self._visible_image_lines
             # Timestamp of the highlighted message (empty pre-time-sync)
@@ -858,7 +928,9 @@ class UI:
                     _ts_txt = _fmt_time(self.chat_history[self.selected_peer][_mi][2])
                 except Exception:
                     _ts_txt = ""
-            ik = ("IMG" if _on_image else "BACK") + _ts_txt
+            # Record hint only when not navigating messages (0 = mic key)
+            _show_rec = self.chat_cursor < 0
+            ik = ("IMG" if _on_image else "BACK") + _ts_txt + ("R" if _show_rec else "")
             if self._cache[14] == ik:
                 return
             self._cache[14] = ik
@@ -866,6 +938,10 @@ class UI:
             if _ts_txt:
                 self.tft.text(self.font, _pad(_ts_txt, 16), 6 * CHAR_W, INPUT_Y,
                               self.DIM_CYAN, self.BG_DARK)
+            elif _show_rec:
+                self.tft.text(self.font, "[", 4 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+                self.tft.text(self.font, "0", 5 * CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
+                self.tft.text(self.font, "=rec]", 6 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
             if _on_image:
                 _hx = (COLS - 12) * CHAR_W
                 self.tft.text(self.font, "[", _hx, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
@@ -908,12 +984,15 @@ class UI:
             # Decode and scale to screen size in native C
             w, h, rgb565 = _dec.decode(data, SCREEN_W, SCREEN_H)
             self.tft.fill(0x0000)
-            self.tft.blit_buffer(rgb565, 0, 0, w, h)
+            # Center the decoded image (it may be smaller than the screen)
+            _ix = (SCREEN_W - w) // 2 if w < SCREEN_W else 0
+            _iy = (SCREEN_H - h) // 2 if h < SCREEN_H else 0
+            self.tft.blit_buffer(rgb565, _ix, _iy, w, h)
             del rgb565
             gc.collect()
-            # Hint bar at bottom
+            # Hint bar at bottom (centered: 14 chars * 8px = 112, (320-112)/2=104)
             self.tft.fill_rect(0, SCREEN_H - 18, SCREEN_W, 18, 0x0000)
-            self.tft.text(self.font, "any key = back", 96, SCREEN_H - 17, self.DIM_CYAN, 0x0000)
+            self.tft.text(self.font, "any key = back", 104, SCREEN_H - 17, self.DIM_CYAN, 0x0000)
         except ImportError:
             self.tft.fill(0x0000)
             self.tft.text(self.font, "No JPEG decoder", 56, 104, self.NEON_MAG, 0x0000)
@@ -1007,10 +1086,14 @@ class UI:
             # keyboard fallback for trackball left/right tab switch
             self._switch_tab(1 - self.node_tab)
             return True
+        elif key == b'd' or key == b'D':
+            self.delete_selected()
+            return True
         elif key == b'p' or key == b'P':
             if (self.node_tab == 0 and self.on_ping and self._peer_keys
                     and self.selected_idx < len(self._peer_keys)):
                 self.ping_status = "ping..."
+                self.ping_pending = True
                 self._ping_status_ms = time.ticks_ms()
                 self.dirty = True
                 self.on_ping(self._peer_keys[self.selected_idx])
@@ -1052,15 +1135,21 @@ class UI:
 
     # --- Browser page view ---
 
-    def show_page(self, title, path, lines, links, can_back=False):
-        """Display a rendered micron page (called by nomad_browser)."""
+    def show_page(self, title, path, lines, links, can_back=False, keep_pos=False):
+        """Display a rendered micron page (called by nomad_browser). keep_pos
+        preserves the scroll/cursor across a reload of the same page."""
         self.browser_title = title
         self.browser_path = path
         self.browser_lines = lines
         self.browser_links = links
         self._browser_can_back = can_back
-        self.browser_scroll = 0
-        self.browser_cursor = -1
+        if keep_pos:
+            # clamp the preserved scroll to the (possibly changed) content
+            _rows = BODY_ROWS - 1
+            self.browser_scroll = max(0, min(self.browser_scroll, max(0, len(lines) - _rows)))
+        else:
+            self.browser_scroll = 0
+            self.browser_cursor = -1
         self._browser_link_rows = {}
         self._page_gen += 1
         if self.state != STATE_BROWSER:
@@ -1105,6 +1194,12 @@ class UI:
             self.dirty = True
             self.on_browse_follow(self.browser_links[li][0])
 
+    def _row_has_link(self, idx):
+        for s in self.browser_lines[idx]:
+            if s[4] is not None:
+                return True
+        return False
+
     def _jump_next_link(self):
         """Move the cursor to the next document row containing a link."""
         _rows = BODY_ROWS - 1
@@ -1112,17 +1207,43 @@ class UI:
         cur = self.browser_cursor if self.browser_cursor >= 0 else -1
         start = self.browser_scroll + cur + 1
         for idx in range(start, len(lines)):
-            has_link = False
-            for s in lines[idx]:
-                if s[4] is not None:
-                    has_link = True
-                    break
-            if has_link:
+            if self._row_has_link(idx):
                 if idx < self.browser_scroll or idx >= self.browser_scroll + _rows:
                     self.browser_scroll = max(0, min(idx, len(lines) - _rows))
                 self.browser_cursor = idx - self.browser_scroll
                 self.dirty = True
                 return
+        self.dirty = True
+
+    def _jump_prev_link(self):
+        """Move the cursor to the previous document row containing a link."""
+        _rows = BODY_ROWS - 1
+        lines = self.browser_lines
+        cur = self.browser_cursor if self.browser_cursor >= 0 else 0
+        start = self.browser_scroll + cur - 1
+        for idx in range(min(start, len(lines) - 1), -1, -1):
+            if self._row_has_link(idx):
+                if idx < self.browser_scroll or idx >= self.browser_scroll + _rows:
+                    self.browser_scroll = max(0, min(idx, len(lines) - _rows))
+                self.browser_cursor = idx - self.browser_scroll
+                self.dirty = True
+                return
+        self.dirty = True
+
+    def _browser_page(self, delta):
+        """Page the viewport by delta rows, clamped; cursor stays in-window."""
+        _rows = BODY_ROWS - 1
+        max_scroll = max(0, len(self.browser_lines) - _rows)
+        self.browser_scroll = max(0, min(self.browser_scroll + delta, max_scroll))
+        if self.browser_cursor >= _rows:
+            self.browser_cursor = _rows - 1
+        self.dirty = True
+
+    def _browser_goto(self, top):
+        """Jump to the top or bottom of the page."""
+        _rows = BODY_ROWS - 1
+        self.browser_scroll = 0 if top else max(0, len(self.browser_lines) - _rows)
+        self.browser_cursor = -1
         self.dirty = True
 
     def _handle_key_browser(self, ch, key):
@@ -1135,6 +1256,9 @@ class UI:
         elif ch == 0x0D:  # Enter mirrors the trackball click
             self._browser_follow_cursor()
             return True
+        elif ch == 0x20:  # Space — page down
+            self._browser_page(BODY_ROWS - 2)
+            return True
         elif key == b'r' or key == b'R':
             if self.on_browse_refresh and self.browser_path:
                 self.browser_status = "reloading..."
@@ -1143,6 +1267,18 @@ class UI:
             return True
         elif key == b'n' or key == b'N':
             self._jump_next_link()
+            return True
+        elif key == b'p' or key == b'P':
+            self._jump_prev_link()
+            return True
+        elif key == b'b' or key == b'B':  # page up
+            self._browser_page(-(BODY_ROWS - 2))
+            return True
+        elif key == b'g':  # top
+            self._browser_goto(True)
+            return True
+        elif key == b'G':  # bottom
+            self._browser_goto(False)
             return True
         return False
 
@@ -1176,8 +1312,9 @@ class UI:
                 self.dirty = True
             return True
         elif 0x20 <= ch < 0x7F:  # Printable
-            # 'r' or '0' (Sym+0 mic key) with empty input = start voice recording
-            if key in (b'r', b'R', b'0') and len(self.cmd_buf) == 0 and self.selected_peer:
+            # '0' (Sym+0 mic key) with empty input = start voice recording.
+            # Only '0' triggers it so messages can start with r/R/other chars.
+            if key == b'0' and len(self.cmd_buf) == 0 and self.selected_peer:
                 self._enter_recording()
                 return True
             self.cmd_buf += key
@@ -1186,25 +1323,36 @@ class UI:
         return False
 
     def _draw_recording(self):
-        """Draw recording screen."""
+        """Draw the recording screen. Deliberately STATIC — it is painted once
+        when warming starts and once when capture starts, and never updated
+        during capture. Any redraw makes the C display driver hold the GIL,
+        which starves the core-1 mic thread and hurts the audio, so there is no
+        VU meter or live counter here (row cache skips the unchanged rows)."""
+        if self._rec_warming:
+            title, tcol = "Warming mic...", self.NEON_CYAN
+            hint = "Esc=cancel"
+        else:
+            title, tcol = "* Recording *", self.NEON_MAG
+            hint = "Enter=send   Esc=cancel"
         mid = BODY_ROWS // 2
         for i in range(BODY_ROWS):
             y = BODY_Y + i * CHAR_H
             if i == mid - 1:
-                secs = str(int(self._rec_seconds))
-                self._draw_row_cached(i + 1, ("Recording... " + secs + "s").center(COLS),
-                                      y, self.NEON_MAG)
+                self._draw_row_cached(i + 1, title.center(COLS), y, tcol)
             elif i == mid + 1:
-                self._draw_row_cached(i + 1, "Enter=send  Esc=cancel".center(COLS),
-                                      y, self.DIM_CYAN)
+                self._draw_row_cached(i + 1, hint.center(COLS), y, self.DIM_CYAN)
             else:
                 self._draw_row_cached(i + 1, "", y, self.NEON_CYAN)
-        # Input area
         self.tft.text(self.font, _pad(""), 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
 
     def _enter_recording(self):
-        """Switch to recording state."""
+        """Switch to recording state. Shows '* Recording *' immediately —
+        capture content includes audio from ~the keypress (DMA ring), so the
+        user can speak at once; 'Warming mic...' appears only if the slow
+        ADC re-warm fallback engages (driven by _recording_loop)."""
         self._rec_seconds = 0
+        self._rec_level = 0
+        self._rec_warming = False
         self.state = STATE_RECORDING
         self._prev_state = -1
         self._state_change_ms = time.ticks_ms()
@@ -1288,16 +1436,32 @@ class UI:
                     self._cache = [''] * 15
                     self.dirty = True
                     return True
-                elif self._settings_idx == 6:  # Radio stats page
-                    self._settings_page = _SET_RADIO
+                elif self._settings_idx == 6:  # Auto-announce toggle
+                    self._auto_announce = not self._auto_announce
+                    if self.on_auto_announce:
+                        try:
+                            self.on_auto_announce(self._auto_announce)
+                        except Exception:
+                            pass
                     self._cache = [''] * 15
                     self.dirty = True
                     return True
-                # idx 7 (address) is informational — Enter does nothing
+                elif self._settings_idx == 7:  # Sleep timeout cycle
+                    self._cycle_timeout(1)
+                    self._cache = [''] * 15
+                    self.dirty = True
+                    return True
+                elif self._settings_idx == 8:  # Radio stats page
+                    self._settings_page = _SET_RADIO
+                    self._settings_scroll = 0
+                    self._cache = [''] * 15
+                    self.dirty = True
+                    return True
+                # idx 9 (address) is informational — Enter does nothing
         elif self._settings_page == _SET_RADIO:
             if ch == 0x1B or ch == 0x08:
                 self._settings_page = _SET_MAIN
-                self._settings_idx = 6
+                self._settings_idx = 8
                 self._cache = [''] * 15
                 self.dirty = True
                 return True
@@ -1312,12 +1476,26 @@ class UI:
                 idx = self._settings_idx
                 if 0 <= idx < len(self._wifi_networks):
                     self._wifi_ssid = self._wifi_networks[idx][0]
+                    self._wifi_err = ""
                     self._settings_page = _SET_WIFI_PASS
                     self.cmd_buf = bytearray()
                     self._cache = [''] * 15
                     self.dirty = True
                     return True
+            elif key == b'r' or key == b'R':  # rescan
+                self._settings_idx = 0
+                self._settings_scroll = 0
+                self._wifi_err = ""
+                self._wifi_networks = []
+                self._wifi_scanning = True
+                self._cache = [''] * 15
+                self.dirty = True
+                if self.on_wifi_scan:
+                    asyncio.create_task(self._do_wifi_scan())
+                return True
         elif self._settings_page == _SET_WIFI_PASS:
+            if self._wifi_connecting:
+                return True  # ignore input while the async connect runs
             if ch == 0x1B:
                 self._settings_page = _SET_WIFI_SCAN
                 self._settings_idx = 0
@@ -1334,34 +1512,26 @@ class UI:
                     self._cache = [''] * 15
                     self.dirty = True
                 return True
-            elif ch == 0x0D:  # Enter — connect
+            elif ch == 0x0D:  # Enter — connect (async; UI shows "connecting")
                 password = self.cmd_buf.decode()
                 self.cmd_buf = bytearray()
-                # Show connecting status
                 self._cache = [''] * 15
-                self.dirty = True
                 if self.on_wifi_connect:
-                    ip = self.on_wifi_connect(self._wifi_ssid, password)
-                    if ip:
-                        self._wifi_connected = True
-                        self._wifi_ssid_current = self._wifi_ssid
-                        self._wifi_ip = ip
-                        # Auto-jump to TCP host entry
-                        self._settings_page = _SET_TCP_HOST
-                        self.cmd_buf = bytearray(self._tcp_target.encode()) if self._tcp_target else bytearray(self._tcp_default.encode())
-                        self._cache = [''] * 15
-                        self.dirty = True
-                        return True
-                self._settings_page = _SET_MAIN
-                self._settings_idx = 0
-                self._cache = [''] * 15
-                self.dirty = True
+                    self._wifi_connecting = True
+                    self.dirty = True
+                    self.on_wifi_connect(self._wifi_ssid, password)
+                else:
+                    self._settings_page = _SET_MAIN
+                    self._settings_idx = 0
+                    self.dirty = True
                 return True
             elif 0x20 <= ch < 0x7F:  # Printable
                 self.cmd_buf += key
                 self._input_dirty = True
                 return True
         elif self._settings_page == _SET_TCP_HOST:
+            if self._tcp_connecting:
+                return True  # ignore input while the async connect runs
             if ch == 0x1B:
                 self._settings_page = _SET_MAIN
                 self._settings_idx = 1
@@ -1378,7 +1548,7 @@ class UI:
                     self._cache = [''] * 15
                     self.dirty = True
                 return True
-            elif ch == 0x0D:  # Enter — parse host:port and connect
+            elif ch == 0x0D:  # Enter — parse host:port and connect (async)
                 addr = self.cmd_buf.decode().strip()
                 self.cmd_buf = bytearray()
                 host, port = None, None
@@ -1389,10 +1559,12 @@ class UI:
                         port = int(parts[1])
                     except:
                         pass
-                if host and port:
-                    if self.on_tcp_toggle and self.on_tcp_toggle(True, host, port):
-                        self._tcp_enabled = True
-                        self._tcp_target = addr
+                if host and port and self.on_tcp_connect:
+                    self._tcp_connecting = True
+                    self._cache = [''] * 15
+                    self.dirty = True
+                    self.on_tcp_connect(host, port)
+                    return True
                 self._settings_page = _SET_MAIN
                 self._settings_idx = 1
                 self._cache = [''] * 15
@@ -1452,8 +1624,10 @@ class UI:
             self._draw_node_name()
         elif self._settings_page == _SET_RADIO:
             self._draw_settings_radio()
-        # Separator
-        self.tft.fill_rect(0, SEP_Y, SCREEN_W, 2, self.DIM_CYAN)
+
+    def _timeout_label(self):
+        ms = self._screen_timeout_ms
+        return "never" if not ms else str(ms // 1000) + "s"
 
     def _draw_settings_main(self):
         self._draw_row_cached(1, "Settings", BODY_Y, self.NEON_CYAN)
@@ -1472,10 +1646,12 @@ class UI:
         vol_bar = "#" * self._volume + "." * (10 - self._volume)
         vol_line = "Vol:  [" + vol_bar + "] " + str(self._volume)
         kbbl_line = "KbBL: " + ("ON" if self._kbd_bl else "OFF")
+        anc_line = "Announce: " + ("AUTO" if self._auto_announce else "manual")
+        sleep_line = "Sleep: " + self._timeout_label()
         radio_line = "Radio stats"
         addr_line = "Addr: " + (self.my_address or "?")
         items = [wifi_line, tcp_line, name_line, lora_line, vol_line,
-                 kbbl_line, radio_line, addr_line]
+                 kbbl_line, anc_line, sleep_line, radio_line, addr_line]
         for i in range(BODY_ROWS - 1):
             y = BODY_Y + (i + 1) * CHAR_H
             if i < len(items):
@@ -1494,17 +1670,27 @@ class UI:
         self._draw_settings_bottom_bar()
 
     def _draw_settings_radio(self):
-        self._draw_row_cached(1, "< Radio / Mesh", BODY_Y, self.NEON_CYAN)
         stats = []
         if self.get_radio_stats:
             try:
                 stats = self.get_radio_stats()
             except Exception:
                 stats = [("error", "")]
-        for i in range(BODY_ROWS - 1):
+        self._radio_rows = len(stats)
+        _rows = BODY_ROWS - 1
+        # clamp scroll to content (stats count varies as the page refreshes)
+        max_scroll = max(0, len(stats) - _rows)
+        if self._settings_scroll > max_scroll:
+            self._settings_scroll = max_scroll
+        hdr = "< Radio / Mesh"
+        if len(stats) > _rows:
+            hdr = hdr + "   (scroll)"
+        self._draw_row_cached(1, hdr, BODY_Y, self.NEON_CYAN)
+        visible = stats[self._settings_scroll:self._settings_scroll + _rows]
+        for i in range(_rows):
             y = BODY_Y + (i + 1) * CHAR_H
-            if i < len(stats):
-                label, value = stats[i]
+            if i < len(visible):
+                label, value = visible[i]
                 line = "  " + _pad(str(label), 14) + str(value)
                 self._draw_row_cached(i + 2, line, y, self.NEON_CYAN)
             else:
@@ -1522,7 +1708,10 @@ class UI:
         self.tft.text(self.font, "=back]", _hx + 5 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
 
     def _draw_wifi_scan(self):
-        self._draw_row_cached(1, "WiFi Networks", BODY_Y, self.NEON_CYAN)
+        _hdr = ("WiFi: " + self._wifi_err[:18] + "  (r)escan"
+                if self._wifi_err else "WiFi Networks   (r)escan")
+        self._draw_row_cached(1, _hdr, BODY_Y,
+                              self.NEON_MAG if self._wifi_err else self.NEON_CYAN)
 
         if not self._wifi_networks:
             msg = "  Scanning..." if self._wifi_scanning else "  No networks found"
@@ -1557,13 +1746,13 @@ class UI:
         for i in range(1, BODY_ROWS):
             self._draw_row_cached(i + 1, "", BODY_Y + i * CHAR_H, self.NEON_CYAN)
 
-        # Password input line
-        prompt = "> "
-        inp = self.cmd_buf.decode()
-        text_part = inp[:COLS - 3] + "_"
-        text_padded = _pad(text_part, COLS - 2)
-        self.tft.text(self.font, prompt, 0, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
-        self.tft.text(self.font, text_padded, 2 * CHAR_W, INPUT_Y, self.NEON_CYAN, self.BG_DARK)
+        if self._wifi_connecting:
+            self._draw_row_cached(5, "Connecting...".center(COLS),
+                                  BODY_Y + 4 * CHAR_H, self.NEON_GREEN)
+            self.tft.text(self.font, _pad(""), 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+        else:
+            # Password input line
+            self._draw_input_line(self.cmd_buf.decode())
 
     async def _do_wifi_scan(self):
         """Run WiFi scan in async task so UI renders 'Scanning...' first."""
@@ -1577,6 +1766,36 @@ class UI:
         self._cache = [''] * 15
         self.dirty = True
 
+    def set_wifi_result(self, ip):
+        """Async WiFi connect finished — ip string on success, None on fail."""
+        self._wifi_connecting = False
+        if ip:
+            self._wifi_connected = True
+            self._wifi_ssid_current = self._wifi_ssid
+            self._wifi_ip = ip
+            self._wifi_err = ""
+            # Auto-jump to TCP host entry
+            self._settings_page = _SET_TCP_HOST
+            self.cmd_buf = (bytearray(self._tcp_target.encode()) if self._tcp_target
+                            else bytearray(self._tcp_default.encode()))
+        else:
+            self._wifi_err = "connect failed"
+            self._settings_page = _SET_WIFI_SCAN
+            self._settings_idx = 0
+        self._cache = [''] * 15
+        self.dirty = True
+
+    def set_tcp_result(self, ok, addr):
+        """Async TCP connect finished — back to the settings menu either way."""
+        self._tcp_connecting = False
+        if ok:
+            self._tcp_enabled = True
+            self._tcp_target = addr
+        self._settings_page = _SET_MAIN
+        self._settings_idx = 1
+        self._cache = [''] * 15
+        self.dirty = True
+
     def _draw_node_name(self):
         self._draw_row_cached(1, "Node Name", BODY_Y, self.NEON_CYAN)
 
@@ -1584,12 +1803,7 @@ class UI:
             self._draw_row_cached(i + 1, "", BODY_Y + i * CHAR_H, self.NEON_CYAN)
 
         # Name input line
-        prompt = "> "
-        inp = self.cmd_buf.decode()
-        text_part = inp[:COLS - 3] + "_"
-        text_padded = _pad(text_part, COLS - 2)
-        self.tft.text(self.font, prompt, 0, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
-        self.tft.text(self.font, text_padded, 2 * CHAR_W, INPUT_Y, self.NEON_CYAN, self.BG_DARK)
+        self._draw_input_line(self.cmd_buf.decode())
 
     def _draw_tcp_host(self):
         self._draw_row_cached(1, "TCP Server Address", BODY_Y, self.NEON_CYAN)
@@ -1597,13 +1811,13 @@ class UI:
         for i in range(1, BODY_ROWS):
             self._draw_row_cached(i + 1, "", BODY_Y + i * CHAR_H, self.NEON_CYAN)
 
-        # Address input line
-        prompt = "> "
-        inp = self.cmd_buf.decode()
-        text_part = inp[:COLS - 3] + "_"
-        text_padded = _pad(text_part, COLS - 2)
-        self.tft.text(self.font, prompt, 0, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
-        self.tft.text(self.font, text_padded, 2 * CHAR_W, INPUT_Y, self.NEON_CYAN, self.BG_DARK)
+        if self._tcp_connecting:
+            self._draw_row_cached(5, "Connecting...".center(COLS),
+                                  BODY_Y + 4 * CHAR_H, self.NEON_GREEN)
+            self.tft.text(self.font, _pad(""), 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+        else:
+            # Address input line
+            self._draw_input_line(self.cmd_buf.decode())
 
     def _irq_handler_up(self, pin):
         t = time.ticks_ms()
@@ -1675,6 +1889,20 @@ class UI:
             elif self.state == STATE_BROWSER:
                 if left:
                     self._browser_back()
+                else:
+                    self._browser_page(BODY_ROWS - 2)  # right = page down
+            elif self.state == STATE_CHAT:
+                # left/right = page through chat history
+                _page = BODY_ROWS - 2
+                if left:
+                    self.chat_scroll = min(self.chat_scroll + _page,
+                                           max(0, len(self._build_chat_lines()) - (BODY_ROWS - 1)))
+                else:
+                    self.chat_scroll = max(0, self.chat_scroll - _page)
+                self.chat_cursor = -1
+                self.dirty = True
+            elif self.state == STATE_SETTINGS:
+                self._settings_adjust(-1 if left else 1)
         if click:
             if self.state == STATE_IMAGE:
                 self._exit_image_view()
@@ -1737,8 +1965,9 @@ class UI:
             elif self.chat_cursor > 0:
                 self.chat_cursor -= 1
             else:
-                # Cursor at top — scroll viewport up
-                if self.chat_scroll < MAX_HISTORY * 3:
+                # Cursor at top — scroll viewport up (bounded so the view
+                # never shrinks past the oldest full window)
+                if self.chat_scroll < max(0, len(self._build_chat_lines()) - _chat_rows):
                     self.chat_scroll += 1
 
     def _scroll_down(self):
@@ -1789,10 +2018,14 @@ class UI:
                 self._settings_idx -= 1
                 if self._settings_idx < self._settings_scroll:
                     self._settings_scroll = self._settings_idx
+        elif self._settings_page == _SET_RADIO:
+            if self._settings_scroll > 0:
+                self._settings_scroll -= 1
 
     def _settings_scroll_down(self):
         if self._settings_page == _SET_MAIN:
-            if self._settings_idx < 7:  # 8 items: WiFi..Vol, KbBL, Radio, Addr
+            # 10 items: WiFi TCP Name LoRa Vol KbBL Announce Sleep Radio Addr
+            if self._settings_idx < 9:
                 self._settings_idx += 1
         elif self._settings_page == _SET_WIFI_SCAN:
             if self._settings_idx < len(self._wifi_networks) - 1:
@@ -1800,6 +2033,38 @@ class UI:
                 max_visible = BODY_ROWS - 2  # header row + 0-indexed
                 if self._settings_idx >= self._settings_scroll + max_visible:
                     self._settings_scroll = self._settings_idx - max_visible + 1
+        elif self._settings_page == _SET_RADIO:
+            if self._settings_scroll < max(0, self._radio_rows - (BODY_ROWS - 1)):
+                self._settings_scroll += 1
+
+    def _cycle_timeout(self, delta=1):
+        """Step the screen inactivity timeout through the preset choices."""
+        choices = _TIMEOUT_CHOICES
+        try:
+            i = choices.index(self._screen_timeout_ms)
+        except ValueError:
+            i = 0
+        self._screen_timeout_ms = choices[(i + delta) % len(choices)]
+        if self.on_screen_timeout:
+            try:
+                self.on_screen_timeout(self._screen_timeout_ms)
+            except Exception:
+                pass
+
+    def _settings_adjust(self, delta):
+        """Trackball left/right on an adjustable main-settings row."""
+        if self._settings_page != _SET_MAIN:
+            return
+        if self._settings_idx == 4:      # Volume
+            self._volume = max(0, min(10, self._volume + delta))
+            if self.on_volume:
+                self.on_volume(self._volume)
+        elif self._settings_idx == 7:    # Sleep timeout
+            self._cycle_timeout(delta)
+        else:
+            return
+        self._cache = [''] * 15
+        self.dirty = True
 
     # --- Data management ---
 
@@ -1816,13 +2081,35 @@ class UI:
         self._cache = [''] * 15
         self.dirty = True
 
+    def _forget_peer_state(self, key):
+        """Drop every local trace of a peer key: chat, unread, media caches."""
+        self.chat_history.pop(key, None)
+        self.unread.pop(key, None)
+        if self._chat_lines_peer == key:
+            self._chat_lines_cache = None
+        for cache in (self._image_cache, self._audio_cache):
+            for k in [ck for ck in cache if ck[0] == key]:
+                cache.pop(k, None)
+        self._image_cache_order = [ck for ck in self._image_cache_order if ck[0] != key]
+
     def add_peer(self, dest_hash, name, rssi=None, hops=None, via=None):
         """Add or update a peer from an announce."""
-        if dest_hash not in self.peers:
-            if len(self.peers) >= MAX_PEERS:
-                oldest = self._peer_keys[0]
-                del self.peers[oldest]
-                self._peer_keys.pop(0)
+        if dest_hash not in self.peers and len(self.peers) >= MAX_PEERS:
+            # Evict the least-recently-seen peer — never index 0, which
+            # message-bubbling makes the most active chat.
+            sel_key = (self._peer_keys[self.selected_idx]
+                       if self.selected_idx < len(self._peer_keys) else None)
+            oldest = min(self._peer_keys, key=lambda k: self.peers[k].get("seen", 0))
+            self._peer_keys.remove(oldest)
+            del self.peers[oldest]
+            self._forget_peer_state(oldest)
+            if self.selected_peer == oldest:
+                self.selected_peer = None
+            # re-anchor the cursor to the same peer it was on
+            if sel_key is not None and sel_key != oldest and sel_key in self._peer_keys:
+                self.selected_idx = self._peer_keys.index(sel_key)
+            elif self.selected_idx >= len(self._peer_keys):
+                self.selected_idx = max(0, len(self._peer_keys) - 1)
 
         self.peers[dest_hash] = {"name": name or "?", "rssi": rssi,
                                  "hops": hops, "via": via, "seen": time.time()}
@@ -1831,13 +2118,48 @@ class UI:
         self._route_cache = ''  # selected-peer footer may show new route info
         self.dirty = True
 
+    def delete_selected(self):
+        """Forget the selected peer (MSG) or node (NET) and its local state.
+        The entry re-appears on the next announce; this just clears clutter."""
+        if self.node_tab == 0:
+            if not (0 <= self.selected_idx < len(self._peer_keys)):
+                return
+            key = self._peer_keys.pop(self.selected_idx)
+            self.peers.pop(key, None)
+            self._forget_peer_state(key)
+            if self.selected_peer == key:
+                self.selected_peer = None
+            if self.selected_idx >= len(self._peer_keys):
+                self.selected_idx = max(0, len(self._peer_keys) - 1)
+            if self.node_scroll > max(0, len(self._peer_keys) - (BODY_ROWS - 1)):
+                self.node_scroll = max(0, len(self._peer_keys) - (BODY_ROWS - 1))
+            if self.on_delete_peer:
+                try:
+                    self.on_delete_peer(key)
+                except Exception:
+                    pass
+        else:
+            if not (0 <= self.net_idx < len(self._node_keys)):
+                return
+            key = self._node_keys.pop(self.net_idx)
+            self.nomad_nodes.pop(key, None)
+            if self.net_idx >= len(self._node_keys):
+                self.net_idx = max(0, len(self._node_keys) - 1)
+            if self.net_scroll > max(0, len(self._node_keys) - (BODY_ROWS - 1)):
+                self.net_scroll = max(0, len(self._node_keys) - (BODY_ROWS - 1))
+        self._cache = [''] * 15
+        self.dirty = True
+
     def add_nomad_node(self, dest_hash, name, hops=None, seen=None):
         """Add or update a NomadNet node (NET tab, called by nomad_browser)."""
         prev = self.nomad_nodes.get(dest_hash)
         if prev is None and len(self.nomad_nodes) >= MAX_PEERS:
-            oldest = self._node_keys[0]
+            oldest = min(self._node_keys,
+                         key=lambda k: self.nomad_nodes[k].get("seen", 0))
             del self.nomad_nodes[oldest]
-            self._node_keys.pop(0)
+            self._node_keys.remove(oldest)
+            if self.net_idx >= len(self._node_keys):
+                self.net_idx = max(0, len(self._node_keys) - 1)
         if prev:
             if name is None:
                 name = prev.get("name")
@@ -1889,25 +2211,42 @@ class UI:
         if not is_mine:
             if self.state == STATE_NODES or self.selected_peer != dest_hash:
                 self.unread[dest_hash] = self.unread.get(dest_hash, 0) + 1
-            # Bubble peer to top of node list
+            # Bubble peer to top of node list, keeping the cursor on the
+            # same peer (not blindly on row 0, which could be a different one).
             if dest_hash in self._peer_keys:
+                sel_key = (self._peer_keys[self.selected_idx]
+                           if self.selected_idx < len(self._peer_keys) else None)
                 self._peer_keys.remove(dest_hash)
                 self._peer_keys.insert(0, dest_hash)
-                # Keep selection on the same peer or reset to top
                 if self.state == STATE_NODES:
-                    self.selected_idx = 0
-                    self.node_scroll = 0
+                    if sel_key is not None and sel_key in self._peer_keys:
+                        self.selected_idx = self._peer_keys.index(sel_key)
+                    if self.selected_idx < self.node_scroll:
+                        self.node_scroll = self.selected_idx
 
         if self.state == STATE_CHAT:
             if self.selected_peer == dest_hash:
-                self.chat_scroll = 0
-                self._invalidate_chat_lines()
+                # Snap to bottom for our own sends or when already at the
+                # bottom; otherwise keep the reader's position while scrolled up.
+                if is_mine or self.chat_scroll == 0:
+                    self.chat_scroll = 0
+                    self._invalidate_chat_lines()
+                elif (self._chat_lines_cache is not None
+                      and self._chat_lines_peer == dest_hash):
+                    old_n = len(self._chat_lines_cache)
+                    self._invalidate_chat_lines()
+                    new_n = len(self._build_chat_lines())
+                    self.chat_scroll += max(0, new_n - old_n)
+                else:
+                    self._invalidate_chat_lines()
             # Invalidate body row cache — lines shift when new message arrives
             for i in range(1, BODY_ROWS + 1):
                 self._cache[i] = ''
             self.dirty = True
-        else:
-            # On node list — mark dirty so unread indicator shows
+        elif self.state != STATE_RECORDING:
+            # On node list — mark dirty so unread indicator shows. Skip during
+            # recording: the screen redraw would steal GIL from the mic thread;
+            # the message is stored and shows when recording ends.
             self.dirty = True
         return msg_idx
 
@@ -1963,6 +2302,9 @@ class UI:
             self.draw_browser()
         elif self.state == STATE_RECORDING:
             self._draw_recording()
+        # Shared neon body frame — drawn last so corners stay crisp on every
+        # screen (cheap: 2 rails + 4 short arms).
+        self._draw_frame()
         self.dirty = False
         self._input_dirty = False
 
@@ -2001,8 +2343,11 @@ class UI:
         while True:
             now = time.ticks_ms()
 
-            # Screen timeout: turn off after inactivity
-            if self._screen_on and time.ticks_diff(now, self._last_activity) > _SCREEN_TIMEOUT_MS:
+            # Screen timeout: turn off after inactivity (0 = never). Never
+            # sleep mid-transfer or mid-audio — the user is waiting on it.
+            _busy = self.transfer_progress is not None or self._audio_status is not None
+            if (self._screen_on and self._screen_timeout_ms and not _busy
+                    and time.ticks_diff(now, self._last_activity) > self._screen_timeout_ms):
                 self.sleep_screen()
                 spi_release_display()
 
@@ -2025,10 +2370,15 @@ class UI:
                 spi_release_display()
                 self._progress_dirty = False
 
-            # Redraw: immediate for input line, throttled for full redraws
+            # Redraw: immediate for input line, throttled for full redraws.
+            # draw_input() is the chat input renderer; settings text pages
+            # (WiFi pass / node name / TCP host) redraw via their own draw().
             if self._input_dirty and not self.dirty:
                 spi_acquire_display()
-                self.draw_input()
+                if self.state == STATE_CHAT:
+                    self.draw_input()
+                else:
+                    self.draw()
                 spi_release_display()
                 self._input_dirty = False
             elif self.dirty and time.ticks_diff(now, self._last_draw) > 50:
@@ -2045,7 +2395,9 @@ class UI:
         while True:
             self.update_battery()
             bl = 3 if self.bat_v > 3.9 else (2 if self.bat_v > 3.6 else (1 if self.bat_v > 3.3 else 0))
-            if bl != _last_bl and self._screen_on:
+            # Don't redraw mid-recording — the display SPI would steal GIL from
+            # the mic thread (the level is re-checked after recording ends).
+            if bl != _last_bl and self._screen_on and self.state != STATE_RECORDING:
                 _last_bl = bl
                 self._nav_bat_cache = ''  # only invalidate battery section
                 self.dirty = True
@@ -2057,14 +2409,23 @@ class UI:
         minute changes. Never draws — row caches skip unchanged text."""
         _last_min = -1
         while True:
-            if self._screen_on:
+            # Skip entirely during recording: no housekeeping redraw is worth
+            # stealing GIL cycles from the mic capture thread.
+            if self._screen_on and self.state != STATE_RECORDING:
                 if self.state == STATE_SETTINGS and self._settings_page == _SET_RADIO:
                     self.dirty = True
-                if self.ping_status and time.ticks_diff(
-                        time.ticks_ms(), self._ping_status_ms) >= 8000:
+                # Expire a finished ping result 8s after it resolved; keep
+                # "ping..." on screen while the receipt is still outstanding.
+                if (self.ping_status and not self.ping_pending
+                        and time.ticks_diff(time.ticks_ms(), self._ping_status_ms) >= 8000):
                     self.ping_status = None
                     if self.state == STATE_NODES:
                         self.dirty = True
+                # Drop the announce ">>>" flash once its 2s window has passed.
+                if (self.announce_flash
+                        and time.ticks_diff(time.ticks_ms(), self.announce_flash) >= 2000):
+                    self.announce_flash = 0
+                    self.dirty = True
                 if _clock_valid():
                     m = time.localtime()[4]
                     if m != _last_min:

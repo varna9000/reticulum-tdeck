@@ -178,8 +178,12 @@ try:
     from machine import SoftI2C
     _mic_i2c = SoftI2C(scl=Pin(8), sda=Pin(18), freq=100000)
     sound.init_mic(_mic_i2c)
+    # Prime the ADC once (~3s, behind the splash) and leave it clocked — it
+    # then stays live indefinitely, so recordings start instantly instead of
+    # paying a ~3s warm-up per recording. stop_recording() keeps the clock on.
+    _mic_ok = sound.prime_mic()
     if DEBUG >= 1:
-        print("Mic init OK")
+        print("Mic init OK, primed:", _mic_ok)
 except Exception as e:
     if DEBUG >= 1:
         print("Mic init failed:", e)
@@ -216,6 +220,8 @@ gc.collect()
 
 # --- Setup interfaces (LoRa comes online) ---
 _announced_once = False  # set after the boot announce; gates recovery re-announce
+_boot_ticks = time.ticks_ms()  # for the radio-page uptime counter
+_announce_count = 0            # total announces sent this session
 
 def _lora_status(online):
     gui.lora_online = online
@@ -227,8 +233,10 @@ def _lora_status(online):
         # poll_loop recovery, so the event loop is running.)
         import uasyncio as asyncio
         async def _reannounce():
+            global _announce_count
             try:
                 router.announce()
+                _announce_count += 1
                 gui.announce_flash = time.ticks_ms()
                 gui.dirty = True
             except Exception as e:
@@ -302,8 +310,9 @@ def _on_message_inner(message):
         if isinstance(img_field, (list, tuple)) and len(img_field) >= 2:
             if img_field[0] in ("jpg", "webp", "png") and isinstance(img_field[1], (bytes, bytearray)):
                 image_data = bytes(img_field[1])
+                _kb = max(1, len(image_data) // 1024)
                 if not content or content == "(binary)":
-                    content = "[image]"
+                    content = "[image " + str(_kb) + "k]"
 
     # Extract audio if present
     audio_data = None
@@ -328,10 +337,13 @@ def _on_message_inner(message):
                     # Map LXMF audio mode to codec2 internal mode
                     # CODEC2_MODE_3200=0, CODEC2_MODE_2400=1
                     audio_codec_mode = 0 if aud_mode == 0x09 else 1
+                    # Duration: 3200=8 B/frame, 2400=6 B/frame, 20ms/frame
+                    _bpf = 8 if aud_mode == 0x09 else 6
+                    _vm = "[voice " + str((len(audio_data) // _bpf) * 20 // 1000) + "s]"
                     if not content or content == "(binary)":
-                        content = "[voice]"
+                        content = _vm
                     else:
-                        content = "[voice] " + content
+                        content = _vm + " " + content
                 elif DEBUG >= 1:
                     print("[Audio] unsupported mode:", aud_mode)
     elif DEBUG >= 2:
@@ -512,12 +524,18 @@ async def _track_delivery(msg, dest_hash, msg_idx, timeout=150):
             if DEBUG >= 1:
                 print("[TX] Delivery failed to", dest_hash.hex()[:8])
             return
+        if state == LXMessage.SENT:
+            # Downgraded to a single link packet — no proof will follow.
+            gui.update_message_status(dest_hash, msg_idx, 2)
+            gui.dirty = True
+            return
     # Still unresolved — leave the '>' marker as-is (honest: sent, unproven)
 
 
 async def _async_send(dest_hash, text, msg_idx=None):
     """Send LXMF message as async task (crypto is slow)."""
     import uasyncio as asyncio
+    from urns.lxmf import LXMessage
     await asyncio.sleep(0)
 
     # msg_idx is passed from GUI (message already added with status=1)
@@ -525,7 +543,13 @@ async def _async_send(dest_hash, text, msg_idx=None):
         msg_idx = gui.add_chat_message(dest_hash, True, text, status=1)
 
     try:
-        msg = router.send_message(dest_hash, text)
+        # Force OPPORTUNISTIC: a short text goes as its own mesh packet and
+        # delivers independently of any DIRECT link — otherwise it piggybacks
+        # on a link that a voice/image transfer may have tied up (or wedged),
+        # and dies with it. (A long text still auto-upgrades to a DIRECT
+        # resource, which the sender-side timeout now protects.)
+        msg = router.send_message(dest_hash, text,
+                                  desired_method=LXMessage.OPPORTUNISTIC)
         if msg is True:
             # Queued behind a path request
             gui.update_message_status(dest_hash, msg_idx, 4)
@@ -538,13 +562,14 @@ async def _async_send(dest_hash, text, msg_idx=None):
             if DEBUG >= 1:
                 print("[TX] Sent to", dest_hash.hex()[:8])
 
-            from urns.lxmf import LXMessage
-            if getattr(msg, "method", None) == LXMessage.DIRECT:
-                # DIRECT transfers report real delivery — track it
+            if (getattr(msg, "method", None) == LXMessage.DIRECT
+                    and getattr(msg, "state", None) != LXMessage.SENT):
+                # DIRECT resource transfer — a delivery proof follows; track it.
                 gui.update_message_status(dest_hash, msg_idx, 5)
                 asyncio.create_task(_track_delivery(msg, dest_hash, msg_idx))
             else:
-                # Opportunistic: no delivery proof surfaced — mark sent
+                # Opportunistic, or a DIRECT single packet already SENT over the
+                # link (no proof follows) — mark sent so it doesn't hang on '>'.
                 gui.update_message_status(dest_hash, msg_idx, 2)
             gui.dirty = True
         else:
@@ -564,9 +589,11 @@ async def _async_send(dest_hash, text, msg_idx=None):
 
 def gui_announce():
     """Called by GUI when user presses 'a'."""
+    global _announce_count
     sound.play_announce()
     try:
         router.announce()
+        _announce_count += 1
         if DEBUG >= 1:
             print("[Announced as", NODE_NAME + "]")
     except Exception as e:
@@ -684,6 +711,50 @@ def wifi_connect(ssid, password):
     if DEBUG >= 1:
         print("[WiFi] Connection failed:", ssid)
     return False
+
+
+def wifi_connect_async(ssid, password):
+    """GUI callback: connect without blocking the event loop. The UI shows
+    'Connecting...' and gui.set_wifi_result() is called with the result."""
+    import uasyncio as asyncio
+    asyncio.create_task(_wifi_connect_task(ssid, password))
+
+
+async def _wifi_connect_task(ssid, password):
+    import uasyncio as asyncio
+    import network
+    await asyncio.sleep_ms(50)  # let the UI paint "Connecting..." first
+    wlan = network.WLAN(network.STA_IF)
+    try:
+        wlan.disconnect()
+    except:
+        pass
+    wlan.active(False)
+    await asyncio.sleep_ms(100)
+    wlan.active(True)
+    ip = None
+    try:
+        wlan.connect(ssid, password)
+        for _ in range(40):  # ~8s, yielding so the UI/LoRa keep running
+            if wlan.isconnected():
+                try:
+                    wlan.config(pm=0)  # WIFI_PS_NONE — ESP32 drops bcast in PS
+                except Exception:
+                    pass
+                ip = wlan.ifconfig()[0]
+                settings = _load_settings()
+                settings["wifi_ssid"] = ssid
+                settings["wifi_pass"] = password
+                _save_settings(settings)
+                break
+            await asyncio.sleep_ms(200)
+    except Exception as e:
+        if DEBUG >= 1:
+            print("[WiFi] async connect error:", e)
+    if DEBUG >= 1:
+        print("[WiFi]", "connected " + ip if ip else "connect failed", ssid)
+    gui.set_wifi_result(ip)
+    gc.collect()
 
 
 def _stop_lora():
@@ -815,6 +886,28 @@ def tcp_toggle(enabled, host=None, port=None):
         return False
 
 
+def tcp_connect_async(host, port):
+    """GUI callback: connect TCP without blocking on the Enter keypress. The
+    UI shows 'Connecting...' first; gui.set_tcp_result() reports the outcome.
+    (The interface init itself is synchronous, but yielding first lets the
+    'Connecting...' row paint before the brief socket-setup pause.)"""
+    import uasyncio as asyncio
+    asyncio.create_task(_tcp_connect_task(host, port))
+
+
+async def _tcp_connect_task(host, port):
+    import uasyncio as asyncio
+    await asyncio.sleep_ms(50)  # paint "Connecting..." before socket setup
+    ok = False
+    try:
+        ok = tcp_toggle(True, host, port)
+    except Exception as e:
+        if DEBUG >= 1:
+            print("[TCP] async connect error:", e)
+    gui.set_tcp_result(bool(ok), host + ":" + str(port))
+    gc.collect()
+
+
 def _apply_display_name(name):
     """Propagate a new display name into the LXMF router and the announce
     app_data (announce() and path responses read the router/default data,
@@ -889,6 +982,24 @@ def get_radio_stats():
         rows.append(("LoRa", "not running"))
     rows.append(("paths", str(len(Transport.path_table))))
     rows.append(("identities", str(len(Identity.known_destinations))))
+    rows.append(("announces", str(_announce_count)))
+    # Uptime (ticks_ms wraps ~every 12 days; fine for a session counter)
+    _up = time.ticks_diff(time.ticks_ms(), _boot_ticks) // 1000
+    if _up >= 3600:
+        _upt = str(_up // 3600) + "h" + str((_up % 3600) // 60) + "m"
+    elif _up >= 60:
+        _upt = str(_up // 60) + "m" + str(_up % 60) + "s"
+    else:
+        _upt = str(_up) + "s"
+    rows.append(("uptime", _upt))
+    # Battery: percent from a coarse LiPo curve, or USB when charging
+    _bv = gui.bat_v
+    if _bv >= 4.3:
+        rows.append(("battery", "USB %.2fV" % _bv))
+    elif _bv > 0:
+        _pct = int((_bv - 3.3) / 0.9 * 100)
+        _pct = 0 if _pct < 0 else (100 if _pct > 100 else _pct)
+        rows.append(("battery", "%d%% %.2fV" % (_pct, _bv)))
     rows.append(("free mem", str(gc.mem_free() // 1024) + "kB"))
     if time.localtime()[0] >= 2024:
         rows.append(("clock", "mesh-synced"))
@@ -908,6 +1019,7 @@ async def _ping_task(dest_hash):
 
     def _show(text):
         gui.ping_status = text
+        gui.ping_pending = False  # a result (or error) resolved the ping
         gui._ping_status_ms = time.ticks_ms()
         gui._route_cache = ''
         gui.dirty = True
@@ -952,17 +1064,53 @@ async def _ping_task(dest_hash):
             print("[Ping] error:", e)
 
 
+_reannounce_task = None
+
+
+def set_auto_announce(enabled):
+    """GUI toggle: start/stop the periodic (90s) re-announce loop and persist."""
+    global _reannounce_task
+    import uasyncio as asyncio
+    if enabled and _reannounce_task is None:
+        _reannounce_task = asyncio.create_task(reannounce_loop())
+    elif not enabled and _reannounce_task is not None:
+        try:
+            _reannounce_task.cancel()
+        except Exception:
+            pass
+        _reannounce_task = None
+    settings = _load_settings()
+    settings["auto_announce"] = bool(enabled)
+    _save_settings(settings)
+
+
+def set_screen_timeout(ms):
+    """GUI: persist the chosen inactivity sleep timeout (ms; 0 = never)."""
+    settings = _load_settings()
+    settings["screen_timeout_ms"] = int(ms)
+    _save_settings(settings)
+
+
+def forget_peer(key):
+    """GUI: a peer was deleted — drop its LXMF-hash mappings too so a fresh
+    announce re-adds it cleanly."""
+    for h in [h for h, pk in _lxmf_to_peer.items() if pk == key]:
+        _lxmf_to_peer.pop(h, None)
+
+
 gui.on_send = gui_send
 gui.on_announce = gui_announce
 gui.on_wifi_scan = wifi_scan
-gui.on_wifi_connect = wifi_connect
+gui.on_wifi_connect = wifi_connect_async
 gui.on_tcp_toggle = tcp_toggle
+gui.on_tcp_connect = tcp_connect_async
 gui.on_node_name = set_node_name
 gui.on_lora_reset = lora_reset
 def on_volume(v):
-    """Settings volume slider: apply (tones regenerate, PCM attenuates)
-    and persist."""
+    """Settings volume slider: apply (tones regenerate, PCM attenuates),
+    persist, and play a short blip at the new level as confirmation."""
     sound.set_volume(v)
+    sound.play_tx()  # audible confirmation at the new level
     settings = _load_settings()
     settings["volume"] = int(v)
     _save_settings(settings)
@@ -970,6 +1118,9 @@ def on_volume(v):
 gui.on_volume = on_volume
 gui.on_kbd_backlight = set_kbd_backlight
 gui.on_ping = on_ping
+gui.on_auto_announce = set_auto_announce
+gui.on_screen_timeout = set_screen_timeout
+gui.on_delete_peer = forget_peer
 gui.get_radio_stats = get_radio_stats
 gui.my_address = dest.hexhash
 def _on_audio_play(audio_data, audio_mode):
@@ -995,7 +1146,13 @@ _rec_pos = 0
 def _on_record_start():
     global _rec_pos
     _rec_pos = 0
-    sound.start_recording(_REC_CHUNK)
+    gui._rec_max = _MAX_REC_SECS
+    gui._rec_level = 0
+    sound.start_recording(_REC_CHUNK)  # arms is_recording; capture starts in the task
+    # The mic thread is started by _recording_loop AFTER the recording screen
+    # has painted: the flush/kick would otherwise contend for the GIL with the
+    # display draw and the screen visibly crawls. Nothing is lost by the
+    # ~0.2s deferral — the DMA ring buffers the audio continuously.
     import uasyncio as asyncio
     asyncio.create_task(_recording_loop())
 
@@ -1020,18 +1177,21 @@ gui._tcp_default = TCP_CONFIG["target_host"] + ":" + str(TCP_CONFIG["target_port
 # --- Async tasks ---
 
 def _mic_thread():
-    """Mic capture thread — runs on core 1, reads I2S continuously.
-    I2S readinto() releases the GIL while waiting for DMA data,
-    so the main thread (event loop, LoRa, keyboard) runs freely.
-    Uses pre-allocated buffers — no allocations in the hot loop."""
+    """Mic capture thread — runs on core 1. I2S readinto() releases the GIL
+    while waiting for DMA data, so the main thread (event loop, LoRa, keyboard)
+    runs freely. Uses pre-allocated buffers — no allocations in the hot loop.
+
+    prime_mic() first: a stale-ring flush + liveness check (~0.6s; the ADC
+    free-runs from the boot prime onward, kept deliberately kick-free — see
+    prime_mic). Falls back to the full re-warm if the ADC ever wedges."""
     global _rec_pos
     chunk_bytes = _REC_CHUNK * 2
     try:
-        # Flush stale DMA data — discard first few chunks
-        flush = getattr(sound, '_flush_count', 0)
-        for _ in range(flush):
-            sound.read_mic_chunk(_REC_CHUNK)
-        # Record
+        if not sound.prime_mic(abort=lambda: not sound.is_recording):
+            return  # cancelled mid-warm, or mic genuinely dead
+        if not sound.is_recording:
+            return  # cancelled during the flush
+        sound._capturing = True  # UI switches from "warming" to "recording"
         mv = memoryview(_rec_buf)
         while sound.is_recording:
             if _rec_pos >= len(_rec_buf) - chunk_bytes:
@@ -1044,15 +1204,56 @@ def _mic_thread():
         pass
 
 async def _recording_loop():
-    """Start mic capture on a separate thread, poll keyboard on main thread."""
+    """Recording orchestrator. Order matters:
+
+    1. Let the recording screen PAINT first (uncontended, ~100ms) — the mic
+       flush/kick on core 1 fights the display for the GIL otherwise and the
+       paint visibly crawls, delaying the user's cue to speak.
+    2. Start the capture thread (kick + flush + store, ready ~0.6s later; the
+       DMA ring back-fills so speech from ~the paint moment is captured).
+    3. Then do NOTHING to the display for the rest of the recording — every
+       SPI write steals GIL cycles from the capture thread and degrades the
+       audio. 'Warming mic...' is shown only if the ADC needs the full
+       re-warm fallback (rare)."""
     import uasyncio as asyncio
     import _thread
+    _buf_full = len(_rec_buf) - _REC_CHUNK * 2
+
+    # 1. Wait for the recording screen to be on-glass (bounded at ~300ms).
+    for _ in range(30):
+        if not gui.dirty:
+            break
+        await asyncio.sleep_ms(10)
+    if not sound.is_recording:
+        return  # cancelled before capture even started
+
+    # 2. Capture thread: kick + flush + store on core 1.
     _thread.start_new_thread(_mic_thread, ())
+
+    _t0 = time.ticks_ms()
+    _warm_shown = False
     while sound.is_recording and _rec_buf:
         key = get_key()
         if key != b'\x00':
-            gui.handle_key(key)
-        await asyncio.sleep_ms(20)
+            gui.handle_key(key)  # any key stops (see _handle_key_recording)
+            break
+        if not sound.is_capturing:
+            # Only surface "Warming mic..." if the slow fallback engaged.
+            if not _warm_shown and time.ticks_diff(time.ticks_ms(), _t0) > 1500:
+                _warm_shown = True
+                gui._rec_warming = True
+                gui.dirty = True
+            await asyncio.sleep_ms(50)
+            continue
+        if _warm_shown or gui._rec_warming:  # capture (re)started — final redraw
+            _warm_shown = False
+            gui._rec_warming = False
+            gui.dirty = True
+        # 3. No screen updates from here on. Just watch the 15s buffer cap.
+        if _rec_pos >= _buf_full:
+            gui.handle_key(b'\x0d')  # auto stop & send
+            break
+        await asyncio.sleep_ms(50)
 
 
 async def _encode_and_send_voice(dest_hash, pcm_bytes):
@@ -1080,7 +1281,8 @@ async def _encode_and_send_voice(dest_hash, pcm_bytes):
 
         from urns.lxmf import FIELD_AUDIO, LXMessage
         fields = {FIELD_AUDIO: [0x09, c2_data]}  # 0x09 = AM_CODEC2_3200
-        msg_idx = gui.add_chat_message(dest_hash, True, "[voice]", status=1)
+        # Local row shows the duration; the wire text stays a clean marker.
+        msg_idx = gui.add_chat_message(dest_hash, True, "[voice " + str(dur) + "s]", status=1)
         msg = router.send_message(dest_hash, "[voice]", fields=fields,
                                   desired_method=LXMessage.DIRECT)
         if msg is True:
@@ -1088,9 +1290,14 @@ async def _encode_and_send_voice(dest_hash, pcm_bytes):
             gui.update_message_status(dest_hash, msg_idx, 4)
             asyncio.create_task(_watch_queued(dest_hash, msg_idx))
         elif msg:
-            # DIRECT: '>' until the resource transfer concludes
-            gui.update_message_status(dest_hash, msg_idx, 5)
-            asyncio.create_task(_track_delivery(msg, dest_hash, msg_idx))
+            if getattr(msg, "state", None) == LXMessage.SENT:
+                # Short voice fit in a single link packet — no proof follows.
+                gui.update_message_status(dest_hash, msg_idx, 2)
+            else:
+                # DIRECT resource: '>' until the transfer concludes (proof, or
+                # the sender-side timeout that now fails a stalled transfer).
+                gui.update_message_status(dest_hash, msg_idx, 5)
+                asyncio.create_task(_track_delivery(msg, dest_hash, msg_idx))
             sound.play_tx()
         else:
             gui.update_message_status(dest_hash, msg_idx, 3)
@@ -1189,10 +1396,11 @@ async def _play_audio(audio_data, codec_mode):
 
 async def initial_announce():
     import uasyncio as asyncio
-    global _announced_once
+    global _announced_once, _announce_count
     await asyncio.sleep(0.5)
     try:
         router.announce()
+        _announce_count += 1
         if DEBUG >= 1:
             print("Announced as:", NODE_NAME)
     except Exception as e:
@@ -1204,11 +1412,13 @@ async def initial_announce():
 
 async def reannounce_loop():
     import uasyncio as asyncio
+    global _announce_count
     _interval = 90  # seconds between periodic re-announces
     while True:
         await asyncio.sleep(_interval)
         try:
             router.announce()
+            _announce_count += 1
             gui.announce_flash = time.ticks_ms()
             gui.dirty = True
             if DEBUG >= 2:
@@ -1237,6 +1447,12 @@ def _auto_connect_wifi():
     if saved_vol is not None:
         sound.set_volume(saved_vol)
         gui._volume = sound.volume
+    # Restore the UI-configurable preferences (the reannounce task itself is
+    # started later in run_all, once the event loop exists).
+    gui._auto_announce = bool(settings.get("auto_announce"))
+    _st = settings.get("screen_timeout_ms")
+    if _st is not None:
+        gui._screen_timeout_ms = int(_st)
     ssid = settings.get("wifi_ssid")
     password = settings.get("wifi_pass")
     if ssid and password:
@@ -1280,9 +1496,12 @@ def main():
     _original_run = rns.run
 
     async def run_all():
+        global _reannounce_task
         asyncio.create_task(_auto_start_tcp())
         asyncio.create_task(initial_announce())
-        # No auto re-announce — press 'a' to announce manually
+        # Periodic re-announce only if enabled in Settings (default: manual 'a')
+        if gui._auto_announce and _reannounce_task is None:
+            _reannounce_task = asyncio.create_task(reannounce_loop())
         asyncio.create_task(gui.kbd_loop())
         asyncio.create_task(gui.gui_loop(spi_acquire_display, spi_release_display))
         asyncio.create_task(gui.battery_loop(spi_acquire_display, spi_release_display))

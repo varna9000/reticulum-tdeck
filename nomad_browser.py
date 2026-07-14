@@ -26,6 +26,23 @@ _result = None        # None | ("ok", data) | ("fail", reason)
 _history = []         # [(dest_hash, path), ...]; last entry = current page
 _seeded = False
 
+# Rendered-page cache for instant back-navigation (LoRa fetches are slow).
+# (dest_hash, path) -> (title, lines, links); small LRU, cheap on 8MB PSRAM.
+_PAGE_CACHE_MAX = 3
+_page_cache = {}
+_page_cache_order = []
+
+
+def _cache_page(dest_hash, path, title, lines, links):
+    key = (dest_hash, path)
+    if key in _page_cache:
+        _page_cache_order.remove(key)
+    _page_cache[key] = (title, lines, links)
+    _page_cache_order.append(key)
+    while len(_page_cache_order) > _PAGE_CACHE_MAX:
+        old = _page_cache_order.pop(0)
+        _page_cache.pop(old, None)
+
 
 def init(gui):
     """Hook announce observation. Call once at boot, after Reticulum init."""
@@ -97,6 +114,8 @@ def clear_nodes():
     global _seeded
     _seeded = False
     _history.clear()
+    _page_cache.clear()
+    _page_cache_order.clear()
     _teardown()
     if _gui:
         _gui.clear_nomad_nodes()
@@ -155,22 +174,30 @@ def follow(url):
 
 
 def back():
-    """GUI: go back one page (re-fetches)."""
+    """GUI: go back one page. Uses the rendered-page cache for an instant
+    result; falls back to a re-fetch on a cache miss."""
     import uasyncio as asyncio
     if len(_history) < 2:
         return False
     _history.pop()
     dest_hash, path = _history[-1]
+    cached = _page_cache.get((dest_hash, path))
+    if cached is not None:
+        title, lines, links = cached
+        _gui.browser_status = None
+        _gui.show_page(title, path, lines, links, can_back=len(_history) > 1)
+        _gui.dirty = True
+        return True
     asyncio.create_task(_fetch_task(dest_hash, path, push=False))
     return True
 
 
 def refresh():
-    """GUI: re-fetch the current page."""
+    """GUI: re-fetch the current page, keeping scroll position."""
     import uasyncio as asyncio
     if _history:
         dest_hash, path = _history[-1]
-        asyncio.create_task(_fetch_task(dest_hash, path, push=False))
+        asyncio.create_task(_fetch_task(dest_hash, path, push=False, keep_pos=True))
 
 
 def browser_exit():
@@ -200,14 +227,14 @@ def _on_progress(resource):
     _gui._progress_dirty = True
 
 
-async def _fetch_task(dest_hash, path, push):
+async def _fetch_task(dest_hash, path, push, keep_pos=False):
     global _fetching
     if _fetching:
         _status("busy - fetch in progress")
         return
     _fetching = True
     try:
-        await _fetch(dest_hash, path, push)
+        await _fetch(dest_hash, path, push, keep_pos)
     except Exception as e:
         _status("error: " + str(e))
     _fetching = False
@@ -217,7 +244,7 @@ async def _fetch_task(dest_hash, path, push):
     gc.collect()
 
 
-async def _fetch(dest_hash, path, push):
+async def _fetch(dest_hash, path, push, keep_pos=False):
     global _link, _link_dest, _result
     import uasyncio as asyncio
     from urns.identity import Identity
@@ -302,5 +329,7 @@ async def _fetch(dest_hash, path, push):
 
     node = _gui.nomad_nodes.get(dest_hash)
     title = (node.get("name") if node else None) or dest_hash.hex()[:8]
+    _cache_page(dest_hash, path, title, lines, links)
     _gui.browser_status = None
-    _gui.show_page(title, path, lines, links, can_back=len(_history) > 1)
+    _gui.show_page(title, path, lines, links, can_back=len(_history) > 1,
+                   keep_pos=keep_pos)

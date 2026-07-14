@@ -226,6 +226,223 @@ def test_cyrillic_page_renders():
     assert byte_calls and all(max(b) < 0x100 for b in byte_calls if b)
 
 
+def _chat_ui(peer=b"\x02" * 16):
+    g, tft = _mkui()
+    g.add_peer(peer, "peer")
+    g.selected_peer = peer
+    g.state = ui.STATE_CHAT
+    return g, tft, peer
+
+
+def test_input_tail_scroll():
+    g, tft = _mkui()
+    g.selected_peer = b"\x01" * 16
+    g.state = ui.STATE_CHAT
+    g.cmd_buf = bytearray(b"x" * 60)
+    g.draw_input()
+    joined = b"".join(c[1] for c in tft.calls
+                      if c[0] == "text" and isinstance(c[1], (bytes, bytearray)))
+    txt = joined.decode("latin-1")
+    assert "<" in txt          # continuation marker shown
+    assert "xxxxx" in txt      # tail of the buffer, not the (also x) head — but caret present
+    assert txt.rstrip(" ").endswith("_")
+
+
+def test_record_key_is_zero_only():
+    g, _, peer = _chat_ui()
+    started = []
+    g.on_record_start = lambda: started.append(1)
+    g.handle_key(b"r")
+    assert bytes(g.cmd_buf) == b"r" and started == []   # 'r' types
+    g.cmd_buf = bytearray()
+    g.handle_key(b"0")
+    assert started == [1]                                # '0' records
+
+
+def test_peer_eviction_least_recently_seen():
+    g, _ = _mkui()
+    keys = [bytes([i]) * 16 for i in range(1, ui.MAX_PEERS + 1)]
+    for i, k in enumerate(keys):
+        g.add_peer(k, "p%d" % i)
+        g.peers[k]["seen"] = 1000 + i          # keys[0] oldest
+    g.add_chat_message(keys[5], False, "hi")   # a RECENT peer bubbles to front
+    assert g._peer_keys[0] == keys[5]
+    new = bytes([200]) * 16
+    g.add_peer(new, "new")
+    assert len(g.peers) == ui.MAX_PEERS
+    assert keys[0] not in g.peers               # oldest evicted (not the bubbled one)
+    assert keys[5] in g.peers                   # bubbled-recent survived
+    assert new in g.peers
+    assert keys[0] not in g.chat_history and keys[0] not in g._peer_keys
+
+
+def test_selection_follows_bubbled_peer():
+    g, _ = _mkui()
+    for i in range(3):
+        g.add_peer(bytes([i + 1]) * 16, "p%d" % i)
+    g.state = ui.STATE_NODES
+    g.selected_idx = 0                          # on p0
+    sel = g._peer_keys[0]
+    g.add_chat_message(bytes([3]) * 16, False, "hi")  # p2 bubbles to front
+    assert g._peer_keys[0] == bytes([3]) * 16
+    assert g._peer_keys[g.selected_idx] == sel  # cursor stayed on p0
+
+
+def test_chat_scroll_anchor():
+    g, _, peer = _chat_ui()
+    for i in range(20):
+        g.add_chat_message(peer, False, "msg %d" % i)
+    g.chat_scroll = 5
+    n0 = len(g._build_chat_lines())
+    g.add_chat_message(peer, False, "incoming while scrolled up")
+    n1 = len(g._build_chat_lines())
+    assert g.chat_scroll == 5 + (n1 - n0)       # position preserved
+    g.chat_scroll = 0
+    g.add_chat_message(peer, False, "at bottom")
+    assert g.chat_scroll == 0                   # stays at bottom
+    g.chat_scroll = 5
+    g.add_chat_message(peer, True, "my own send")
+    assert g.chat_scroll == 0                   # own send snaps to bottom
+
+
+def test_chat_scroll_up_keeps_full_window():
+    # Scrolling to the top must keep a full 11-row window (lines[0:rows]),
+    # never shrink it and drop messages off the bottom.
+    g, tft, peer = _chat_ui()
+    for i in range(25):
+        g.add_chat_message(peer, False, "line %d" % i)
+    for _ in range(200):
+        g._scroll_up()
+    total = len(g._build_chat_lines())
+    rows = ui.BODY_ROWS - 1
+    assert g.chat_scroll == max(0, total - rows)   # clamped at the true top
+    g.draw()
+    # window is full: view_end - view_start == rows
+    view_end = total - g.chat_scroll
+    view_start = max(0, view_end - rows)
+    assert view_end - view_start == rows
+
+
+def test_delete_selected_peer():
+    g, _ = _mkui()
+    deleted = []
+    g.on_delete_peer = lambda k: deleted.append(k)
+    a, b = b"\x01" * 16, b"\x02" * 16
+    g.add_peer(a, "a")
+    g.add_peer(b, "b")
+    g.add_chat_message(a, False, "hi")          # a -> front, unread
+    g.selected_idx = 0
+    key = g._peer_keys[0]
+    g.delete_selected()
+    assert key not in g.peers and key not in g._peer_keys
+    assert key not in g.chat_history and key not in g.unread
+    assert deleted == [key]
+
+
+def test_marker_span_metadata():
+    assert ui.UI._marker_span("me> [voice 3s]", "voice") == (4, 10)
+    assert ui.UI._marker_span("p> [image 42k] hi", "image") == (3, 11)
+    assert ui.UI._marker_span("plain text", "voice") == (-1, 0)
+
+
+def test_footer_hops_label():
+    g, tft = _mkui()
+    g.add_peer(b"\x01" * 16, "p", rssi=-80, hops=3)
+    g.draw()
+    texts = [c[1] for c in tft.calls if c[0] == "text" and isinstance(c[1], str)]
+    assert any("3hp" in t for t in texts)       # hops labelled 'hp', not 'h'
+
+
+def test_settings_timeout_and_volume_adjust():
+    g, _ = _mkui()
+    g.state = ui.STATE_SETTINGS
+    g._settings_page = ui._SET_MAIN
+    saved_t, saved_v = [], []
+    g.on_screen_timeout = lambda ms: saved_t.append(ms)
+    g.on_volume = lambda v: saved_v.append(v)
+    g._settings_idx = 7                          # Sleep
+    t0 = g._screen_timeout_ms
+    g._settings_adjust(1)
+    assert g._screen_timeout_ms != t0 and saved_t[-1] == g._screen_timeout_ms
+    g._settings_idx = 4                          # Volume
+    g._volume = 5
+    g._settings_adjust(1)
+    assert g._volume == 6 and saved_v[-1] == 6
+    g._volume = 10
+    g._settings_adjust(1)
+    assert g._volume == 10                       # clamped
+    g._settings_idx = 0
+    for _ in range(20):
+        g._settings_scroll_down()
+    assert g._settings_idx == 9                   # 10 items now
+
+
+def test_browser_prev_next_and_paging():
+    g, _ = _mkui()
+    lines, links = micron.render(PAGE, 40)
+    g.show_page("n", "/p", lines, links)
+    g.draw()
+    followed = []
+    g.on_browse_follow = lambda u: followed.append(u)
+    g._jump_next_link(); g.draw()
+    g._jump_next_link(); g.draw()
+    g._jump_prev_link(); g.draw()
+    g._browser_follow_cursor()
+    assert followed[-1] == ":/page/board.mu"     # prev returned to first link
+
+    lines2, _ = micron.render("\n".join("row %d" % i for i in range(40)), 40)
+    g.show_page("n", "/p2", lines2, [])
+    g._browser_page(ui.BODY_ROWS - 2)
+    assert g.browser_scroll == ui.BODY_ROWS - 2
+    g._browser_goto(False)
+    assert g.browser_scroll == max(0, len(lines2) - (ui.BODY_ROWS - 1))
+    g._browser_goto(True)
+    assert g.browser_scroll == 0
+
+
+def test_wifi_result_flow():
+    g, _ = _mkui()
+    g._wifi_ssid = "net"
+    g._wifi_connecting = True
+    g.set_wifi_result("10.0.0.5")
+    assert g._wifi_connected and g._wifi_ip == "10.0.0.5"
+    assert g._settings_page == ui._SET_TCP_HOST and not g._wifi_connecting
+    g._wifi_connecting = True
+    g.set_wifi_result(None)
+    assert g._wifi_err == "connect failed"
+    assert g._settings_page == ui._SET_WIFI_SCAN and not g._wifi_connecting
+
+
+def test_all_screens_and_radio_scroll_draw():
+    g, tft = _mkui()
+    g.add_peer(b"\x01" * 16, "p")
+    g.draw()                                     # node list
+    g.state = ui.STATE_SETTINGS
+    g._settings_page = ui._SET_MAIN
+    g._prev_state = -1
+    g.draw()                                     # settings
+    g.selected_peer = b"\x01" * 16
+    g.state = ui.STATE_CHAT
+    g._prev_state = -1
+    g.add_chat_message(b"\x01" * 16, False, "hi")
+    g.draw()                                     # chat
+    g.get_radio_stats = lambda: [("k%d" % i, str(i)) for i in range(14)]
+    g.state = ui.STATE_SETTINGS
+    g._settings_page = ui._SET_RADIO
+    g._prev_state = -1
+    g.draw()                                     # radio (14 rows > 11 visible)
+    assert g._radio_rows == 14
+    g._settings_scroll_down()
+    assert g._settings_scroll == 1
+    g.state = ui.STATE_RECORDING
+    g._rec_warming = False                       # capture phase (static screen)
+    g._prev_state = -1
+    g.draw()                                     # recording
+    joined = b"".join(c[1] for c in tft.calls
+                      if c[0] == "text" and isinstance(c[1], (bytes, bytearray)))
+    assert b"Recording" in joined
+
+
 def _run():
     import traceback
     tests = [(n, f) for n, f in sorted(globals().items())

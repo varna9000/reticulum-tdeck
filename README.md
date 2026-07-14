@@ -14,6 +14,15 @@ Supports both **opportunistic** (single-packet) and **link-based** (direct) mess
 
 ## Recent Updates (July 2026)
 
+- **UI polish pass** — neon body frame on every screen, consistent selection styling, tail-scrolling text inputs (long input stays visible), `[0=rec]`/`(d)el` hints, `USB` battery indicator on external power, grey message body text, `[image NNk]`/`[voice Ns]` metadata, centered image viewer, and viewport anchoring (incoming messages no longer yank the chat or node-list position).
+- **Browser navigation** — space/`b` page down/up, `g`/`G` top/bottom, `p` previous link, `link X/Y` footer counter, reload keeps scroll position, and a rendered-page cache makes Back instant instead of re-fetching over LoRa.
+- **Settings additions** — configurable screen sleep timeout (10/30/60s/never, never sleeps mid-transfer), auto-announce toggle (90 s), volume left/right adjust with confirmation blip, WiFi rescan key, async WiFi/TCP connect (UI no longer freezes), scrollable Radio page with uptime/announces/battery %.
+- **Voice messaging reliability** (with submodule fixes) — outgoing resource transfers now have a sender-side watchdog: unanswered advertisements retry (4x/15 s) and stalled transfers fail cleanly instead of wedging the link forever (which made every later message stick on `>`). Short texts always send opportunistically so they deliver independently of an in-flight voice/image transfer. Delivered voice verified over a 3-hop LoRa path.
+- **Instant voice recording** — the ES7210 ADC is primed once at boot and then free-runs (never re-kicked): capture starts ~0.5 s after Sym+0 with consistent audio character between recordings. The recording screen paints immediately and stays static during capture (display SPI steals GIL cycles from the mic thread). Messages start at your first word — no dead-air padding.
+- **Recording fixes** — the mic capture thread starts synchronously (immediate Enter no longer sent an empty clip); auto stop-and-send at the 15 s buffer cap; peers can't be evicted mid-chat (least-recently-seen eviction with full state cleanup).
+
+Earlier July updates:
+
 - **NomadNet page browser** — new NET tab lists `nomadnetwork.node` announces; click a node to fetch and render its micron pages over an encrypted link (single-packet and resource-transfer responses, bz2, transfer progress, back-stack navigation). The client-side `OutgoingLink.request()` API this rides on was added upstream in [micropython-reticulum](https://github.com/varna9000/micropython-reticulum).
 - **Tabbed node screen** — MSG (LXMF peers) / NET (browsable nodes); the trackball's left/right axis is now wired up and switches tabs (with a dominance filter against diagonal-roll jitter). In the browser, trackball-left navigates back.
 - **Cyrillic display support** — new CP866-layout font + codepoint transcoding; messages, names, WiFi SSIDs, and pages render Bulgarian/Russian/Ukrainian/Belarusian text.
@@ -142,6 +151,12 @@ The device starts on the node list screen with two tabs: **MSG** (LXMF chat peer
 | Send announce | Press `a` |
 | Open settings | Press `s` |
 | Ping selected peer (MSG) | Press `p` |
+| Delete selected peer/node | Press `d` |
+
+Deleting a peer forgets its chat history and cached media locally; it
+re-appears on the next announce. When the peer list fills up (16 entries) the
+**least-recently-seen** peer is evicted — never the one you're actively
+chatting with.
 
 The footer's right side shows a compact status for the **selected entry** — hop count, last RSSI, and last-seen age (`2h -87dB 5m`), learned from announces. Pinging sends a probe to the peer's `urns.probe` destination and shows the round-trip time (`ping: 2.4s`); peers must run uP-reticulum with the probe responder enabled to answer.
 
@@ -154,11 +169,18 @@ Clicking a node on the NET tab opens its `/page/index.mu` over an encrypted Reti
 | Action | Input |
 |---|---|
 | Scroll / move cursor | Trackball up/down |
-| Jump to next link | Press `n` |
+| Page down / up | Space / `b` |
+| Jump to top / bottom | `g` / `G` |
+| Next / previous link | `n` / `p` |
 | Follow link on cursor row | Trackball click (or Enter) |
+| Page down | Trackball right |
 | Back (exit at first page) | Trackball left or Backspace |
-| Reload page | Press `r` |
+| Reload page (keeps scroll) | Press `r` |
 | Exit to node list | Esc |
+
+When the cursor is on a link the footer shows its position (`link 3/14`). The
+last few rendered pages are cached, so **Back is instant** instead of
+re-fetching over LoRa.
 
 v1 limitations: read-only (form fields render as placeholders), pages are capped at 16 KB, and nodes that require identification will time out.
 
@@ -169,9 +191,17 @@ v1 limitations: read-only (form fields render as placeholders), pages are capped
 | Type message | Keyboard |
 | Send message | Enter |
 | Navigate messages | Trackball up/down (moves highlight cursor) |
+| Page through history | Trackball left/right |
 | View image | Click trackball on a highlighted `[image]` line |
-| Record voice | Press `r` or `0` (empty input) |
+| Record voice | Press `0` (empty input) |
 | Back to node list | Backspace (empty input) or Escape |
+
+The message input scrolls with a `<` marker so long messages stay visible as
+you type, and the bottom bar shows a `[0=rec]` hint when the input is empty.
+Only `0` (the Sym+0 mic key) starts a recording, so messages can begin with any
+letter. Received `[image NNk]` / `[voice Ns]` markers include the size or
+duration. An incoming message while you're scrolled up reading history no
+longer yanks the view to the bottom.
 
 Message delivery status is shown after each sent message:
 - `..` — pending (send in progress)
@@ -192,7 +222,7 @@ Images are decoded on-device using the native `tjpgd_fast` TJpgDec module with n
 
 ### Voice Messages
 
-Press `r` (or `0`) with an empty input field to start recording a voice message. Speak into the mic, then press any key to stop and send, or Escape/Backspace to cancel. Voice messages are encoded with **Codec2 3200 bps** and sent via LXMF `FIELD_AUDIO` using link-based (DIRECT) delivery. They are compatible with [meshchat](https://github.com/liamcottle/reticulum-meshchat) and other LXMF clients that support Codec2.
+Press `0` (the Sym+0 mic key) with an empty input field to start recording a voice message. Capture starts almost immediately — the ES7210 ADC is primed once at boot and kept clocked, so there is no per-recording warm-up (a "Warming mic..." screen appears only in the rare case the ADC needs re-priming). Start speaking when the screen shows `* Recording *`. The recording screen is deliberately **static** — any display update steals GIL cycles from the capture thread and degrades the audio, so there is no live meter or counter. Press any key to stop and send, Escape/Backspace to cancel; recording stops and sends automatically at the 15 s buffer cap. Voice messages are encoded with **Codec2 3200 bps** and sent via LXMF `FIELD_AUDIO` using link-based (DIRECT) delivery. They are compatible with [meshchat](https://github.com/liamcottle/reticulum-meshchat) and other LXMF clients that support Codec2.
 
 Received voice messages appear as `[voice]` in the chat. Highlight with the trackball and click to play.
 
@@ -210,6 +240,11 @@ Getting usable audio from the T-Deck's ES7210 ADC for Codec2 encoding required s
 - LRCK divider = 256 (registers `0x04`/`0x05`) with 4.096 MHz MCLK gives 16 kHz sample rate.
 - PGA gain at maximum (37.5 dB, register value `0x1E`) for the MEMS microphone.
 - DLL power down (`0x06 = 0x04`) works better with async PWM MCLK than DLL enabled.
+
+**ADC prime-at-boot / free-run design (measured on hardware):**
+- From cold, the ADC outputs pure zeros until it has had ~3 s of *active I2S reads* followed by a clock stop→start "kick" (idle clock runtime alone never wakes it). After a kick, resync time is **nondeterministic** — 0.1 s to 10+ s under identical conditions — which is why the original start-clock-per-recording driver randomly produced silent first recordings.
+- Once producing, the ADC stays live indefinitely **as long as its clock keeps running**; stopping the clock resets it within ~5 s.
+- Therefore `sound.prime_mic()` runs once at boot (retrying the warm-up+kick until the ADC verifiably produces — a live ADC always shows a noise floor, a dead one reads an exact constant), and the clock is never stopped again. `start_recording` only flushes the stale DMA ring (~0.5 s) — no per-recording warm-up, and one stable sync state keeps recordings consistent with each other. A full re-warm fallback engages automatically (with a "Warming mic..." screen) if the ADC ever wedges.
 
 **Codec2 encoding on ESP32 single-precision float:**
 - The ESP32-S3 has no double-precision FPU — all `double` operations are software-emulated (~5x slower).
@@ -233,15 +268,25 @@ Press `s` from the node list to open settings. Navigate with trackball, select w
 
 **Name** — Change the node's display name. Saved to flash and persisted across reboots.
 
-All settings (WiFi credentials, TCP host/port, node name, TCP enabled state) are saved to `/rns/settings.json` and restored on boot. If WiFi and TCP were enabled when the device was last used, they reconnect automatically on startup.
+**Volume** — Trackball left/right adjusts the level (with a confirmation blip); Enter cycles it.
+
+**Announce** — Toggle periodic auto-announce (every 90 s) on/off. Default is manual (`a`) to conserve airtime.
+
+**Sleep** — Cycle the screen inactivity timeout (10 s / 30 s / 60 s / never). The screen never sleeps mid-transfer or mid-audio.
+
+Connecting to WiFi or a TCP server no longer freezes the UI — the screen shows `Connecting...` while the work runs in the background, then reports the result.
+
+All settings (WiFi credentials, TCP host/port, node name, TCP enabled state, volume, keyboard backlight, auto-announce, sleep timeout) are saved to `/rns/settings.json` and restored on boot. If WiFi and TCP were enabled when the device was last used, they reconnect automatically on startup.
 
 ### Screen Power-Off
 
-The screen turns off automatically after 10 seconds of inactivity to save battery. Any keypress, trackball event, incoming message, or peer announce wakes the screen. The first input after wake is consumed (not processed) to prevent accidental actions. The MCU stays awake to receive LoRa packets — only the backlight is toggled. All SPI display writes are skipped while the screen is off, freeing the bus for LoRa.
+The screen turns off automatically after a configurable inactivity timeout (10 s default; set to 30 s / 60 s / never under Settings → Sleep) to save battery, and never sleeps while a page transfer or audio playback is in progress. Any keypress, trackball event, incoming message, or peer announce wakes the screen. The first input after wake is consumed (not processed) to prevent accidental actions. The MCU stays awake to receive LoRa packets — only the backlight is toggled. All SPI display writes are skipped while the screen is off, freeing the bus for LoRa.
 
 ### Status Bar
 
-Top bar shows: battery voltage, active interface (`[LoRa]` or `[TCP]`), RSSI of last received packet, node name, and `[A]` flash on announce.
+Top bar shows: battery voltage (or `USB` when running on external power / charging, since a LiPo never rests above ~4.3 V), active interface (`[LoRa]` or `[TCP]`), RSSI of last received packet, node name, and a `>>>` flash on announce. A neon frame borders the body on every screen for a consistent look.
+
+The **Radio / Mesh** stats page (Settings → Radio stats) additionally reports uptime, total announces sent this session, and battery percentage, and scrolls when the stats exceed one screen.
 
 ## Networking
 

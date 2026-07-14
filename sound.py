@@ -163,28 +163,113 @@ class Sound:
         self._mic_dc = 0  # running DC offset estimate
         self._mic_raw = None   # pre-allocated read buffer (set in start_recording)
         self._mic_out = None   # pre-allocated output buffer
+        self._mic_peak = 0     # |peak| of the most recent chunk (for a VU meter)
+        self._capturing = False  # False during the warm-up, True once capturing
+
+    @property
+    def is_capturing(self):
+        """True once the mic thread is actually storing audio. The recording
+        screen shows 'Warming mic...' until this flips (normally ~0.2s; the
+        full warm-up only runs in the rare re-warm fallback)."""
+        return self._capturing
+
+    def _kick_mic(self):
+        """ES7210 clock stop->start — makes a warmed ADC begin outputting."""
+        import time
+        self._es7210.stop()
+        time.sleep_ms(10)
+        self._es7210.start()
+        time.sleep_ms(100)
+
+    @staticmethod
+    def _raw_spread(raw):
+        """Raw left-channel min..max spread of a chunk. A live ADC at 37.5dB
+        gain always shows a noise floor (measured >=196 even in a quiet room);
+        a dead one reads an exact constant -> spread 0. Samples every 4th
+        left slot — plenty to distinguish noise from a constant, 4x faster."""
+        mn = 32767
+        mx = -32768
+        for i in range(0, len(raw), 32):
+            v = struct.unpack_from("<h", raw, i)[0]
+            if v < mn: mn = v
+            if v > mx: mx = v
+        return mx - mn
+
+    def prime_mic(self, abort=None):
+        """Bring the ES7210 to a live, producing state and LEAVE it running.
+
+        Measured behaviour: from cold the ADC produces audio only after ~3s
+        of ACTIVE reads followed by a clock stop->start kick — but once
+        producing it stays live indefinitely while the clock keeps running
+        (stopping the clock resets it within ~5s). So: prime once at boot
+        (~4s, behind the splash), never stop the clock again (see
+        stop_recording), and every capture-time call is just a fast stale-
+        ring flush + liveness check (~0.6s).
+
+        Deliberately NO per-capture clock kick: post-kick resync is
+        nondeterministic (measured 0.1s..7s+ under identical conditions),
+        which caused silent recording starts and long waits — the original
+        driver's per-recording start() had exactly that flakiness. A
+        free-running ADC keeps one sync state for days, so recordings also
+        sound consistent with each other.
+
+        abort: optional callable polled during the wait/slow paths; return
+        True to abandon (recording cancelled). Returns True when live."""
+        if not self._i2s_mic or not self._es7210:
+            return True
+        import time
+        raw = bytearray(640 * 8)
+        self._es7210.start()
+        # Drain the stale DMA ring (13 x 5120B > the 64KB ring, so the
+        # recording starts within ~0.2s of "now"). The sleep between reads
+        # yields the GIL so the display (core 0) can paint the recording
+        # screen while we flush — without it the paint visibly crawls.
+        for _ in range(13):
+            self._i2s_mic.readinto(raw)
+            time.sleep_ms(3)
+        if self._raw_spread(raw) > 0:
+            return True
+        # Not producing. Give a transient state a moment before the full
+        # re-warm (fresh chunks only — each read is ~80ms of new audio).
+        t0 = time.ticks_ms()
+        while time.ticks_diff(time.ticks_ms(), t0) < 2000:
+            if abort and abort():
+                return False
+            self._i2s_mic.readinto(raw)
+            if self._raw_spread(raw) > 0:
+                return True
+        # Cold (boot) or wedged: active reads + kick; retry a few rounds.
+        for _ in range(3):
+            t0 = time.ticks_ms()
+            while time.ticks_diff(time.ticks_ms(), t0) < 3000:
+                if abort and abort():
+                    return False
+                self._i2s_mic.readinto(raw)
+            self._kick_mic()
+            self._i2s_mic.readinto(raw)   # settle chunk
+            self._i2s_mic.readinto(raw)   # fresh post-kick sample
+            if self._raw_spread(raw) > 0:
+                return True
+        return False
 
     def start_recording(self, chunk_samples=640):
-        """Start mic recording. Pre-allocates buffers to avoid GC during capture.
-        ES7210 start() re-powers ADC+PGA that stop() powered down."""
+        """Allocate capture buffers and arm recording. The capture thread
+        calls prime_mic() before storing — normally a ~0.2s no-op since the
+        ADC was primed at boot and its clock is never stopped."""
         self._mic_raw = bytearray(chunk_samples * 8)
         self._mic_out = bytearray(chunk_samples * 2)
         self._mic_dc = 0  # reset DC offset estimator
-        if self._es7210:
-            self._es7210.start()  # re-powers ADC+PGA + enables clock
-        import time; time.sleep_ms(100)  # let ES7210 ADC + PGA stabilize
+        self._mic_peak = 0
+        self._capturing = False
         self._recording = True
 
     def stop_recording(self):
-        """Stop mic recording. ES7210 stop keeps producing BCLK/LRCK silence
-        so the mic thread's readinto() doesn't block — it reads zeros and
-        the while loop exits when it sees _recording=False."""
+        """Stop mic recording. The ES7210 clock is deliberately left RUNNING:
+        a kicked ADC stays live only while clocked — stopping it here would
+        force the full ~3s warm-up on the next recording (see prime_mic)."""
         self._recording = False
-        # Don't stop ES7210 immediately — let the mic thread exit first.
-        # ES7210 keeps producing silent frames so readinto() returns promptly.
+        self._capturing = False
         import time; time.sleep_ms(200)  # wait for mic thread to see flag and exit
-        if self._es7210:
-            self._es7210.stop()  # now safe to power down ADC+PGA
         self._mic_raw = None
         self._mic_out = None
 
