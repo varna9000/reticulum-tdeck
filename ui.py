@@ -14,6 +14,28 @@ STATE_SETTINGS = 2
 STATE_IMAGE    = 3
 STATE_RECORDING = 4
 STATE_BROWSER  = 5
+STATE_SHELL    = 6
+
+# Node-screen tabs
+TAB_MSG = 0
+TAB_NET = 1
+TAB_SSH = 2
+N_TABS  = 3
+
+# Shell control-key menu (trackball-click overlay — needs no special keyboard
+# keys, which the T-Deck lacks: no Esc/Tab/Ctrl/~). (label, kind, payload).
+_SHELL_CTRL_ITEMS = (
+    ("Ctrl-C   interrupt", "send", b"\x03"),
+    ("Ctrl-D   EOF",       "send", b"\x04"),
+    ("Ctrl-Z   suspend",   "send", b"\x1a"),
+    ("Tab      complete",  "send", b"\t"),
+    ("Up       history",   "send", b"\x1b[A"),
+    ("Down",               "send", b"\x1b[B"),
+    ("Esc",                "send", b"\x1b"),
+    ("Line/Char mode",     "mode", None),
+    ("Quit shell",         "quit", None),
+    ("Close menu",         "close", None),
+)
 
 # Settings sub-pages
 _SET_MAIN      = 0
@@ -167,11 +189,32 @@ class UI:
         self.ping_pending = False  # True while a ping is awaiting its receipt
 
         # NET tab: NomadNet nodes (populated by nomad_browser)
-        self.node_tab = 0        # 0 = MSG (LXMF peers), 1 = NET (nomad nodes)
+        self.node_tab = 0        # 0 = MSG (LXMF peers), 1 = NET (nomad nodes), 2 = SSH (rnsh)
         self.nomad_nodes = {}    # dest_hash -> {"name": str, "hops": int|None, "seen": ts}
         self._node_keys = []     # ordered list of dest_hash_bytes
         self.net_idx = 0
         self.net_scroll = 0
+
+        # SSH tab: rnsh listeners (populated by rnsh_client)
+        self.shell_nodes = {}    # dest_hash -> {"name": str, "hops": int|None, "seen": ts}
+        self._shell_keys = []    # ordered list of dest_hash_bytes
+        self.ssh_idx = 0
+        self.ssh_scroll = 0
+        self._shell_manual = False   # manual hex-entry sub-mode on the SSH tab
+        self._shell_hex = bytearray()
+
+        # Shell session (STATE_SHELL)
+        self._terminal = None        # terminal.Terminal, created on connect
+        self._shell_status = None    # transient status/footer text
+        self._shell_line_mode = True # True: local line-edit; False: char-at-a-time
+        self._shell_input = bytearray()   # local line buffer (line mode)
+        self._shell_at_line_start = True  # for the ~. disconnect escape
+        self._shell_escape = False        # saw '~' at line start
+        self._shell_view = 0              # scrollback offset from bottom (0 = live)
+        self._shell_connected = False
+        self._shell_dest = None
+        self._shell_menu = False          # control-key menu overlay open?
+        self._shell_menu_idx = 0
 
         # Browser page view (STATE_BROWSER)
         self.browser_lines = []   # micron.render() rows of styled spans
@@ -281,6 +324,7 @@ class UI:
 
         # Node identity/info (set by tdeck_node.py)
         self.my_address = None       # own LXMF address hex string
+        self.my_identity_hash = None # own identity hash (for rnsh -a auth lists)
         self.get_radio_stats = None  # () -> [(label, value), ...] for radio page
 
         # Callbacks (set by tdeck_node.py)
@@ -307,6 +351,12 @@ class UI:
         self.on_screen_timeout = None # (ms) -> None — persist inactivity timeout
         self.on_auto_announce = None  # (enabled) -> None — start/stop periodic announce
         self.on_delete_peer = None    # (dest_hash_bytes) -> None — forget a peer/node
+        # rnsh shell callbacks (wired by tdeck_node.py)
+        self.on_shell_connect = None    # (dest_hash, cols, rows) -> None
+        self.on_shell_input = None      # (bytes) -> None — send stdin to remote
+        self.on_shell_disconnect = None # () -> None — tear down the session
+        self.on_shell_seed = None       # () -> None — populate shell_nodes from storage
+        self.on_shell_resize = None     # (rows, cols) -> None
 
     # --- Screen power management ---
 
@@ -501,24 +551,28 @@ class UI:
     # --- Node list screen ---
 
     def _draw_tab_bar(self):
-        """MSG/NET tab bar — first body row of the node screen."""
+        """MSG/NET/SSH tab bar — first body row of the node screen."""
         un = 0
         for v in self.unread.values():
             un += v
-        msg = " MSG(" + str(len(self._peer_keys)) + ("*" if un else "") + ") "
-        net = " NET(" + str(len(self._node_keys)) + ") "
-        cache_key = str(self.node_tab) + msg + net
+        tabs = (
+            " MSG(" + str(len(self._peer_keys)) + ("*" if un else "") + ") ",
+            " NET(" + str(len(self._node_keys)) + ") ",
+            " SSH(" + str(len(self._shell_keys)) + ") ",
+        )
+        cache_key = str(self.node_tab) + "".join(tabs)
         if self._cache[1] == cache_key:
             return
         self._cache[1] = cache_key
         y = BODY_Y
         self.tft.text(self.font, _pad(""), 0, y, self.DIM_CYAN, self.BG_DARK)
-        if self.node_tab == 0:
-            self.tft.text(self.font, msg, 0, y, self.NEON_GREEN, self.SEL_BG)
-            self.tft.text(self.font, net, len(msg) * CHAR_W, y, self.DIM_CYAN, self.BG_DARK)
-        else:
-            self.tft.text(self.font, msg, 0, y, self.DIM_CYAN, self.BG_DARK)
-            self.tft.text(self.font, net, len(msg) * CHAR_W, y, self.NEON_GREEN, self.SEL_BG)
+        x = 0
+        for i, label in enumerate(tabs):
+            if i == self.node_tab:
+                self.tft.text(self.font, label, x, y, self.NEON_GREEN, self.SEL_BG)
+            else:
+                self.tft.text(self.font, label, x, y, self.DIM_CYAN, self.BG_DARK)
+            x += len(label) * CHAR_W
         self.tft.fill_rect(0, y + CHAR_H - 1, SCREEN_W, 1, self.DIM_CYAN)
 
     def _draw_list_rows(self, keys, table, scroll, sel_idx, show_unread, empty_lines):
@@ -577,18 +631,28 @@ class UI:
     def draw_node_list(self):
         self._draw_tab_bar()
         _rows = BODY_ROWS - 1
-        if self.node_tab == 0:
+        # SSH tab in manual-entry mode: a hex-address input instead of the list.
+        if self.node_tab == TAB_SSH and self._shell_manual:
+            self._draw_shell_manual()
+            return
+        if self.node_tab == TAB_MSG:
             self._draw_list_rows(self._peer_keys, self.peers, self.node_scroll,
                                  self.selected_idx, True,
                                  ("No peers yet.", "Waiting for announces..."))
             _total = len(self._peer_keys)
             _scroll = self.node_scroll
-        else:
+        elif self.node_tab == TAB_NET:
             self._draw_list_rows(self._node_keys, self.nomad_nodes, self.net_scroll,
                                  self.net_idx, False,
                                  ("No nodes yet.", "Waiting for node announces..."))
             _total = len(self._node_keys)
             _scroll = self.net_scroll
+        else:
+            self._draw_list_rows(self._shell_keys, self.shell_nodes, self.ssh_scroll,
+                                 self.ssh_idx, False,
+                                 ("No rnsh nodes.", "(m) to enter a hash"))
+            _total = len(self._shell_keys)
+            _scroll = self.ssh_scroll
 
         # Scroll indicator on right edge (below the tab bar)
         _track_h = _rows * CHAR_H
@@ -610,13 +674,17 @@ class UI:
             self.tft.text(self.font, "(", 7 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
             self.tft.text(self.font, "s", 8 * CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
             self.tft.text(self.font, ")et", 9 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-            if self.node_tab == 0:
+            if self.node_tab == TAB_MSG:
                 self.tft.text(self.font, "(", 13 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
                 self.tft.text(self.font, "p", 14 * CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
                 self.tft.text(self.font, ")ing", 15 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
                 self.tft.text(self.font, "(", 20 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
                 self.tft.text(self.font, "d", 21 * CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
                 self.tft.text(self.font, ")el", 22 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+            elif self.node_tab == TAB_SSH:
+                self.tft.text(self.font, "(", 13 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+                self.tft.text(self.font, "m", 14 * CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
+                self.tft.text(self.font, ")hash  click=open", 15 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
             else:
                 self.tft.text(self.font, "click=open", 13 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
             self._route_cache = ''
@@ -626,22 +694,11 @@ class UI:
         # ping result, else the selected peer's hops + RSSI + last-seen,
         # e.g. "2h -87dB 5m". (Next-hop relay detail lives in the path
         # table; too wide for this line.)
-        if self.node_tab == 0 and self.ping_status:
-            info = self.ping_status
-        elif self.node_tab == 1:
-            info = ""
-            if self._node_keys and self.net_idx < len(self._node_keys):
-                n = self.nomad_nodes.get(self._node_keys[self.net_idx])
-                if n:
-                    bits = []
-                    hops = n.get("hops")
-                    if hops:
-                        bits.append(str(hops) + "hp")
-                    bits.append(_age(n.get("seen")))
-                    info = " ".join(bits)
-        else:
-            info = ""
-            if self._peer_keys and self.selected_idx < len(self._peer_keys):
+        info = ""
+        if self.node_tab == TAB_MSG:
+            if self.ping_status:
+                info = self.ping_status
+            elif self._peer_keys and self.selected_idx < len(self._peer_keys):
                 p = self.peers.get(self._peer_keys[self.selected_idx])
                 if p:
                     bits = []
@@ -652,6 +709,26 @@ class UI:
                     if rs is not None:
                         bits.append(str(rs) + "dB")
                     bits.append(_age(p.get("seen")))
+                    info = " ".join(bits)
+        elif self.node_tab == TAB_NET:
+            if self._node_keys and self.net_idx < len(self._node_keys):
+                n = self.nomad_nodes.get(self._node_keys[self.net_idx])
+                if n:
+                    bits = []
+                    hops = n.get("hops")
+                    if hops:
+                        bits.append(str(hops) + "hp")
+                    bits.append(_age(n.get("seen")))
+                    info = " ".join(bits)
+        else:  # TAB_SSH
+            if self._shell_keys and self.ssh_idx < len(self._shell_keys):
+                s = self.shell_nodes.get(self._shell_keys[self.ssh_idx])
+                if s:
+                    bits = []
+                    hops = s.get("hops")
+                    if hops:
+                        bits.append(str(hops) + "hp")
+                    bits.append(_age(s.get("seen")))
                     info = " ".join(bits)
         info = info[:14]
         if self._route_cache != info:
@@ -1053,6 +1130,8 @@ class UI:
             return self._handle_key_settings(ch, key)
         elif self.state == STATE_BROWSER:
             return self._handle_key_browser(ch, key)
+        elif self.state == STATE_SHELL:
+            return self._handle_key_shell(ch, key)
         else:
             return self._handle_key_chat(ch, key)
 
@@ -1069,6 +1148,9 @@ class UI:
             self.dirty = True
 
     def _handle_key_nodes(self, ch, key):
+        # SSH manual hex-entry sub-mode captures all keys.
+        if self.node_tab == TAB_SSH and self._shell_manual:
+            return self._handle_shell_manual_key(ch, key)
         if key == b'a' or key == b'A':
             if self.on_announce:
                 self.on_announce()
@@ -1084,13 +1166,19 @@ class UI:
             return True
         elif key == b'b' or key == b'B':
             # keyboard fallback for trackball left/right tab switch
-            self._switch_tab(1 - self.node_tab)
+            self._switch_tab((self.node_tab + 1) % N_TABS)
+            return True
+        elif (key == b'm' or key == b'M') and self.node_tab == TAB_SSH:
+            self._shell_manual = True
+            self._shell_hex = bytearray()
+            self._cache = [''] * 15
+            self.dirty = True
             return True
         elif key == b'd' or key == b'D':
             self.delete_selected()
             return True
         elif key == b'p' or key == b'P':
-            if (self.node_tab == 0 and self.on_ping and self._peer_keys
+            if (self.node_tab == TAB_MSG and self.on_ping and self._peer_keys
                     and self.selected_idx < len(self._peer_keys)):
                 self.ping_status = "ping..."
                 self.ping_pending = True
@@ -1099,21 +1187,30 @@ class UI:
                 self.on_ping(self._peer_keys[self.selected_idx])
             return True
         elif ch == 0x0D:  # Enter mirrors the trackball click
-            if self.node_tab == 0:
+            if self.node_tab == TAB_MSG:
                 self._enter_chat()
-            else:
+            elif self.node_tab == TAB_NET:
                 self._open_selected_node()
+            else:
+                self._open_selected_shell()
             return True
         return False
 
     def _switch_tab(self, tab):
-        """Switch MSG/NET tab on the node screen."""
+        """Switch MSG/NET/SSH tab on the node screen."""
+        tab = tab % N_TABS
         if tab == self.node_tab:
             return
         self.node_tab = tab
-        if tab == 1 and self.on_net_seed:
+        self._shell_manual = False
+        if tab == TAB_NET and self.on_net_seed:
             try:
                 self.on_net_seed()  # populate from persisted announces (once)
+            except Exception:
+                pass
+        elif tab == TAB_SSH and self.on_shell_seed:
+            try:
+                self.on_shell_seed()
             except Exception:
                 pass
         self._cache = [''] * 15  # rows, tab bar and footer all change
@@ -1132,6 +1229,155 @@ class UI:
         self.browser_status = "connecting..."
         if self.on_browse:
             self.on_browse(dest)
+
+    # --- rnsh shell (SSH tab + STATE_SHELL) ---------------------------------
+
+    def _open_selected_shell(self):
+        """SSH tab click/Enter: connect to the selected rnsh listener."""
+        if not (self._shell_keys and 0 <= self.ssh_idx < len(self._shell_keys)):
+            return
+        self._start_shell(self._shell_keys[self.ssh_idx])
+
+    def _start_shell(self, dest_hash):
+        """Enter the shell screen and kick off the connection."""
+        self._shell_dest = dest_hash
+        self._shell_connected = False
+        self._shell_status = "connecting..."
+        self._shell_input = bytearray()
+        self._shell_at_line_start = True
+        self._shell_escape = False
+        self._shell_view = 0
+        self._shell_menu = False
+        import terminal
+        self._terminal = terminal.Terminal(cols=COLS)
+        self.state = STATE_SHELL
+        self._state_change_ms = time.ticks_ms()
+        self._cache = [''] * 15
+        self.dirty = True
+        if self.on_shell_connect:
+            self.on_shell_connect(dest_hash, COLS, BODY_ROWS)
+
+    def _draw_shell_manual(self):
+        """SSH tab manual hex-entry screen."""
+        self._draw_row_cached(2, "rnsh listener hash:", BODY_Y + CHAR_H, self.NEON_CYAN)
+        self._draw_row_cached(3, "(32 hex chars)", BODY_Y + 2 * CHAR_H, self.DIM_CYAN)
+        for i in range(3, BODY_ROWS - 2):
+            self._draw_row_cached(i + 1, "", BODY_Y + i * CHAR_H, self.NEON_CYAN)
+        # Show our identity hash — a listener authorizes it via -a / allowed_identities.
+        self._draw_row_cached(BODY_ROWS - 1, "your id (for listener -a):",
+                              BODY_Y + (BODY_ROWS - 2) * CHAR_H, self.DIM_CYAN)
+        self._draw_row_cached(BODY_ROWS, self.my_identity_hash or "?",
+                              BODY_Y + (BODY_ROWS - 1) * CHAR_H, self.NEON_GREEN)
+        self._draw_input_line(self._shell_hex.decode())
+        foot = "Enter=connect  Esc=cancel"
+        if self._cache[13] != foot:
+            self._cache[13] = foot
+            self.tft.text(self.font, self._tb(_pad(foot)), 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+
+    def _handle_shell_manual_key(self, ch, key):
+        if ch == 0x1B:   # Esc — cancel
+            self._shell_manual = False
+            self._cache = [''] * 15
+            self.dirty = True
+            return True
+        if ch == 0x08:   # Backspace
+            if self._shell_hex:
+                self._shell_hex = self._shell_hex[:-1]
+                self._input_dirty = True
+            return True
+        if ch == 0x0D:   # Enter — parse + connect
+            s = self._shell_hex.decode().strip().lower()
+            try:
+                from binascii import unhexlify
+                dest = unhexlify(s)
+                if len(dest) != 16:
+                    raise ValueError
+            except Exception:
+                self._shell_status = "bad hash (need 32 hex)"
+                self.dirty = True
+                return True
+            self._shell_manual = False
+            self._start_shell(dest)
+            return True
+        if 0x20 <= ch < 0x7F and len(self._shell_hex) < 32:
+            c = chr(ch).lower()
+            if c in "0123456789abcdef":
+                self._shell_hex += bytes([ord(c)])
+                self._input_dirty = True
+            return True
+        return True
+
+    def add_shell_node(self, dest_hash, name=None, hops=None, seen=None):
+        """Add or update an rnsh listener (SSH tab, called by rnsh_client)."""
+        prev = self.shell_nodes.get(dest_hash)
+        if prev is None and len(self.shell_nodes) >= MAX_PEERS:
+            oldest = min(self._shell_keys,
+                         key=lambda k: self.shell_nodes[k].get("seen", 0))
+            del self.shell_nodes[oldest]
+            self._shell_keys.remove(oldest)
+            if self.ssh_idx >= len(self._shell_keys):
+                self.ssh_idx = max(0, len(self._shell_keys) - 1)
+        if prev:
+            if name is None:
+                name = prev.get("name")
+            if seen is not None and prev.get("seen", 0) > seen:
+                seen = prev["seen"]
+        # rnsh announces carry no name — show a short hash so the row isn't "?"
+        self.shell_nodes[dest_hash] = {"name": name or dest_hash.hex()[:10],
+                                       "hops": hops,
+                                       "seen": time.time() if seen is None else seen}
+        if dest_hash not in self._shell_keys:
+            self._shell_keys.append(dest_hash)
+        if self.state == STATE_NODES and self.node_tab == TAB_SSH:
+            self.dirty = True
+
+    def clear_shell_nodes(self):
+        """Clear the SSH tab (interface switch)."""
+        self.shell_nodes.clear()
+        self._shell_keys.clear()
+        self.ssh_idx = 0
+        self.ssh_scroll = 0
+        self._cache = [''] * 15
+        self.dirty = True
+
+    # Callbacks invoked by rnsh_client -------------------------------------
+
+    def shell_status(self, text):
+        self._shell_status = text
+        if self.state == STATE_SHELL:
+            self.dirty = True
+
+    def shell_feed(self, stream_id, data):
+        """Remote stdout/stderr bytes -> terminal scrollback. When at the live
+        bottom (_shell_view==0) new output shows immediately; if the user has
+        scrolled up (>0) their position persists — scroll down (or type) to
+        follow along again."""
+        if self._terminal is not None:
+            self._terminal.feed(data)
+            if self.state == STATE_SHELL:
+                self.dirty = True
+                self.wake_screen()
+
+    def shell_connected(self):
+        self._shell_connected = True
+        self._shell_status = None
+        if self.state == STATE_SHELL:
+            self.dirty = True
+
+    def shell_exited(self, code):
+        if self._terminal is not None:
+            self._terminal.feed(("\r\n[process exited: %s]\r\n" % str(code)).encode())
+        self._shell_connected = False
+        self._shell_status = "exited (%s) — Esc to leave" % str(code)
+        if self.state == STATE_SHELL:
+            self.dirty = True
+
+    def shell_closed(self):
+        self._shell_connected = False
+        if self._shell_status is None or "exited" not in self._shell_status:
+            self._shell_status = "disconnected — Esc to leave"
+        if self.state == STATE_SHELL:
+            self.dirty = True
 
     # --- Browser page view ---
 
@@ -1281,6 +1527,250 @@ class UI:
             self._browser_goto(False)
             return True
         return False
+
+    # --- Shell screen (STATE_SHELL) -----------------------------------------
+
+    @staticmethod
+    def _safe_decode(buf):
+        try:
+            return bytes(buf).decode("utf-8")
+        except Exception:
+            return "".join(chr(b) if 32 <= b < 127 else "?" for b in buf)
+
+    def draw_shell(self):
+        if self._shell_menu:
+            self._draw_shell_menu()
+            return
+        lines = self._terminal.lines if self._terminal else [""]
+        n = len(lines)
+        mx = max(0, n - BODY_ROWS)
+        if self._shell_view > mx:          # clamp (scrollback may have trimmed)
+            self._shell_view = mx
+        start = max(0, n - BODY_ROWS - self._shell_view)
+        visible = lines[start:start + BODY_ROWS]
+        for i in range(BODY_ROWS):
+            y = BODY_Y + i * CHAR_H
+            ci = i + 1
+            text = visible[i] if i < len(visible) else ""
+            # cache key keys on absolute line index so a scroll shift forces redraw
+            key = str(start + i) + "\x00" + text
+            if self._cache[ci] != key:
+                self._cache[ci] = key
+                self.tft.text(self.font, self._tb(_pad(text)), 0, y, self.BODY_FG, self.BG_DARK)
+
+        # Scroll indicator on the right edge (below the navbar), when there's
+        # more scrollback than one screen.
+        _track_h = BODY_ROWS * CHAR_H
+        self.tft.fill_rect(SBAR_X, BODY_Y, SBAR_W, _track_h, self.BG_DARK)
+        if n > BODY_ROWS:
+            _bar_h = max(6, _track_h * BODY_ROWS // n)
+            _bar_y = BODY_Y + (n - BODY_ROWS - self._shell_view) * _track_h // n
+            self.tft.fill_rect(SBAR_X, _bar_y, SBAR_W, _bar_h, self.DIM_CYAN)
+
+        # Footer: transient status wins; else the input line (line mode, while
+        # typing) or a hint that always advertises how to quit + scroll.
+        if self._shell_status:
+            foot = self._shell_status[:COLS]
+            fkey = "S\x00" + foot
+            if self._cache[13] != fkey:
+                self._cache[13] = fkey
+                self.tft.text(self.font, self._tb(_pad(foot)), 0, INPUT_Y, self.NEON_MAG, self.BG_DARK)
+        elif self._shell_line_mode and self._shell_input:
+            self._cache[13] = ''           # input redraws live; repaint on next status change
+            self._draw_input_line(self._safe_decode(self._shell_input))
+        else:
+            if self._shell_line_mode:
+                foot = "Bksp=quit  click=keys  trkbl=scrl"
+            else:
+                foot = "click=keys menu   trkbl=scroll"
+            if self._shell_view:
+                foot = "[+" + str(self._shell_view) + "] " + foot
+            foot = foot[:COLS]
+            if self._cache[13] != foot:
+                self._cache[13] = foot
+                self.tft.text(self.font, self._tb(_pad(foot)), 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+
+    def _shell_send(self, data):
+        if data:
+            self._shell_at_line_start = data[-1] in (0x0d, 0x0a)
+        self._shell_view = 0   # sending input snaps the view back to the live bottom
+        if self.on_shell_input:
+            try:
+                self.on_shell_input(bytes(data))
+            except Exception:
+                pass
+
+    def _shell_scroll(self, delta):
+        """Scroll the local terminal scrollback (delta>0 = toward older lines)."""
+        if self._terminal is None:
+            return
+        mx = max(0, len(self._terminal.lines) - BODY_ROWS)
+        self._shell_view = max(0, min(self._shell_view + delta, mx))
+        self.dirty = True
+
+    # --- shell control-key menu (trackball-click overlay) -------------------
+
+    def _shell_menu_open(self):
+        self._shell_menu = True
+        self._shell_menu_idx = 0
+        self._cache = [''] * 15
+        self.dirty = True
+
+    def _shell_menu_move(self, delta):
+        self._shell_menu_idx = (self._shell_menu_idx + delta) % len(_SHELL_CTRL_ITEMS)
+        self.dirty = True
+
+    def _shell_menu_close(self):
+        self._shell_menu = False
+        self._cache = [''] * 15
+        self.dirty = True
+
+    def _shell_menu_exec(self):
+        _, kind, payload = _SHELL_CTRL_ITEMS[self._shell_menu_idx]
+        self._shell_menu = False
+        self._cache = [''] * 15
+        self.dirty = True
+        if kind == "send":
+            self._shell_send(payload)
+        elif kind == "mode":
+            self._shell_line_mode = not self._shell_line_mode
+            self._shell_view = 0
+        elif kind == "quit":
+            self._leave_shell()
+        # "close": already closed above
+
+    def _draw_shell_menu(self):
+        self._draw_row_cached(1, "Control keys (trackball):", BODY_Y, self.NEON_CYAN)
+        rows = BODY_ROWS - 1
+        n = len(_SHELL_CTRL_ITEMS)
+        for i in range(rows):
+            y = BODY_Y + (i + 1) * CHAR_H
+            ci = i + 2
+            if i < n:
+                line = ("> " if i == self._shell_menu_idx else "  ") + _SHELL_CTRL_ITEMS[i][0]
+                if i == self._shell_menu_idx:
+                    ck = "\x01" + line
+                    if self._cache[ci] != ck:
+                        self._cache[ci] = ck
+                        self.tft.text(self.font, self._tb(_pad(line)), 0, y, self.YELLOW, self.SEL_BG)
+                else:
+                    self._draw_row_cached(ci, line, y, self.NEON_CYAN, self.BG_DARK)
+            else:
+                self._draw_row_cached(ci, "", y, self.NEON_CYAN)
+        foot = "click=send  U/D=move  Bksp=close"
+        if self._cache[13] != foot:
+            self._cache[13] = foot
+            self.tft.text(self.font, self._tb(_pad(foot)), 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+
+    def _leave_shell(self):
+        if self.on_shell_disconnect:
+            try:
+                self.on_shell_disconnect()
+            except Exception:
+                pass
+        self._terminal = None
+        self._shell_status = None
+        self._shell_connected = False
+        self._shell_menu = False
+        self.node_tab = TAB_SSH
+        self.state = STATE_NODES
+        self._state_change_ms = time.ticks_ms()
+        self._cache = [''] * 15
+        self.dirty = True
+
+    def _handle_key_shell(self, ch, key):
+        if ch == 0:
+            return False
+        # Control-key menu open: Enter sends the selection, Backspace closes.
+        if self._shell_menu:
+            if ch == 0x0D:
+                self._shell_menu_exec()
+            elif ch == 0x08:
+                self._shell_menu_close()
+            return True
+        # After the session ended, any key returns to the SSH tab.
+        if not self._shell_connected and self._shell_status and "leave" in self._shell_status:
+            self._leave_shell()
+            return True
+        # Control bytes straight from the keyboard (Ctrl-C=0x03, Ctrl-D=0x04,
+        # Ctrl-Z=0x1a, ...) always go to the remote in either mode.
+        if 0 < ch < 0x20 and ch not in (0x08, 0x09, 0x0d, 0x1b):
+            self._shell_send(bytes([ch]))
+            return True
+        if self._shell_line_mode:
+            return self._handle_shell_line(ch, key)
+        return self._handle_shell_char(ch, key)
+
+    def _handle_shell_line(self, ch, key):
+        if ch == 0x08:                     # Backspace: edit the line, or leave when empty
+            if self._shell_input:
+                self._shell_input = self._shell_input[:-1]
+                self._input_dirty = True
+            elif time.ticks_diff(time.ticks_ms(), self._state_change_ms) > 500:
+                # Empty input + Backspace = leave the shell (the T-Deck has no
+                # Esc key; this matches how chat/browser exit).
+                self._leave_shell()
+            return True
+        if ch == 0x1B:                     # Esc also leaves (if the keyboard ever emits it)
+            self._leave_shell()
+            return True
+        if ch == 0x0D:                     # Enter — escapes, else send line
+            line = bytes(self._shell_input)
+            self._shell_input = bytearray()
+            self._input_dirty = True
+            if line == b"~.":
+                self._leave_shell()
+                return True
+            if line == b"~l":
+                self._shell_line_mode = False
+                self._shell_view = 0
+                self._cache = [''] * 15
+                self.dirty = True
+                return True
+            self._shell_send(line + b"\n")
+            return True
+        if ch == 0x09:                     # Tab (completion is remote-side)
+            self._shell_input += b"\t"
+            self._shell_view = 0
+            self._input_dirty = True
+            return True
+        if 0x20 <= ch < 0x7F:
+            self._shell_input += key
+            self._shell_view = 0           # typing snaps to the live bottom
+            self._input_dirty = True
+            return True
+        return True
+
+    def _handle_shell_char(self, ch, key):
+        # SSH-style ~ escape at the start of a line.
+        if self._shell_at_line_start and not self._shell_escape and ch == 0x7E:  # '~'
+            self._shell_escape = True
+            return True
+        if self._shell_escape:
+            self._shell_escape = False
+            if ch == 0x2E:                 # '.' -> quit
+                self._leave_shell()
+                return True
+            if ch == 0x6C:                 # 'l' -> line mode
+                self._shell_line_mode = True
+                self._cache = [''] * 15
+                self.dirty = True
+                return True
+            if ch == 0x7E:                 # '~~' -> literal tilde
+                self._shell_send(b"~")
+                return True
+            self._shell_send(b"~")         # not a command: send ~ then the char
+        if ch == 0x0D:
+            self._shell_send(b"\r")
+        elif ch == 0x08:
+            self._shell_send(b"\x7f")      # DEL — typical erase char
+        elif ch == 0x09:
+            self._shell_send(b"\t")
+        elif ch == 0x1B:
+            self._shell_send(b"\x1b")
+        elif 0x20 <= ch < 0x7F:
+            self._shell_send(key)
+        return True
 
     def _handle_key_chat(self, ch, key):
         if ch == 0x08:  # Backspace
@@ -1883,9 +2373,8 @@ class UI:
             self._scroll_down()
         if left or right:
             if self.state == STATE_NODES:
-                tab = 0 if left else 1
-                if tab != self.node_tab:
-                    self._switch_tab(tab)
+                # Cycle MSG -> NET -> SSH -> MSG (left = previous, right = next).
+                self._switch_tab((self.node_tab - 1 if left else self.node_tab + 1) % N_TABS)
             elif self.state == STATE_BROWSER:
                 if left:
                     self._browser_back()
@@ -1901,16 +2390,21 @@ class UI:
                     self.chat_scroll = max(0, self.chat_scroll - _page)
                 self.chat_cursor = -1
                 self.dirty = True
+            elif self.state == STATE_SHELL:
+                if not self._shell_menu:   # page scroll (menu ignores left/right)
+                    self._shell_scroll((BODY_ROWS - 1) if left else -(BODY_ROWS - 1))
             elif self.state == STATE_SETTINGS:
                 self._settings_adjust(-1 if left else 1)
         if click:
             if self.state == STATE_IMAGE:
                 self._exit_image_view()
             elif self.state == STATE_NODES:
-                if self.node_tab == 0:
+                if self.node_tab == TAB_MSG:
                     self._enter_chat()
-                else:
+                elif self.node_tab == TAB_NET:
                     self._open_selected_node()
+                elif self.node_tab == TAB_SSH and not self._shell_manual:
+                    self._open_selected_shell()
             elif self.state == STATE_BROWSER:
                 self._browser_follow_cursor()
             elif self.state == STATE_CHAT:
@@ -1929,6 +2423,12 @@ class UI:
                         self.on_audio_play(audio_data, audio_mode)
             elif self.state == STATE_SETTINGS:
                 self.handle_key(b'\x0D')
+            elif self.state == STATE_SHELL:
+                # click opens the control-key menu, or sends the selection
+                if self._shell_menu:
+                    self._shell_menu_exec()
+                else:
+                    self._shell_menu_open()
 
         self.dirty = True
         return True
@@ -1937,16 +2437,21 @@ class UI:
         if self.state == STATE_IMAGE:
             return
         elif self.state == STATE_NODES:
-            if self.node_tab == 0:
+            if self.node_tab == TAB_MSG:
                 if self.selected_idx > 0:
                     self.selected_idx -= 1
                     if self.selected_idx < self.node_scroll:
                         self.node_scroll = self.selected_idx
-            else:
+            elif self.node_tab == TAB_NET:
                 if self.net_idx > 0:
                     self.net_idx -= 1
                     if self.net_idx < self.net_scroll:
                         self.net_scroll = self.net_idx
+            else:  # TAB_SSH
+                if self.ssh_idx > 0:
+                    self.ssh_idx -= 1
+                    if self.ssh_idx < self.ssh_scroll:
+                        self.ssh_scroll = self.ssh_idx
         elif self.state == STATE_SETTINGS:
             self._settings_scroll_up()
         elif self.state == STATE_BROWSER:
@@ -1957,6 +2462,11 @@ class UI:
                 self.browser_scroll -= 1
             elif self.browser_cursor < 0:
                 self.browser_cursor = 0
+        elif self.state == STATE_SHELL:
+            if self._shell_menu:
+                self._shell_menu_move(-1)
+            else:
+                self._shell_scroll(1)     # scroll terminal toward older output
         else:
             # Move cursor up; scroll viewport when cursor reaches top
             _chat_rows = BODY_ROWS - 1
@@ -1975,16 +2485,21 @@ class UI:
             return
         elif self.state == STATE_NODES:
             _rows = BODY_ROWS - 1  # tab bar takes the first body row
-            if self.node_tab == 0:
+            if self.node_tab == TAB_MSG:
                 if self.selected_idx < len(self._peer_keys) - 1:
                     self.selected_idx += 1
                     if self.selected_idx >= self.node_scroll + _rows:
                         self.node_scroll = self.selected_idx - _rows + 1
-            else:
+            elif self.node_tab == TAB_NET:
                 if self.net_idx < len(self._node_keys) - 1:
                     self.net_idx += 1
                     if self.net_idx >= self.net_scroll + _rows:
                         self.net_scroll = self.net_idx - _rows + 1
+            else:  # TAB_SSH
+                if self.ssh_idx < len(self._shell_keys) - 1:
+                    self.ssh_idx += 1
+                    if self.ssh_idx >= self.ssh_scroll + _rows:
+                        self.ssh_scroll = self.ssh_idx - _rows + 1
         elif self.state == STATE_SETTINGS:
             self._settings_scroll_down()
         elif self.state == STATE_BROWSER:
@@ -1997,6 +2512,11 @@ class UI:
                 self.browser_cursor += 1
             elif self.browser_scroll < max_scroll:
                 self.browser_scroll += 1
+        elif self.state == STATE_SHELL:
+            if self._shell_menu:
+                self._shell_menu_move(1)
+            else:
+                self._shell_scroll(-1)    # scroll terminal toward newer output
         else:
             # Move cursor down; scroll viewport when cursor reaches bottom
             _chat_rows = BODY_ROWS - 1
@@ -2119,9 +2639,10 @@ class UI:
         self.dirty = True
 
     def delete_selected(self):
-        """Forget the selected peer (MSG) or node (NET) and its local state.
-        The entry re-appears on the next announce; this just clears clutter."""
-        if self.node_tab == 0:
+        """Forget the selected peer (MSG) / node (NET) / listener (SSH) and its
+        local state. The entry re-appears on the next announce; this just clears
+        clutter."""
+        if self.node_tab == TAB_MSG:
             if not (0 <= self.selected_idx < len(self._peer_keys)):
                 return
             key = self._peer_keys.pop(self.selected_idx)
@@ -2138,7 +2659,7 @@ class UI:
                     self.on_delete_peer(key)
                 except Exception:
                     pass
-        else:
+        elif self.node_tab == TAB_NET:
             if not (0 <= self.net_idx < len(self._node_keys)):
                 return
             key = self._node_keys.pop(self.net_idx)
@@ -2147,6 +2668,15 @@ class UI:
                 self.net_idx = max(0, len(self._node_keys) - 1)
             if self.net_scroll > max(0, len(self._node_keys) - (BODY_ROWS - 1)):
                 self.net_scroll = max(0, len(self._node_keys) - (BODY_ROWS - 1))
+        else:  # TAB_SSH
+            if not (0 <= self.ssh_idx < len(self._shell_keys)):
+                return
+            key = self._shell_keys.pop(self.ssh_idx)
+            self.shell_nodes.pop(key, None)
+            if self.ssh_idx >= len(self._shell_keys):
+                self.ssh_idx = max(0, len(self._shell_keys) - 1)
+            if self.ssh_scroll > max(0, len(self._shell_keys) - (BODY_ROWS - 1)):
+                self.ssh_scroll = max(0, len(self._shell_keys) - (BODY_ROWS - 1))
         self._cache = [''] * 15
         self.dirty = True
 
@@ -2300,6 +2830,8 @@ class UI:
             self.draw_input()
         elif self.state == STATE_BROWSER:
             self.draw_browser()
+        elif self.state == STATE_SHELL:
+            self.draw_shell()
         elif self.state == STATE_RECORDING:
             self._draw_recording()
         # Shared neon body frame — drawn last so corners stay crisp on every

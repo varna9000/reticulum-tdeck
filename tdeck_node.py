@@ -256,6 +256,7 @@ adc_reader.init_battery(CONFIG)
 
 if DEBUG >= 1:
     print("LXMF address:", dest.hexhash)
+    print("Identity (rnsh -a):", rns.identity.hexhash)
     print("Free memory:", gc.mem_free(), "bytes")
 
 # Codec2 natmod was pre-imported at the very top of this file (first claim
@@ -845,6 +846,7 @@ def tcp_toggle(enabled, host=None, port=None):
             gui.clear_peers()
             _lxmf_to_peer.clear()
             nomad_browser.clear_nodes()
+            rnsh_client.clear_nodes()
             Transport.register_interface(iface)
             _tcp_task = asyncio.create_task(iface.poll_loop())
             _tcp_iface = iface
@@ -873,6 +875,7 @@ def tcp_toggle(enabled, host=None, port=None):
             gui.clear_peers()
             _lxmf_to_peer.clear()
             nomad_browser.clear_nodes()
+            rnsh_client.clear_nodes()
             if DEBUG >= 1:
                 print("[TCP] Interface stopped")
             # Disconnect WiFi
@@ -1137,6 +1140,16 @@ gui.on_browse_back = nomad_browser.back
 gui.on_browse_refresh = nomad_browser.refresh
 gui.on_browser_exit = nomad_browser.browser_exit
 gui.on_net_seed = nomad_browser.seed_nodes
+
+# --- rnsh shell client (SSH tab) ---
+import rnsh_client
+rnsh_client.init(gui, rns.identity)
+gui.on_shell_connect = rnsh_client.connect
+gui.on_shell_input = rnsh_client.send_input
+gui.on_shell_disconnect = rnsh_client.disconnect
+gui.on_shell_seed = rnsh_client.seed_nodes
+gui.on_shell_resize = rnsh_client.resize
+gui.my_identity_hash = rns.identity.hexhash   # for a listener's allowed-identities list
 
 _MAX_REC_SECS = 15  # max recording duration
 _REC_CHUNK = 640    # samples per mic read (80ms) — larger chunks reduce GIL contention
@@ -1453,17 +1466,22 @@ def _auto_connect_wifi():
     _st = settings.get("screen_timeout_ms")
     if _st is not None:
         gui._screen_timeout_ms = int(_st)
+    # WiFi reconnect is deferred to the event loop (_auto_connect_wifi_async) so a
+    # slow or absent AP can never block boot on the loading screen.
+
+
+async def _auto_connect_wifi_async():
+    """Reconnect WiFi from saved settings inside the event loop, non-blocking, so
+    a slow/absent AP never hangs boot (the synchronous version bricked boot)."""
+    import uasyncio as asyncio
+    await asyncio.sleep(0)
+    settings = _load_settings()
     ssid = settings.get("wifi_ssid")
     password = settings.get("wifi_pass")
     if ssid and password:
         if DEBUG >= 1:
             print("[Boot] Reconnecting WiFi:", ssid)
-        ip = wifi_connect(ssid, password)
-        if ip:
-            gui._wifi_connected = True
-            gui._wifi_ssid_current = ssid
-            gui._wifi_ip = ip
-        gc.collect()
+        wifi_connect_async(ssid, password)   # fires a task; sets gui._wifi_connected on success
 
 
 async def _auto_start_tcp():
@@ -1476,9 +1494,14 @@ async def _auto_start_tcp():
     port = settings.get("tcp_port")
     if host and port:
         gui._tcp_target = host + ":" + str(port)
-    # Auto-connect if it was enabled last session
-    if gui._wifi_connected and settings.get("tcp_enabled") and host and port:
-        if tcp_toggle(True, host, port):
+    # Auto-connect if it was enabled last session — wait (bounded) for the
+    # deferred WiFi reconnect to come up first.
+    if settings.get("tcp_enabled") and host and port:
+        for _ in range(40):                  # up to ~20s for WiFi
+            if gui._wifi_connected:
+                break
+            await asyncio.sleep(0.5)
+        if gui._wifi_connected and tcp_toggle(True, host, port):
             gui._tcp_enabled = True
     gc.collect()
 
@@ -1497,6 +1520,7 @@ def main():
 
     async def run_all():
         global _reannounce_task
+        asyncio.create_task(_auto_connect_wifi_async())
         asyncio.create_task(_auto_start_tcp())
         asyncio.create_task(initial_announce())
         # Periodic re-announce only if enabled in Settings (default: manual 'a')
