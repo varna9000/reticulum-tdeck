@@ -1139,7 +1139,6 @@ gui.on_browse_follow = nomad_browser.follow
 gui.on_browse_back = nomad_browser.back
 gui.on_browse_refresh = nomad_browser.refresh
 gui.on_browser_exit = nomad_browser.browser_exit
-gui.on_net_seed = nomad_browser.seed_nodes
 
 # --- rnsh shell client (SSH tab) ---
 import rnsh_client
@@ -1147,7 +1146,6 @@ rnsh_client.init(gui, rns.identity)
 gui.on_shell_connect = rnsh_client.connect
 gui.on_shell_input = rnsh_client.send_input
 gui.on_shell_disconnect = rnsh_client.disconnect
-gui.on_shell_seed = rnsh_client.seed_nodes
 gui.on_shell_resize = rnsh_client.resize
 gui.my_identity_hash = rns.identity.hexhash   # for a listener's allowed-identities list
 

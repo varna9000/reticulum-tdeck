@@ -24,7 +24,6 @@ _link_dest = None     # dest_hash the current link points at
 _fetching = False
 _result = None        # None | ("ok", data) | ("fail", reason)
 _history = []         # [(dest_hash, path), ...]; last entry = current page
-_seeded = False
 
 # Rendered-page cache for instant back-navigation (LoRa fetches are slow).
 # (dest_hash, path) -> (title, lines, links); small LRU, cheap on 8MB PSRAM.
@@ -95,24 +94,20 @@ def _on_announce(dest_hash, app_data, packet):
     _gui.wake_screen()
 
 
-def seed_nodes():
-    """Populate the NET tab from persisted announces (first tab open)."""
-    global _seeded
-    if _seeded:
-        return
-    _seeded = True
-    from urns.identity import Identity
-    for dh in Identity.known_destinations:
-        if _nomad_hash(dh) == dh:
-            entry = Identity.known_destinations[dh]
-            _gui.add_nomad_node(dh, _decode_name(entry[3]),
-                                hops=_node_hops(dh), seen=entry[0])
+
+# The NET tab is deliberately NOT seeded from Identity.known_destinations.
+# That store is persistent (it holds the public keys needed to encrypt and to
+# validate announces, so it must survive a reboot), but a node recorded in it
+# days ago says nothing about whether it is reachable now. Seeding from it
+# filled the tab with stale hashes that had to be tried before they could be
+# discovered dead. The list is therefore session-scoped: it starts empty on
+# boot and holds exactly the nodes announced since. Live announces are added
+# straight to the GUI by the announce handler above, so nothing is lost by not
+# seeding — including announces heard before the tab is first opened.
 
 
 def clear_nodes():
     """Interface switched — reachability changed, start over."""
-    global _seeded
-    _seeded = False
     _history.clear()
     _page_cache.clear()
     _page_cache_order.clear()

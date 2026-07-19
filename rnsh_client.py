@@ -87,14 +87,16 @@ def _on_announce(dest_hash, app_data, packet):
         _gui.wake_screen()
 
 
-def seed_nodes():
-    """Populate the SSH tab from persisted announces (first tab open)."""
-    from urns.identity import Identity
-    for dh in list(Identity.known_destinations):
-        if _rnsh_hash(dh) == dh:
-            entry = Identity.known_destinations[dh]
-            if _gui is not None:
-                _gui.add_shell_node(dh, hops=_node_hops(dh), seen=entry[0])
+
+# The SSH tab is deliberately NOT seeded from Identity.known_destinations.
+# That store is persistent (it holds the public keys needed to encrypt and to
+# validate announces, so it must survive a reboot), but a listener recorded in
+# it days ago says nothing about whether it is reachable now. Seeding from it
+# filled the tab with stale hashes that had to be tried before they could be
+# discovered dead. The list is therefore session-scoped: it starts empty on
+# boot and holds exactly the listeners announced since. Live announces are
+# added straight to the GUI by the announce handler above, so nothing is lost
+# by not seeding — including announces heard before the tab is first opened.
 
 
 def clear_nodes():
