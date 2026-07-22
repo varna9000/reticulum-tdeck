@@ -2252,6 +2252,12 @@ class UI:
             self._wifi_networks = results or []
         except Exception as e:
             self._wifi_networks = []
+            msg = str(e)
+            # 0x0101 = ESP_ERR_NO_MEM: WLAN init needs ~120KB internal RAM,
+            # already claimed by the native codecs + I2S (see README).
+            self._wifi_err = ("no RAM for WiFi" if "0x0101" in msg
+                              else (msg or "scan failed"))
+            print("[WiFi] scan failed:", repr(e))
         self._wifi_scanning = False
         self._cache = [''] * 15
         self.dirty = True

@@ -641,43 +641,42 @@ def _stop_wifi():
 
 def wifi_scan():
     import network
-    # Pause LoRa — SX1262 SPI polling interferes with WiFi scanning
+    # Pause LoRa — SX1262 SPI polling interferes with WiFi scanning.
+    # The poll loop exits permanently when it observes online == False, so
+    # the resume below is in a finally: an exception here (e.g. ESP_ERR_NO_MEM
+    # 0x0101 from WLAN init when internal RAM is exhausted) must never leave
+    # the mesh radio dead. Only interfaces we took offline are brought back —
+    # one that was already offline (init retry backoff) stays untouched.
+    paused = []
     for iface in rns.interfaces:
-        if hasattr(iface, '_paused'):
-            iface._paused = True
-        iface.online = False
+        if iface.online:
+            iface.online = False
+            paused.append(iface)
     spi_release_lora()
     time.sleep_ms(100)
 
-    wlan = network.WLAN(network.STA_IF)
     try:
-        wlan.disconnect()
-    except:
-        pass
-    wlan.active(False)
-    time.sleep_ms(200)
-    wlan.active(True)
-    time.sleep_ms(1000)
-    try:
+        wlan = network.WLAN(network.STA_IF)
+        try:
+            wlan.disconnect()
+        except:
+            pass
+        wlan.active(False)
+        time.sleep_ms(200)
+        wlan.active(True)
+        time.sleep_ms(1000)
         results = wlan.scan()
         if not results:
             time.sleep_ms(500)
             results = wlan.scan()
-    except Exception as e:
+
         if DEBUG >= 1:
-            print("[WiFi] Scan error:", e)
-        results = []
-
-    # Resume LoRa
-    for iface in rns.interfaces:
-        if hasattr(iface, '_paused'):
-            iface._paused = False
-        iface.online = True
-
-    if DEBUG >= 1:
-        print("[WiFi] Scan found", len(results), "networks")
-    return sorted([(r[0].decode(), r[3]) for r in results if r[0]],
-                  key=lambda x: x[1], reverse=True)
+            print("[WiFi] Scan found", len(results), "networks")
+        return sorted([(r[0].decode(), r[3]) for r in results if r[0]],
+                      key=lambda x: x[1], reverse=True)
+    finally:
+        for iface in paused:
+            iface.online = True
 
 
 def wifi_connect(ssid, password):
@@ -725,16 +724,18 @@ async def _wifi_connect_task(ssid, password):
     import uasyncio as asyncio
     import network
     await asyncio.sleep_ms(50)  # let the UI paint "Connecting..." first
-    wlan = network.WLAN(network.STA_IF)
-    try:
-        wlan.disconnect()
-    except:
-        pass
-    wlan.active(False)
-    await asyncio.sleep_ms(100)
-    wlan.active(True)
     ip = None
+    # WLAN init itself can throw (ESP_ERR_NO_MEM) — keep it inside the try so
+    # set_wifi_result() always runs and the UI never sticks on "Connecting...".
     try:
+        wlan = network.WLAN(network.STA_IF)
+        try:
+            wlan.disconnect()
+        except:
+            pass
+        wlan.active(False)
+        await asyncio.sleep_ms(100)
+        wlan.active(True)
         wlan.connect(ssid, password)
         for _ in range(40):  # ~8s, yielding so the UI/LoRa keep running
             if wlan.isconnected():
