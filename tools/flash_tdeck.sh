@@ -75,24 +75,10 @@ MPREMOTE="mpremote connect $PORT"
 # Create /lib directory
 $MPREMOTE mkdir :lib 2>/dev/null || true
 
-# Natmod .mpy files (native code — can't be frozen)
-NATMODS=(
-    "ed25519_fast_xtensawin.mpy"
-    "bz2_fast_xtensawin.mpy"
-    "codec2_fast_xtensawin.mpy"
-    "tjpgd_fast_xtensawin.mpy"
-    "webp_fast_xtensawin.mpy"
-)
-
-for f in "${NATMODS[@]}"; do
-    SRC="$TDECK_ROOT/lib/$f"
-    if [ -f "$SRC" ]; then
-        echo "  Copying $f"
-        $MPREMOTE cp "$SRC" ":lib/$f"
-    else
-        echo "  Skipping $f (not found)"
-    fi
-done
+# The former natmod .mpy files (ed25519/bz2/codec2/tjpgd/webp) are now
+# compiled into the firmware as user C modules (tools/c_modules/) and
+# execute from flash — nothing to upload, and stale /lib copies are dead
+# weight (built-in modules always win the import search).
 
 # Data files
 if [ -f "$TDECK_ROOT/logo.jpg" ]; then

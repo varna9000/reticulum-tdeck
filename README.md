@@ -338,6 +338,42 @@ When TCP is activated, LoRa is stopped (only one interface at a time). When TCP 
 
 **Why TCP instead of UDP?** The ESP32 cannot reliably receive UDP broadcast packets, even with power saving disabled. TCP provides reliable bidirectional communication.
 
+### Internal RAM budget (why WiFi currently fails with "no RAM for WiFi")
+
+WiFi, the native `.mpy` codecs, and I2S audio all compete for the ESP32-S3's
+**internal** DRAM heap (~187 KB usable after IDF/VM overhead) — the 8 MB PSRAM
+does not help, because these allocations must be internal (executable IRAM for
+native code, DMA-capable for I2S, WiFi driver buffers). Measured costs:
+
+| Consumer | Internal RAM |
+|---|---|
+| `WLAN(STA_IF)` driver init | ~118 KB |
+| `ed25519_fast` .mpy | 45 KB |
+| `codec2_fast` .mpy | 40 KB |
+| `webp_fast` .mpy | 20 KB |
+| `tjpgd_fast` + `bz2_fast` .mpy | 10 KB |
+| mic I2S (ibuf 64 KB) | 54 KB |
+| speaker I2S (ibuf 16 KB) | 17 KB |
+
+**Fixed 2026-07-23 by the firmware rebuild** — two levers, both required:
+1. The five natmods are now **user C modules** (`tools/c_modules/`), compiled
+   into the firmware and executing from flash XIP: −114 KB internal. (Freezing
+   the `.mpy` files instead is impossible — mpy_ld natmods always carry
+   `VIPERRELOC` and `mpy-tool.py --freeze` rejects them.)
+2. `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y` + pinned-small buffer counts
+   (`tools/board_tdeck/sdkconfig.board`) move WiFi/LWIP buffers to PSRAM.
+
+Before the rebuild the fully-booted app left **~8 KB** internal free and
+`network.WLAN()` raised `RuntimeError: Wifi Unknown Error 0x0101`
+(`ESP_ERR_NO_MEM`), surfaced in Settings as "no RAM for WiFi". After the
+rebuild, with the app running **and WiFi connected**, ~115 KB internal
+remains free (135 KB measured at the REPL with the app stopped).
+
+The app partition grew for the built-in modules: factory is now 3 MiB and
+vfs 5 MiB (`tools/board_tdeck/partitions-tdeck-8MiB.csv`) — flashing this
+layout over the old one moves the filesystem (full reflash + restore;
+back up `/rns/identity` first).
+
 ## Pin Map
 
 | Function | Pin(s) |

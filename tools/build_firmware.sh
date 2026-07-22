@@ -13,6 +13,7 @@
 # Flash with: bash flash_tdeck.sh
 
 set -e
+set -o pipefail  # `make | tail` must fail the script when make fails
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 export TDECK_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -33,6 +34,27 @@ echo "=== Build dir: $BUILD_DIR ==="
 echo "=== T-Deck root: $TDECK_ROOT ==="
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
+
+# --- Step 0: Pin a Python supported by ESP-IDF 5.2 ---
+# IDF's detect_python.sh takes the first `python3` on PATH. Homebrew's
+# python3 moved to 3.14, which IDF 5.2.3 predates (its venv creation and
+# constraints break). Pin the newest 3.10-3.12 via a PATH shim so both
+# install.sh and export.sh see it as `python3`.
+IDF_PY=""
+for cand in python3.12 python3.11 python3.10; do
+    if command -v "$cand" >/dev/null 2>&1; then
+        IDF_PY="$(command -v $cand)"
+        break
+    fi
+done
+if [ -z "$IDF_PY" ]; then
+    echo "ERROR: need python 3.10-3.12 for ESP-IDF $IDF_VERSION (brew install python@3.12)"
+    exit 1
+fi
+mkdir -p "$BUILD_DIR/pyshim"
+ln -sf "$IDF_PY" "$BUILD_DIR/pyshim/python3"
+export PATH="$BUILD_DIR/pyshim:$PATH"
+echo "=== ESP-IDF python pinned to $IDF_PY ==="
 
 # --- Step 1: ESP-IDF ---
 if [ ! -d "esp-idf" ]; then
@@ -89,10 +111,14 @@ else
     echo "=== st7789_mpy already present ==="
 fi
 
-ST7789_CMAKE="$BUILD_DIR/st7789_mpy/st7789/micropython.cmake"
+# All user C modules (st7789 display driver + the five former natmods,
+# now built-in so their code executes from flash instead of internal IRAM).
+USERMODS_CMAKE="$SCRIPT_DIR/c_modules/micropython.cmake"
 
 # --- Step 4: Build firmware ---
-MAKE_ARGS="BOARD=$BOARD BOARD_VARIANT=$VARIANT USER_C_MODULES=$ST7789_CMAKE"
+# BOARD_DIR points at the in-repo board dir (stock ESP32_GENERIC_S3 plus
+# the T-Deck sdkconfig overrides: WiFi/LWIP buffers in PSRAM).
+MAKE_ARGS="BOARD=$BOARD BOARD_VARIANT=$VARIANT BOARD_DIR=$SCRIPT_DIR/board_tdeck USER_C_MODULES=$USERMODS_CMAKE"
 
 if [ "$FREEZE" = "1" ]; then
     echo "=== Freezing app modules into firmware ==="
@@ -101,6 +127,11 @@ fi
 
 echo "=== Building firmware ($BOARD + $VARIANT + st7789) ==="
 cd "$BUILD_DIR/micropython/ports/esp32"
+
+# IDF resolves CONFIG_PARTITION_TABLE_CUSTOM_FILENAME relative to the
+# project dir (ports/esp32) — copy the T-Deck partition table in each run
+# so a fresh micropython clone still builds.
+cp "$SCRIPT_DIR/board_tdeck/partitions-tdeck-8MiB.csv" .
 
 make $MAKE_ARGS -j$(sysctl -n hw.ncpu 2>/dev/null || nproc) all 2>&1 | tail -20
 

@@ -42,6 +42,7 @@ freeze(_root + "/lib", "vga2_8x16_cp866.py")
 # --- urns (Reticulum stack) ---
 freeze(_vendor, "urns/__init__.py")
 freeze(_vendor, "urns/bz2dec.py")
+freeze(_vendor, "urns/buffer.py")
 freeze(_vendor, "urns/channel.py")
 freeze(_vendor, "urns/const.py")
 freeze(_vendor, "urns/destination.py")

@@ -1,0 +1,9 @@
+# T-Deck partition layout: factory grown 2MiB -> 3MiB (built-in C modules:
+# codec2/ed25519/webp/tjpgd/bz2 moved from /lib natmods into the app image),
+# vfs shrunk 6MiB -> 5MiB. Changing this table moves the FS: full reflash +
+# FS repopulation required (back up /rns/identity first!).
+# Name,   Type, SubType, Offset,  Size, Flags
+nvs,      data, nvs,     0x9000,  0x6000,
+phy_init, data, phy,     0xf000,  0x1000,
+factory,  app,  factory, 0x10000, 0x2F0000,
+vfs,      data, fat,     0x300000, 0x500000,
