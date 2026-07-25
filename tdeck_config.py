@@ -1,8 +1,20 @@
 # T-Deck v1 Configuration
 # Pin definitions and LoRa parameters
 
-NODE_NAME = "T-Deck"
-DEBUG = 2
+import binascii
+import machine
+
+# Display name announced to the mesh. The MAC suffix keeps a freshly flashed
+# batch of devices from all announcing as plain "T-Deck" -- on ESP32-S3
+# machine.unique_id() *is* the WiFi station MAC (verified against
+# WLAN.config('mac')), so this matches the sticker and the AP client list.
+# Renaming from Settings takes precedence and persists in /rns/settings.json;
+# replace this with a plain string to pin a name without the suffix.
+NODE_NAME = "T-Deck-" + binascii.hexlify(machine.unique_id()[-2:]).decode().upper()
+
+# 0 = silent (release default), 1 = app prints, 2 = + full Reticulum debug log.
+# Above 0 the serial log is chatty enough to cost time on every packet.
+DEBUG = 0
 
 # --- Display (ST7789 on shared SPI1) ---
 DISP_SCK  = 40
