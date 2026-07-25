@@ -143,6 +143,35 @@ if [ -f "$BUILD_OUT/micropython.bin" ]; then
     cp "$BUILD_OUT/partition_table/partition-table.bin" "$BUILD_DIR/"
 
     APP_SIZE=$(stat -f%z "$BUILD_DIR/micropython.bin" 2>/dev/null || stat -c%s "$BUILD_DIR/micropython.bin")
+
+    # --- Step 5: VFS image + single-flash merge ---
+    # Optional: without littlefs-python you still get the three-part flash,
+    # you just don't get the one-file image the releases ship.
+    MERGED=""
+    if python3 -c "import littlefs" 2>/dev/null; then
+        echo ""
+        echo "=== Building VFS image ==="
+        python3 "$SCRIPT_DIR/build_vfs.py" --out "$BUILD_DIR/vfs.bin"
+
+        # Offsets come from the partition table; keep them in step with
+        # board_tdeck/partitions-tdeck-8MiB.csv if that table ever moves.
+        VFS_OFF=$(python3 -c "
+import sys; sys.path.insert(0, '$SCRIPT_DIR')
+from build_vfs import parse_partition, PART_CSV
+print(hex(parse_partition(PART_CSV)[0]))")
+        echo "=== Merging single-flash image (vfs @ $VFS_OFF) ==="
+        python3 -m esptool --chip esp32s3 merge_bin -o "$BUILD_DIR/tdeck_firmware.bin" \
+            --flash_mode dio --flash_size 8MB --flash_freq 80m \
+            0x0 "$BUILD_DIR/bootloader.bin" \
+            0x8000 "$BUILD_DIR/partition-table.bin" \
+            0x10000 "$BUILD_DIR/micropython.bin" \
+            "$VFS_OFF" "$BUILD_DIR/vfs.bin" 2>&1 | tail -2
+        MERGED=1
+    else
+        echo ""
+        echo "=== Skipping single-flash image (pip install littlefs-python) ==="
+    fi
+
     echo ""
     echo "=== SUCCESS ==="
     echo "App size: $((APP_SIZE / 1024)) KB"
@@ -151,14 +180,22 @@ if [ -f "$BUILD_OUT/micropython.bin" ]; then
     echo "  bootloader.bin      (0x0)"
     echo "  partition-table.bin (0x8000)"
     echo "  micropython.bin     (0x10000)"
+    if [ -n "$MERGED" ]; then
+        echo "  vfs.bin             ($VFS_OFF)"
+        echo "  tdeck_firmware.bin  (0x0, single-flash, 8MB)"
+    fi
     echo ""
     echo "Flash with:"
     echo "  bash $SCRIPT_DIR/flash_tdeck.sh [PORT]"
+    if [ -n "$MERGED" ]; then
+        echo "or, wiping the filesystem (backs out /rns identity too):"
+        echo "  esptool --chip esp32s3 write-flash 0x0 $BUILD_DIR/tdeck_firmware.bin"
+    fi
     if [ "$FREEZE" = "1" ]; then
         echo ""
-        echo "Frozen modules are in ROM. flash_tdeck.sh will upload:"
-        echo "  - Natmod .mpy files (ed25519_fast, bz2_fast, codec2_fast, tjpgd_fast, webp_fast)"
-        echo "  - logo.jpg (splash image)"
+        echo "Frozen modules are in ROM; the codec/crypto modules are built"
+        echo "into the app image. The filesystem only carries main.py,"
+        echo "tdeck_config.py and logo.jpg."
     fi
 else
     echo "=== BUILD FAILED ==="

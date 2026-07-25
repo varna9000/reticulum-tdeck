@@ -570,8 +570,10 @@ The pre-built `tdeck_firmware.bin` bundles everything into a single flashable im
 
 ```bash
 brew install cmake ninja dfu-util    # macOS
-pip install esptool
+pip install esptool littlefs-python
 ```
+
+`littlefs-python` is only needed for the single-flash `tdeck_firmware.bin`; without it the build still emits the three-part flash set and just skips the merge.
 
 ### Build
 
@@ -588,8 +590,10 @@ The script:
 4. Fetches all required submodules (berkeley-db, micropython-lib, tinyusb, micro-ecc, bt/lib_esp32c3_family)
 5. Builds MicroPython for `ESP32_GENERIC_S3` with `SPIRAM_OCT` variant and st7789 as `USER_C_MODULE`
 6. Freezes Python modules via `tdeck_manifest.py`
-7. Creates a FAT filesystem image (`vfs.bin`) with natmod files, LoRa drivers, app files, and logo
-8. Merges bootloader + partition table + app + VFS into a single `tdeck_firmware.bin` using `esptool merge-bin`
+7. Builds the VFS image (`vfs.bin`) via `tools/build_vfs.py` — `main.py`, `tdeck_config.py` and `logo.jpg`, nothing else
+8. Merges bootloader + partition table + app + VFS into a single `tdeck_firmware.bin` using `esptool merge_bin`
+
+The filesystem is **littlefs2**, not FAT, despite the partition table's `fat` subtype column: MicroPython's `inisetup.setup()` formats a partition labelled `vfs` as littlefs2 and only reaches for `VfsFat` on the label `ffat`. Shipping littlefs2 means a flashed device and one that formatted its own filesystem are identical; `_boot.py` autodetects on mount either way. `build_vfs.py` reads its geometry straight from the partition table, since that table has already moved once.
 
 ### Firmware Image Layout
 
@@ -597,10 +601,12 @@ The script:
 |---|---|---|
 | `0x000000` | Bootloader | 19 KB |
 | `0x008000` | Partition table | 3 KB |
-| `0x010000` | MicroPython app (frozen modules + st7789 C driver) | ~1.7 MB |
-| `0x200000` | FAT VFS filesystem (natmods, lora, main.py, config, logo) | 6 MB |
+| `0x010000` | MicroPython app (frozen modules + st7789 and codec/crypto C modules) | ~2.0 MB (3 MB partition) |
+| `0x300000` | littlefs2 VFS (main.py, tdeck_config.py, logo.jpg) | 5 MB |
 
-Total image: 8 MB (matches T-Deck flash size).
+Total image: 8 MB (matches the partition layout; the flash chip is physically 16 MB).
+
+The factory partition grew 2 MB → 3 MB when the five natmods became built-in C modules, shrinking the VFS 6 MB → 5 MB. Moving that table again relocates the filesystem: a full reflash and FS repopulation, so back up `/rns/identity` first.
 
 ### Frozen Module Manifest (`tdeck_manifest.py`)
 
