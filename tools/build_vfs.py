@@ -13,6 +13,14 @@ app image as user C modules since the 3MiB-factory rebuild, so nothing goes
 in /lib any more -- a stale copy there would only be dead weight, since
 built-in modules win the import search.
 
+The corollary, and the reason this file lists so little: an import that is
+neither built in nor in tools/tdeck_manifest.py has nowhere left to come
+from. That is how the SX1262 driver (micropython-lib lora*, once mip-installed
+into /lib/lora) fell out of a release image -- it is pure Python, so it is
+frozen now rather than shipped here. Add imports to the manifest, not to
+CONTENTS; this list is for files a user is meant to edit or that are read as
+data.
+
 Filesystem is **littlefs2**, not FAT, whatever the partition csv's subtype
 column says: MicroPython's inisetup.setup() formats a partition labelled
 "vfs" as littlefs2 (it only reaches for VfsFat on the label "ffat"), so a

@@ -67,9 +67,9 @@ The T-Deck must be in **download mode** to flash: short GPIO0 to GND while press
 
 | Layer | Contents |
 |---|---|
-| **Frozen in ROM** | ui.py, sound.py, es7210.py, micron.py, nomad_browser.py, rnsh_proto.py, rnsh_client.py, terminal.py, display fonts (spleen_8x16 + shell grids), full urns/ stack (reticulum, Channel, LXMF, crypto, interfaces) |
-| **C driver in ROM** | Russ Hughes st7789_mpy — DMA-accelerated ST7789 display driver |
-| **On filesystem** | main.py (tdeck_node.py), tdeck_config.py, natmod .mpy files, lora-sx126x + lora-sync drivers, logo.jpg |
+| **Frozen in ROM** | ui.py, sound.py, es7210.py, micron.py, nomad_browser.py, rnsh_proto.py, rnsh_client.py, terminal.py, display fonts (spleen_8x16 + shell grids), the SX1262 driver (lora/, vendored in `lib/lora`), full urns/ stack (reticulum, Channel, LXMF, crypto, interfaces) |
+| **C drivers in ROM** | Russ Hughes st7789_mpy (DMA-accelerated ST7789 display) + the codec/crypto modules: ed25519_fast, bz2_fast, codec2_fast, tjpgd_fast, webp_fast |
+| **On filesystem** | main.py (tdeck_node.py), tdeck_config.py, logo.jpg |
 
 Frozen modules execute directly from flash ROM — zero RAM overhead, instant imports. The two user-editable files (`main.py` and `tdeck_config.py`) are on the filesystem so users can modify pin configs, radio parameters, or app behavior without rebuilding firmware.
 
@@ -95,6 +95,14 @@ Download from: https://micropython.org/download/ESP32_GENERIC_S3/
 ```
 mpremote mip install lora-sx126x
 mpremote mip install lora-sync
+```
+
+Or, without network — the same packages are vendored in this repo at the exact
+revision the custom firmware freezes (see `lib/lora/UPSTREAM.md`):
+
+```
+mpremote mkdir :/lib/lora
+mpremote cp lib/lora/__init__.py lib/lora/modem.py lib/lora/sx126x.py lib/lora/sync_modem.py :/lib/lora/
 ```
 
 #### 4. Upload files
@@ -641,18 +649,11 @@ Files on the FAT filesystem partition (editable via mpremote):
 |---|---|
 | `main.py` | App entry — `tdeck_node.py` renamed for auto-start |
 | `tdeck_config.py` | User-editable hardware and radio config |
-| `lib/ed25519_fast_xtensawin.mpy` | Native Ed25519 crypto (natmod) |
-| `lib/bz2_fast_xtensawin.mpy` | Native BZ2 compression (natmod) |
-| `lib/codec2_fast_xtensawin.mpy` | Native Codec2 voice codec (natmod) |
-| `lib/tjpgd_fast_xtensawin.mpy` | Native JPEG decoder (natmod) |
-| `lib/webp_fast_xtensawin.mpy` | Native WebP decoder (natmod) |
-| `lib/lora/__init__.mpy` | lora-sx126x driver |
-| `lib/lora/modem.mpy` | lora-sx126x modem |
-| `lib/lora/sx126x.mpy` | SX1262 radio driver |
-| `lib/lora/sync_modem.mpy` | lora-sync synchronous modem |
 | `logo.jpg` | Splash screen image |
 
-Natmod `.mpy` files contain native machine code and cannot be frozen — they must stay on the filesystem. The LoRa driver packages (`lora-sx126x`, `lora-sync`) are third-party and installed via `mip`; copies are cached in `tools/firmware_build/vfs_staging/` for offline builds.
+That is the whole filesystem. Everything else is in the app image: the five codec/crypto modules became built-in C modules with the 3MiB-factory rebuild, and every pure-Python import — including the third-party SX1262 driver — is frozen in ROM.
+
+**Adding an import means editing `tools/tdeck_manifest.py`.** Nothing on the VFS shadows a missing module any more, so a module that is neither frozen nor built in gives a device that boots and then fails at first use — which is exactly how the LoRa driver went missing once. The `lora` / `lora-sx126x` / `lora-sync` packages used to arrive via `mip install` and live in `/lib/lora`; they are now vendored in `lib/lora` and frozen with the rest (see `lib/lora/UPSTREAM.md`).
 
 ### Build Options
 
@@ -704,7 +705,11 @@ A power cycle or reset button always starts with a full pool.
 | `lora_boards.py` (submodule) | Frozen in ROM | Board pinout presets (incl. `tdeck_v1_sx1262`) |
 | `adc_reader.py` (submodule) | Frozen in ROM | Battery voltage via board-declared ADC pin + divider |
 
-### Native Modules (on filesystem)
+### Native Modules
+
+Built into the app image as user C modules (`tools/c_modules/`). The `.mpy`
+files below are the natmod builds of the same code, kept for the manual-setup
+path on stock MicroPython.
 
 | File | Description |
 |---|---|
@@ -713,7 +718,12 @@ A power cycle or reset button always starts with a full pool.
 | `lib/tjpgd_fast_xtensawin.mpy` | Native JPEG decoder (TJpgDec) |
 | `lib/codec2_fast_xtensawin.mpy` | Native Codec2 voice codec |
 | `lib/webp_fast_xtensawin.mpy` | Native WebP image decoder |
-| `lib/lora/` | SX1262 LoRa driver (lora-sx126x + lora-sync) |
+
+### Radio Driver
+
+| File | Description |
+|---|---|
+| `lib/lora/` | SX1262 driver — micropython-lib `lora` + `lora-sx126x` + `lora-sync`, vendored verbatim and frozen in ROM; provenance and update steps in `lib/lora/UPSTREAM.md` |
 
 ### Build Tools
 

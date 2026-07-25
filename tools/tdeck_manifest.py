@@ -4,10 +4,14 @@
 # Benefits:
 #   - Zero filesystem RAM usage (executed from ROM)
 #   - Instant import (no filesystem read + parse)
-#   - Replaces all .mpy bytecode files (but NOT natmod .mpy files)
+#   - Replaces all .mpy bytecode files
 #
-# Natmod .mpy files (ed25519_fast, bz2_fast, codec2_fast, tjpgd_fast, webp_fast)
-# must STAY on the filesystem — they contain native machine code that can't be frozen.
+# Everything the app imports has to be listed here or be a built-in C module
+# (tools/c_modules/) — the VFS image tools/build_vfs.py ships carries only
+# main.py, tdeck_config.py and logo.jpg, so an unfrozen import is a device
+# that boots and then fails at first use. The codec/crypto modules that used
+# to be natmod .mpy files on the filesystem (ed25519_fast, bz2_fast,
+# codec2_fast, tjpgd_fast, webp_fast) are built-in C modules now.
 
 # Include the default ESP32-S3 manifest first
 include("$(PORT_DIR)/boards/manifest.py")
@@ -53,6 +57,17 @@ freeze(_root + "/lib", "spleen_6x12.py")
 freeze(_root + "/lib", "shell_6x10.py")
 freeze(_root + "/lib", "shell_5x8.py")
 freeze(_root + "/lib", "shell_4x6.py")
+
+# --- SX1262 radio driver ---
+# micropython-lib's lora / lora-sx126x / lora-sync, vendored verbatim in
+# lib/lora (see lib/lora/UPSTREAM.md for versions and provenance). This is
+# what urns/interfaces/lora.py imports as `from lora import SX1262`; without
+# it the radio never comes up. Pure bytecode, so it freezes like the rest —
+# it only ever lived on the filesystem because it arrived via `mip install`.
+freeze(_root + "/lib", "lora/__init__.py")
+freeze(_root + "/lib", "lora/modem.py")
+freeze(_root + "/lib", "lora/sx126x.py")
+freeze(_root + "/lib", "lora/sync_modem.py")
 
 # --- urns (Reticulum stack) ---
 freeze(_vendor, "urns/__init__.py")
