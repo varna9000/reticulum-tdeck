@@ -242,8 +242,12 @@ The message input scrolls with a `<` marker so long messages stay visible as
 you type, and the bottom bar shows a `[0=rec]` hint when the input is empty.
 Only `0` (the Sym+0 mic key) starts a recording, so messages can begin with any
 letter. Received `[image NNk]` / `[voice Ns]` markers include the size or
-duration. An incoming message while you're scrolled up reading history no
-longer yanks the view to the bottom.
+duration, and lead the text of the message rather than replacing it — an
+attachment sent with a caption still announces itself. File attachments show
+as `[file NAME NNk]`, and anything that arrived but cannot be decoded on board
+still gets a marker naming what it is (`[image 40k png]`, `[audio 12k]`), so no
+attachment ever arrives silently. An incoming message while you're scrolled up
+reading history no longer yanks the view to the bottom.
 
 Message delivery status is shown after each sent message:
 - `..` — pending (send in progress)
@@ -258,15 +262,15 @@ Settings additionally offers a **keyboard backlight** toggle (persisted across b
 
 ### Image Viewing
 
-When a peer sends an image (JPEG via LXMF `FIELD_IMAGE`), it appears as `[image]` in magenta in the chat. Use the trackball to highlight the image line — the hint bar changes to `[click=view]`. Click to open a full-screen view scaled to 320x240. Press any key to return to chat.
+When a peer sends an image — LXMF `FIELD_IMAGE` (MeshChat's image button, Sideband), or an image carried in `FIELD_FILE_ATTACHMENTS` (MeshChat's file attachment button), which is promoted to a viewable image — it appears as `[image NNk]` in magenta in the chat. Use the trackball to highlight the image line — the hint bar changes to `[click=view]`. Click to open a full-screen view scaled to 320x240. Press any key to return to chat.
 
-Images are decoded on-device using the native `tjpgd_fast` TJpgDec module with nearest-neighbor scaling. Up to 3 recent images are cached in RAM; older images appear dimmed with a strikethrough to indicate they've been evicted.
+JPEG and WebP are decoded on-device using the native `tjpgd_fast` (TJpgDec) and `webp_fast` modules with nearest-neighbor scaling. The decoder is chosen from the payload's magic bytes, never from the type string the sender declared — senders label images by MIME subtype, so the same JPEG arrives as `"jpeg"` from MeshChat and `"jpg"` from Sideband. Formats with no decoder on board (PNG, GIF) still show a marker naming the format, and the viewer says so instead of failing blankly. Up to 3 recent images are cached in RAM; older images appear dimmed with a strikethrough to indicate they've been evicted.
 
 ### Voice Messages
 
 Press `0` (the Sym+0 mic key) with an empty input field to start recording a voice message. Capture starts almost immediately — the ES7210 ADC is primed once at boot and kept clocked, so there is no per-recording warm-up (a "Warming mic..." screen appears only in the rare case the ADC needs re-priming). Start speaking when the screen shows `* Recording *`. The recording screen is deliberately **static** — any display update steals GIL cycles from the capture thread and degrades the audio, so there is no live meter or counter. Press any key to stop and send, Escape/Backspace to cancel; recording stops and sends automatically at the 15 s buffer cap. Voice messages are encoded with **Codec2 3200 bps** and sent via LXMF `FIELD_AUDIO` using link-based (DIRECT) delivery. They are compatible with [meshchat](https://github.com/liamcottle/reticulum-meshchat) and other LXMF clients that support Codec2.
 
-Received voice messages appear as `[voice]` in the chat. Highlight with the trackball and click to play.
+Received voice messages appear as `[voice Ns]` in green in the chat. Highlight with the trackball and click to play. Sent voice messages are marked and playable the same way — the codec2 bytes stay cached locally, so you can hear what actually went out. Codec2 2400 and 3200 bps both decode; Opus and the low-bitrate codec2 modes have no decoder on board, and arrive marked `[audio NNk]` rather than silently vanishing.
 
 #### ES7210 Microphone — Technical Details
 

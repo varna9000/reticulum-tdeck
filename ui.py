@@ -398,14 +398,20 @@ class UI:
         self._tcp_connecting = False   # True while an async TCP connect is running
         self._screen_timeout_ms = _SCREEN_TIMEOUT_MS  # configurable inactivity sleep
 
+        # Message ids. Every cache and callback below refers to a message by
+        # id, never by list position: trimming history at MAX_HISTORY shifts
+        # every position, so positions silently point at the wrong message
+        # once a chat fills up. Ids are unique per boot and never reused.
+        self._next_mid = 0
+
         # Image viewer state
-        self._image_cache = {}  # (peer_hash, msg_idx) -> jpeg/webp bytes
-        self._audio_cache = {}  # (peer_hash, msg_idx) -> (codec2_bytes, mode)
-        self._image_cache_order = []  # LRU order of (peer_hash, msg_idx) keys
+        self._image_cache = {}  # (peer_hash, msg_id) -> jpeg/webp bytes
+        self._audio_cache = {}  # (peer_hash, msg_id) -> (codec2_bytes, mode)
+        self._image_cache_order = []  # LRU order of (peer_hash, msg_id) keys
         self._viewing_image = None  # jpeg_bytes currently displayed
         self._image_drawn = False  # True once JPEG has been blitted
-        self._visible_image_lines = {}  # display_row -> msg_idx (populated by draw_chat)
-        self._visible_msg_lines = {}    # display_row -> msg_idx for ALL messages
+        self._visible_image_lines = {}  # display_row -> msg_id (populated by draw_chat)
+        self._visible_msg_lines = {}    # display_row -> msg_id for ALL messages
 
         # Chat lines cache (avoids rebuilding word-wrapped lines on every draw)
         self._chat_lines_cache = None
@@ -917,7 +923,7 @@ class UI:
 
     def _build_chat_lines(self):
         """Build word-wrapped display lines for current chat.
-        Returns list of (is_mine, text, is_first, suffix_len, status, msg_idx, has_image, has_audio)"""
+        Returns list of (is_mine, text, is_first, suffix_len, status, msg_id, has_image, has_audio)"""
         if self.selected_peer is None:
             return []
 
@@ -930,12 +936,13 @@ class UI:
         _suffix_map = {1: " ..", 2: " \xfb", 3: " !", 4: " ~", 5: " >"}
         msgs = self.chat_history.get(self.selected_peer, [])
         lines = []
-        for mi, msg in enumerate(msgs):
+        for msg in msgs:
             is_mine = msg[0]
             text = msg[1]
-            status = msg[3] if len(msg) > 3 else 0
-            has_image = msg[4] if len(msg) > 4 else False
-            has_audio = msg[5] if len(msg) > 5 else False
+            status = msg[3]
+            has_image = msg[4]
+            has_audio = msg[5]
+            mid = msg[6]
             if is_mine:
                 prefix = "me> "
             else:
@@ -950,7 +957,7 @@ class UI:
             for j, wl in enumerate(wrapped):
                 # status_suffix_len: how many chars of suffix on this line
                 slen = len(suffix) if (suffix and j == len(wrapped) - 1) else 0
-                lines.append((is_mine, wl, j == 0, slen, status, mi, has_image, has_audio))
+                lines.append((is_mine, wl, j == 0, slen, status, mid, has_image, has_audio))
         self._chat_lines_cache = lines
         self._chat_lines_peer = self.selected_peer
         return lines
@@ -988,9 +995,9 @@ class UI:
         visible = lines[view_start:view_end]
 
         # Track which visible lines have images/audio
-        self._visible_image_lines = {}  # display_row -> msg_idx
-        self._visible_audio_lines = {}  # display_row -> msg_idx
-        self._visible_msg_lines = {}    # display_row -> msg_idx (all messages)
+        self._visible_image_lines = {}  # display_row -> msg_id
+        self._visible_audio_lines = {}  # display_row -> msg_id
+        self._visible_msg_lines = {}    # display_row -> msg_id (all messages)
 
         # Clamp chat_cursor to visible range
         if self.chat_cursor >= len(visible):
@@ -1002,17 +1009,17 @@ class UI:
             y = BODY_Y + (i + 1) * CHAR_H
             ci = i + 2  # cache index (1=header, 2..12=chat rows)
             if i < len(visible):
-                is_mine, text, is_first, slen, status, msg_idx, has_image, has_audio = visible[i]
+                is_mine, text, is_first, slen, status, mid, has_image, has_audio = visible[i]
 
                 # Track image/audio lines for click detection
                 if has_image and is_first:
-                    self._visible_image_lines[i] = msg_idx
+                    self._visible_image_lines[i] = mid
                 if has_audio and is_first:
-                    self._visible_audio_lines[i] = msg_idx
-                self._visible_msg_lines[i] = msg_idx
+                    self._visible_audio_lines[i] = mid
+                self._visible_msg_lines[i] = mid
 
                 is_highlighted = (i == self.chat_cursor)
-                in_cache = (self.selected_peer, msg_idx) in self._image_cache if has_image and is_first else True
+                in_cache = (self.selected_peer, mid) in self._image_cache if has_image and is_first else True
 
                 # Cache check: skip row if text and highlight state unchanged
                 ck = text + ("\x01" if is_highlighted else "\x00")
@@ -1095,8 +1102,9 @@ class UI:
             _ts_txt = ""
             if self.chat_cursor >= 0 and self.chat_cursor in self._visible_msg_lines:
                 try:
-                    _mi = self._visible_msg_lines[self.chat_cursor]
-                    _ts_txt = _fmt_time(self.chat_history[self.selected_peer][_mi][2])
+                    _hist = self.chat_history[self.selected_peer]
+                    _i = self._msg_index(_hist, self._visible_msg_lines[self.chat_cursor])
+                    _ts_txt = _fmt_time(_hist[_i][2]) if _i >= 0 else ""
                 except Exception:
                     _ts_txt = ""
             # Record hint only when not navigating messages (0 = mic key)
@@ -1126,9 +1134,9 @@ class UI:
 
     # --- Image viewer ---
 
-    def _enter_image_view(self, msg_idx):
-        """Enter full-screen JPEG view for a message with an image."""
-        cache_key = (self.selected_peer, msg_idx)
+    def _enter_image_view(self, mid):
+        """Enter full-screen image view for the message with this id."""
+        cache_key = (self.selected_peer, mid)
         jpeg_data = self._image_cache.get(cache_key)
         if jpeg_data is None:
             return  # image expired from cache
@@ -1139,39 +1147,56 @@ class UI:
         self._state_change_ms = time.ticks_ms()
         self.dirty = True
 
+    def _center_text(self, msg, y, fg):
+        self.tft.text(self.font, msg, max(0, (SCREEN_W - len(msg) * CHAR_W) // 2),
+                      y, fg, 0x0000)
+
     def draw_image(self, spi_acquire_display, spi_release_display):
-        """Render full-screen JPEG: decode+scale to 320x240 in C, blit."""
+        """Render full-screen image: decode+scale to 320x240 in C, blit."""
         if self._image_drawn or self._viewing_image is None:
             return
         gc.collect()
         spi_acquire_display()
         try:
-            data = self._viewing_image
-            # Detect format: WebP starts with RIFF....WEBP
-            if len(data) > 12 and data[:4] == b'RIFF' and data[8:12] == b'WEBP':
-                import webp_fast_xtensawin as _dec
-            else:
-                import tjpgd_fast_xtensawin as _dec
-            # Decode and scale to screen size in native C
-            w, h, rgb565 = _dec.decode(data, SCREEN_W, SCREEN_H)
-            self.tft.fill(0x0000)
-            # Center the decoded image (it may be smaller than the screen)
-            _ix = (SCREEN_W - w) // 2 if w < SCREEN_W else 0
-            _iy = (SCREEN_H - h) // 2 if h < SCREEN_H else 0
-            self.tft.blit_buffer(rgb565, _ix, _iy, w, h)
-            del rgb565
-            gc.collect()
-            # Hint bar at bottom (centered: 14 chars * 8px = 112, (320-112)/2=104)
+            try:
+                data = self._viewing_image
+                # Pick the decoder from the magic bytes, never from the type
+                # the sender declared — MeshChat labels JPEGs "jpeg" and
+                # passes through whatever the browser's file picker reported.
+                _dec = None
+                if len(data) > 12 and data[:4] == b'RIFF' and data[8:12] == b'WEBP':
+                    import webp_fast_xtensawin as _dec
+                elif len(data) > 2 and data[0] == 0xFF and data[1] == 0xD8:
+                    import tjpgd_fast_xtensawin as _dec
+                if _dec is None:
+                    _fmt = ("PNG" if data[:4] == b'\x89PNG'
+                            else "GIF" if data[:3] == b'GIF' else "This format")
+                    self.tft.fill(0x0000)
+                    self._center_text(_fmt + " is not supported", 104, self.NEON_MAG)
+                    self._center_text("JPEG and WebP only", 128, self.DIM_CYAN)
+                else:
+                    # Decode and scale to screen size in native C
+                    w, h, rgb565 = _dec.decode(data, SCREEN_W, SCREEN_H)
+                    self.tft.fill(0x0000)
+                    # Center the decoded image (may be smaller than the screen)
+                    _ix = (SCREEN_W - w) // 2 if w < SCREEN_W else 0
+                    _iy = (SCREEN_H - h) // 2 if h < SCREEN_H else 0
+                    self.tft.blit_buffer(rgb565, _ix, _iy, w, h)
+                    del rgb565
+                    gc.collect()
+            except ImportError:
+                self.tft.fill(0x0000)
+                self._center_text("No image decoder", 104, self.NEON_MAG)
+                self._center_text("decoder natmod missing", 128, self.DIM_CYAN)
+            except Exception:
+                self.tft.fill(0x0000)
+                self._center_text("Image decode error", 112, self.NEON_MAG)
+            # Hint bar at the bottom — on the error screens too, or nothing on
+            # display tells the user how to get back to the chat.
             self.tft.fill_rect(0, SCREEN_H - 18, SCREEN_W, 18, 0x0000)
-            self.tft.text(self.font, "any key = back", 104, SCREEN_H - 17, self.DIM_CYAN, 0x0000)
-        except ImportError:
-            self.tft.fill(0x0000)
-            self.tft.text(self.font, "No JPEG decoder", 56, 104, self.NEON_MAG, 0x0000)
-            self.tft.text(self.font, "Upload tjpgd_fast .mpy", 32, 128, self.DIM_CYAN, 0x0000)
-        except Exception:
-            self.tft.fill(0x0000)
-            self.tft.text(self.font, "Image decode error", 40, 112, self.NEON_MAG, 0x0000)
-        spi_release_display()
+            self._center_text("any key = back", SCREEN_H - 17, self.DIM_CYAN)
+        finally:
+            spi_release_display()
         self._image_drawn = True
 
     def _exit_image_view(self):
@@ -1972,9 +1997,9 @@ class UI:
             if len(self.cmd_buf) > 0 and self.selected_peer:
                 text = self.cmd_buf.decode()
                 self.cmd_buf = bytearray()
-                msg_idx = self.add_chat_message(self.selected_peer, True, text, status=1)
+                mid = self.add_chat_message(self.selected_peer, True, text, status=1)
                 if self.on_send:
-                    self.on_send(self.selected_peer, text, msg_idx)
+                    self.on_send(self.selected_peer, text, mid)
                 self.dirty = True
             return True
         elif ch == 0x1B:  # Escape — back to node list
@@ -2600,14 +2625,14 @@ class UI:
             elif self.state == STATE_CHAT:
                 # If cursor is on an image line, open it
                 if self.chat_cursor >= 0 and self.chat_cursor in self._visible_image_lines:
-                    msg_idx = self._visible_image_lines[self.chat_cursor]
-                    cache_key = (self.selected_peer, msg_idx)
+                    mid = self._visible_image_lines[self.chat_cursor]
+                    cache_key = (self.selected_peer, mid)
                     if cache_key in self._image_cache:
-                        self._enter_image_view(msg_idx)
+                        self._enter_image_view(mid)
                 # If cursor is on a voice line, play it
                 elif self.chat_cursor >= 0 and self.chat_cursor in self._visible_audio_lines:
-                    msg_idx = self._visible_audio_lines[self.chat_cursor]
-                    cache_key = (self.selected_peer, msg_idx)
+                    mid = self._visible_audio_lines[self.chat_cursor]
+                    cache_key = (self.selected_peer, mid)
                     if cache_key in self._audio_cache and self.on_audio_play:
                         audio_data, audio_mode = self._audio_cache[cache_key]
                         self.on_audio_play(audio_data, audio_mode)
@@ -2783,6 +2808,11 @@ class UI:
         self.peers.clear()
         self._peer_keys.clear()
         self.chat_history.clear()
+        # Media is keyed by message id, which nothing will reference again
+        # once the history holding those ids is gone.
+        self._image_cache.clear()
+        self._audio_cache.clear()
+        self._image_cache_order = []
         self.unread = {}
         self.selected_peer = None
         self.selected_idx = 0
@@ -2902,25 +2932,45 @@ class UI:
         self._cache = [''] * 15
         self.dirty = True
 
+    @staticmethod
+    def _msg_index(hist, mid):
+        """List position of a message id, or -1 once it has aged out. Walks
+        backwards: status updates and clicks target recent messages."""
+        for i in range(len(hist) - 1, -1, -1):
+            if hist[i][6] == mid:
+                return i
+        return -1
+
+    def _drop_message(self, dest_hash, msg):
+        """Release the media held by a message that just aged out of history.
+        Ids are never reused, so nothing else would ever collect these."""
+        key = (dest_hash, msg[6])
+        self._image_cache.pop(key, None)
+        self._audio_cache.pop(key, None)
+        if key in self._image_cache_order:
+            self._image_cache_order.remove(key)
+
     def add_chat_message(self, dest_hash, is_mine, text, status=0, image=None, audio=None, audio_mode=None):
-        """Add a message to chat history. Returns index of the added message."""
+        """Add a message to chat history. Returns its id — a handle that stays
+        valid while the chat scrolls, which a list position does not."""
         if dest_hash not in self.chat_history:
             self.chat_history[dest_hash] = []
         hist = self.chat_history[dest_hash]
         has_image = image is not None
         has_audio = audio is not None
-        hist.append((is_mine, text, time.time(), status, has_image, has_audio))
-        if len(hist) > MAX_HISTORY:
-            hist.pop(0)
-        msg_idx = len(hist) - 1
+        mid = self._next_mid
+        self._next_mid += 1
+        hist.append((is_mine, text, time.time(), status, has_image, has_audio, mid))
+        while len(hist) > MAX_HISTORY:
+            self._drop_message(dest_hash, hist.pop(0))
 
         # Cache audio data for replay
         if audio is not None:
-            self._audio_cache[(dest_hash, msg_idx)] = (audio, audio_mode)
+            self._audio_cache[(dest_hash, mid)] = (audio, audio_mode)
 
         # Cache image data (LRU eviction)
         if image is not None:
-            cache_key = (dest_hash, msg_idx)
+            cache_key = (dest_hash, mid)
             self._image_cache[cache_key] = image
             self._image_cache_order.append(cache_key)
             while len(self._image_cache_order) > MAX_CACHED_IMAGES:
@@ -2968,21 +3018,24 @@ class UI:
             # recording: the screen redraw would steal GIL from the mic thread;
             # the message is stored and shows when recording ends.
             self.dirty = True
-        return msg_idx
+        return mid
 
-    def update_message_status(self, dest_hash, index, status):
-        """Update delivery status of a specific message."""
+    def update_message_status(self, dest_hash, mid, status):
+        """Update delivery status of a message, located by id: a long-running
+        send outlives its row's position, and may outlive the row itself."""
         hist = self.chat_history.get(dest_hash)
-        if hist and 0 <= index < len(hist):
-            old = hist[index]
-            has_image = old[4] if len(old) > 4 else False
-            has_audio = old[5] if len(old) > 5 else False
-            hist[index] = (old[0], old[1], old[2], status, has_image, has_audio)
-            if self.state == STATE_CHAT and self.selected_peer == dest_hash:
-                self._invalidate_chat_lines()
-                for i in range(1, BODY_ROWS + 1):
-                    self._cache[i] = ''
-                self.dirty = True
+        if not hist:
+            return
+        i = self._msg_index(hist, mid)
+        if i < 0:
+            return  # aged out of history while the send was in flight
+        old = hist[i]
+        hist[i] = (old[0], old[1], old[2], status, old[4], old[5], old[6])
+        if self.state == STATE_CHAT and self.selected_peer == dest_hash:
+            self._invalidate_chat_lines()
+            for j in range(1, BODY_ROWS + 1):
+                self._cache[j] = ''
+            self.dirty = True
 
     def update_battery(self):
         """Read battery voltage via adc_reader (None if no battery sense)."""

@@ -196,7 +196,8 @@ gc.collect()
 
 # --- Init Reticulum ---
 from urns import Reticulum
-from urns.lxmf import LXMRouter, FIELD_IMAGE, FIELD_AUDIO
+from urns.lxmf import (LXMRouter, FIELD_IMAGE, FIELD_AUDIO,
+                       FIELD_FILE_ATTACHMENTS)
 from urns.log import LOG_NONE, LOG_NOTICE, LOG_DEBUG
 
 log_map = {0: LOG_NONE, 1: LOG_NONE, 2: LOG_DEBUG}
@@ -287,6 +288,117 @@ def _compute_lxmf_hash(dest_hash):
     return None
 
 
+# Image formats with an on-device decoder (see ui.draw_image).
+_VIEWABLE_IMG = ("jpg", "webp")
+
+
+def _sniff_image(data):
+    """Identify image bytes by magic number: 'jpg', 'webp', 'png', 'gif',
+    or None when the payload is not a recognised image.
+
+    Senders label images by MIME subtype, so the declared type is only a
+    hint — MeshChat sends "jpeg" for the format Sideband calls "jpg", and
+    passes through whatever else the browser reports. The bytes decide."""
+    if len(data) < 12:
+        return None
+    if data[0] == 0xFF and data[1] == 0xD8:
+        return "jpg"
+    if data[:4] == b'RIFF' and data[8:12] == b'WEBP':
+        return "webp"
+    if data[:4] == b'\x89PNG':
+        return "png"
+    if data[:3] == b'GIF':
+        return "gif"
+    return None
+
+
+def _kb(data):
+    return str(max(1, len(data) // 1024)) + "k"
+
+
+def _image_marker(data):
+    """'[image 12k]', or '[image 12k png]' when nothing on board decodes it."""
+    fmt = _sniff_image(data)
+    if fmt in _VIEWABLE_IMG:
+        return "[image " + _kb(data) + "]"
+    return "[image " + _kb(data) + " " + (fmt or "?") + "]"
+
+
+def _with_markers(content, markers):
+    """Put attachment markers in front of the caption. They lead rather than
+    replace, so an image or voice clip sent *with* text still announces
+    itself — that combination used to render as an ordinary message."""
+    if not markers:
+        return content
+    prefix = " ".join(markers)
+    if content and content != "(binary)":
+        return prefix + " " + content
+    return prefix
+
+
+def _parse_attachments(fields):
+    """Pull image/voice/file attachments out of an LXMF fields dict.
+
+    Returns (image_bytes, codec2_bytes, codec2_mode, markers). Every
+    attachment field yields a marker even when it cannot be decoded — a
+    message must never arrive looking like plain text when it carried a
+    photo or a voice clip."""
+    image_data = None
+    audio_data = None
+    audio_codec_mode = None
+    markers = []
+
+    img_field = fields.get(FIELD_IMAGE)
+    if img_field is not None:
+        if (isinstance(img_field, (list, tuple)) and len(img_field) >= 2
+                and isinstance(img_field[1], (bytes, bytearray))):
+            image_data = bytes(img_field[1])
+            markers.append(_image_marker(image_data))
+        else:
+            markers.append("[image ?]")
+
+    aud_field = fields.get(FIELD_AUDIO)
+    if aud_field is not None:
+        if (isinstance(aud_field, (list, tuple)) and len(aud_field) >= 2
+                and isinstance(aud_field[1], (bytes, bytearray))):
+            aud_mode = aud_field[0]
+            blob = bytes(aud_field[1])
+            if aud_mode in (0x08, 0x09):  # AM_CODEC2_2400 / AM_CODEC2_3200
+                audio_data = blob
+                # LXMF mode -> codec2 internal mode (3200=0, 2400=1)
+                audio_codec_mode = 0 if aud_mode == 0x09 else 1
+                bpf = 8 if aud_mode == 0x09 else 6  # bytes/frame, 20 ms each
+                markers.append("[voice " +
+                               str((len(blob) // bpf) * 20 // 1000) + "s]")
+            else:
+                # Opus and the low-bitrate codec2 modes have no decoder here,
+                # but the row still has to say a voice message came in.
+                if DEBUG >= 1:
+                    print("[Audio] unplayable mode:", aud_mode)
+                markers.append("[audio " + _kb(blob) + "]")
+        else:
+            markers.append("[audio ?]")
+
+    atts = fields.get(FIELD_FILE_ATTACHMENTS)
+    if isinstance(atts, (list, tuple)):
+        for att in atts:
+            if not (isinstance(att, (list, tuple)) and len(att) >= 2
+                    and isinstance(att[1], (bytes, bytearray))):
+                markers.append("[file ?]")
+                continue
+            blob = bytes(att[1])
+            # A photo sent through the file picker is still a photo: promote
+            # the first decodable one so it opens in the viewer.
+            if image_data is None and _sniff_image(blob) in _VIEWABLE_IMG:
+                image_data = blob
+                markers.append(_image_marker(blob))
+            else:
+                name = att[0] if isinstance(att[0], str) else "file"
+                markers.append("[file " + name[:16] + " " + _kb(blob) + "]")
+
+    return image_data, audio_data, audio_codec_mode, markers
+
+
 def on_message(message):
     """Incoming LXMF message handler."""
     try:
@@ -307,52 +419,12 @@ def _on_message_inner(message):
     if _pk in gui.peers:
         gui.peers[_pk]["seen"] = time.time()
 
-    # Extract image if present
-    image_data = None
+    # Attachments
     fields = message.fields if hasattr(message, 'fields') else {}
-    if FIELD_IMAGE in fields:
-        img_field = fields[FIELD_IMAGE]
-        if isinstance(img_field, (list, tuple)) and len(img_field) >= 2:
-            if img_field[0] in ("jpg", "webp", "png") and isinstance(img_field[1], (bytes, bytearray)):
-                image_data = bytes(img_field[1])
-                _kb = max(1, len(image_data) // 1024)
-                if not content or content == "(binary)":
-                    content = "[image " + str(_kb) + "k]"
-
-    # Extract audio if present
-    audio_data = None
-    if FIELD_AUDIO in fields:
-        aud_field = fields[FIELD_AUDIO]
-        if DEBUG >= 1:
-            print("[Audio] field type:", type(aud_field).__name__,
-                  "len:", len(aud_field) if hasattr(aud_field, '__len__') else "?")
-            if isinstance(aud_field, (list, tuple)) and len(aud_field) >= 1:
-                print("[Audio] mode:", aud_field[0], "type:", type(aud_field[0]).__name__)
-                if len(aud_field) >= 2:
-                    print("[Audio] data type:", type(aud_field[1]).__name__,
-                          "len:", len(aud_field[1]) if hasattr(aud_field[1], '__len__') else "?")
-        if isinstance(aud_field, (list, tuple)) and len(aud_field) >= 2:
-            aud_mode = aud_field[0]
-            if isinstance(aud_field[1], (bytes, bytearray)):
-                if DEBUG >= 1:
-                    d = aud_field[1]
-                    print("[Audio]", len(d), "B mode", aud_mode)
-                if aud_mode in (0x08, 0x09):  # AM_CODEC2_2400 or AM_CODEC2_3200
-                    audio_data = bytes(aud_field[1])
-                    # Map LXMF audio mode to codec2 internal mode
-                    # CODEC2_MODE_3200=0, CODEC2_MODE_2400=1
-                    audio_codec_mode = 0 if aud_mode == 0x09 else 1
-                    # Duration: 3200=8 B/frame, 2400=6 B/frame, 20ms/frame
-                    _bpf = 8 if aud_mode == 0x09 else 6
-                    _vm = "[voice " + str((len(audio_data) // _bpf) * 20 // 1000) + "s]"
-                    if not content or content == "(binary)":
-                        content = _vm
-                    else:
-                        content = _vm + " " + content
-                elif DEBUG >= 1:
-                    print("[Audio] unsupported mode:", aud_mode)
-    elif DEBUG >= 2:
-        print("[Audio] no FIELD_AUDIO in fields, keys:", list(fields.keys()) if fields else "none")
+    if DEBUG >= 1 and fields:
+        print("[RX] fields:", list(fields.keys()))
+    image_data, audio_data, audio_codec_mode, markers = _parse_attachments(fields)
+    content = _with_markers(content, markers)
 
     # Map LXMF source_hash to GUI peer key via precomputed mapping
     peer_key = _lxmf_to_peer.get(source_hash)
@@ -388,7 +460,7 @@ def _on_message_inner(message):
 
     # Add to chat under the GUI peer key
     gui.add_chat_message(peer_key, False, content, image=image_data,
-                         audio=audio_data, audio_mode=audio_codec_mode if audio_data else None)
+                         audio=audio_data, audio_mode=audio_codec_mode)
     if DEBUG >= 1:
         print("[RX] chat ok")
 
@@ -480,13 +552,13 @@ router.register_progress_callback(on_progress)
 
 # --- GUI -> LXMF wiring ---
 
-def gui_send(dest_hash, text, msg_idx=None):
+def gui_send(dest_hash, text, msg_id=None):
     """Called by GUI when user sends a message."""
     import uasyncio as asyncio
-    asyncio.create_task(_async_send(dest_hash, text, msg_idx))
+    asyncio.create_task(_async_send(dest_hash, text, msg_id))
 
 
-async def _watch_queued(dest_hash, msg_idx):
+async def _watch_queued(dest_hash, msg_id):
     """A send was queued behind a path request (status 4). The router
     re-sends by itself once a path arrives — reflect that in the GUI."""
     import uasyncio as asyncio
@@ -494,19 +566,19 @@ async def _watch_queued(dest_hash, msg_idx):
     for _ in range(13):  # ~26s; router's path request times out at 15s
         await asyncio.sleep(2)
         if Transport.has_path(dest_hash):
-            gui.update_message_status(dest_hash, msg_idx, 2)
+            gui.update_message_status(dest_hash, msg_id, 2)
             gui.dirty = True
             sound.play_tx()
             if DEBUG >= 1:
                 print("[TX] Route found, message sent to", dest_hash.hex()[:8])
             return
-    gui.update_message_status(dest_hash, msg_idx, 3)
+    gui.update_message_status(dest_hash, msg_id, 3)
     gui.dirty = True
     if DEBUG >= 1:
         print("[TX] No route found for", dest_hash.hex()[:8])
 
 
-async def _track_delivery(msg, dest_hash, msg_idx, timeout=150):
+async def _track_delivery(msg, dest_hash, msg_id, timeout=150):
     """Watch a DIRECT LXMessage (status 5) until the transfer concludes:
     DELIVERED -> checkmark, FAILED -> '!'. Covers link setup + resource
     transfer over multi-hop LoRa, hence the generous timeout."""
@@ -518,34 +590,34 @@ async def _track_delivery(msg, dest_hash, msg_idx, timeout=150):
         t += 2
         state = getattr(msg, "state", None)
         if state == LXMessage.DELIVERED:
-            gui.update_message_status(dest_hash, msg_idx, 2)
+            gui.update_message_status(dest_hash, msg_id, 2)
             gui.dirty = True
             if DEBUG >= 1:
                 print("[TX] Delivered to", dest_hash.hex()[:8])
             return
         if state == LXMessage.FAILED:
-            gui.update_message_status(dest_hash, msg_idx, 3)
+            gui.update_message_status(dest_hash, msg_id, 3)
             gui.dirty = True
             if DEBUG >= 1:
                 print("[TX] Delivery failed to", dest_hash.hex()[:8])
             return
         if state == LXMessage.SENT:
             # Downgraded to a single link packet — no proof will follow.
-            gui.update_message_status(dest_hash, msg_idx, 2)
+            gui.update_message_status(dest_hash, msg_id, 2)
             gui.dirty = True
             return
     # Still unresolved — leave the '>' marker as-is (honest: sent, unproven)
 
 
-async def _async_send(dest_hash, text, msg_idx=None):
+async def _async_send(dest_hash, text, msg_id=None):
     """Send LXMF message as async task (crypto is slow)."""
     import uasyncio as asyncio
     from urns.lxmf import LXMessage
     await asyncio.sleep(0)
 
-    # msg_idx is passed from GUI (message already added with status=1)
-    if msg_idx is None:
-        msg_idx = gui.add_chat_message(dest_hash, True, text, status=1)
+    # msg_id is passed from GUI (message already added with status=1)
+    if msg_id is None:
+        msg_id = gui.add_chat_message(dest_hash, True, text, status=1)
 
     try:
         # Force OPPORTUNISTIC: a short text goes as its own mesh packet and
@@ -557,9 +629,9 @@ async def _async_send(dest_hash, text, msg_idx=None):
                                   desired_method=LXMessage.OPPORTUNISTIC)
         if msg is True:
             # Queued behind a path request
-            gui.update_message_status(dest_hash, msg_idx, 4)
+            gui.update_message_status(dest_hash, msg_id, 4)
             gui.dirty = True
-            asyncio.create_task(_watch_queued(dest_hash, msg_idx))
+            asyncio.create_task(_watch_queued(dest_hash, msg_id))
             if DEBUG >= 1:
                 print("[TX] Queued (path request) for", dest_hash.hex()[:8])
         elif msg:
@@ -570,21 +642,21 @@ async def _async_send(dest_hash, text, msg_idx=None):
             if (getattr(msg, "method", None) == LXMessage.DIRECT
                     and getattr(msg, "state", None) != LXMessage.SENT):
                 # DIRECT resource transfer — a delivery proof follows; track it.
-                gui.update_message_status(dest_hash, msg_idx, 5)
-                asyncio.create_task(_track_delivery(msg, dest_hash, msg_idx))
+                gui.update_message_status(dest_hash, msg_id, 5)
+                asyncio.create_task(_track_delivery(msg, dest_hash, msg_id))
             else:
                 # Opportunistic, or a DIRECT single packet already SENT over the
                 # link (no proof follows) — mark sent so it doesn't hang on '>'.
-                gui.update_message_status(dest_hash, msg_idx, 2)
+                gui.update_message_status(dest_hash, msg_id, 2)
             gui.dirty = True
         else:
-            gui.update_message_status(dest_hash, msg_idx, 3)
+            gui.update_message_status(dest_hash, msg_id, 3)
             gui.add_chat_message(dest_hash, True, "(send failed: unknown peer)")
             gui.dirty = True
             if DEBUG >= 1:
                 print("[TX] Failed: unknown identity for", dest_hash.hex()[:8])
     except Exception as e:
-        gui.update_message_status(dest_hash, msg_idx, 3)
+        gui.update_message_status(dest_hash, msg_id, 3)
         gui.add_chat_message(dest_hash, True, "(send error)")
         gui.dirty = True
         if DEBUG >= 1:
@@ -1298,25 +1370,28 @@ async def _encode_and_send_voice(dest_hash, pcm_bytes):
         from urns.lxmf import FIELD_AUDIO, LXMessage
         fields = {FIELD_AUDIO: [0x09, c2_data]}  # 0x09 = AM_CODEC2_3200
         # Local row shows the duration; the wire text stays a clean marker.
-        msg_idx = gui.add_chat_message(dest_hash, True, "[voice " + str(dur) + "s]", status=1)
+        # Keeping the codec2 bytes makes the sent row a real voice row —
+        # green marker, and replayable to check what actually went out.
+        msg_id = gui.add_chat_message(dest_hash, True, "[voice " + str(dur) + "s]",
+                                       status=1, audio=c2_data, audio_mode=0)
         msg = router.send_message(dest_hash, "[voice]", fields=fields,
                                   desired_method=LXMessage.DIRECT)
         if msg is True:
             # Queued behind a path request
-            gui.update_message_status(dest_hash, msg_idx, 4)
-            asyncio.create_task(_watch_queued(dest_hash, msg_idx))
+            gui.update_message_status(dest_hash, msg_id, 4)
+            asyncio.create_task(_watch_queued(dest_hash, msg_id))
         elif msg:
             if getattr(msg, "state", None) == LXMessage.SENT:
                 # Short voice fit in a single link packet — no proof follows.
-                gui.update_message_status(dest_hash, msg_idx, 2)
+                gui.update_message_status(dest_hash, msg_id, 2)
             else:
                 # DIRECT resource: '>' until the transfer concludes (proof, or
                 # the sender-side timeout that now fails a stalled transfer).
-                gui.update_message_status(dest_hash, msg_idx, 5)
-                asyncio.create_task(_track_delivery(msg, dest_hash, msg_idx))
+                gui.update_message_status(dest_hash, msg_id, 5)
+                asyncio.create_task(_track_delivery(msg, dest_hash, msg_id))
             sound.play_tx()
         else:
-            gui.update_message_status(dest_hash, msg_idx, 3)
+            gui.update_message_status(dest_hash, msg_id, 3)
     except Exception as e:
         if DEBUG >= 1:
             print("[Audio] encode/send error:", e)
