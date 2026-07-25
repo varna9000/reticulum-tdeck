@@ -98,6 +98,99 @@ def test_nonfatal_error_keeps_running():
     print("ok test_nonfatal_error_keeps_running")
 
 
+def test_geometry_reaches_the_pty():
+    """connect() geometry is what ExecuteCommand carries, and a resize during
+    the connect is not lost (over LoRa that window is 30-90s)."""
+    _reset(rnsh_client.IDLE)
+    # connect() schedules the session coroutine; stub the scheduler so the
+    # host test exercises only the geometry bookkeeping.
+    import uasyncio as _aio
+    _saved = getattr(_aio, "create_task", None)
+
+    def _fake_create_task(coro):
+        coro.close()
+        return None
+
+    _aio.create_task = _fake_create_task
+    try:
+        rnsh_client.connect(b"\x01" * 16, cols=53, rows=16)
+    finally:
+        if _saved is not None:
+            _aio.create_task = _saved
+    assert (rnsh_client._term_cols, rnsh_client._term_rows) == (53, 16), \
+        (rnsh_client._term_cols, rnsh_client._term_rows)
+
+    # font switched while still CONNECTING: no WindowSize can be sent yet,
+    # but the pending ExecuteCommand must pick up the new size.
+    class Ch:
+        def __init__(self): self.sent = []
+        def is_ready_to_send(self): return True
+        def send(self, m): self.sent.append(m)
+
+    ch = Ch()
+    rnsh_client._channel = ch
+    rnsh_client._state = rnsh_client.CONNECTING
+    rnsh_client.resize(32, 80)
+    assert ch.sent == [], "WindowSize sent before the session was up"
+    assert (rnsh_client._term_cols, rnsh_client._term_rows) == (80, 32), \
+        "mid-connect resize was dropped"
+
+    msg = P.ExecuteCommandMessage(
+        cmdline=None, pipe_stdin=False, pipe_stdout=False, pipe_stderr=False,
+        tcflags=None, term="vt100", rows=rnsh_client._term_rows,
+        cols=rnsh_client._term_cols, hpix=None, vpix=None)
+    rt = P.ExecuteCommandMessage()
+    rt.unpack(msg.pack())
+    assert (rt.cols, rt.rows) == (80, 32), (rt.cols, rt.rows)
+    assert rt.term == "vt100", rt.term
+
+    # once RUNNING, a switch goes out as a WindowSize with rows before cols
+    rnsh_client._state = rnsh_client.RUNNING
+    rnsh_client.resize(16, 53)
+    assert len(ch.sent) == 1, ch.sent
+    w = P.WindowSizeMessage()
+    w.unpack(ch.sent[0].pack())
+    assert (w.rows, w.cols) == (16, 53), (w.rows, w.cols)
+    rnsh_client._channel = None
+    print("ok test_geometry_reaches_the_pty")
+
+
+def test_window_size_retries_when_channel_busy():
+    """A resize issued while the Channel window is full must not be lost."""
+    _reset(rnsh_client.RUNNING)
+
+    class Ch:
+        def __init__(self): self.sent = []; self.ready = False
+        def is_ready_to_send(self): return self.ready
+        def send(self, m): self.sent.append(m)
+
+    ch = Ch()
+    rnsh_client._channel = ch
+    rnsh_client._size_sent = (16, 53)
+
+    rnsh_client.resize(32, 80)                  # channel busy -> dropped
+    assert ch.sent == [], ch.sent
+    assert rnsh_client._size_sent == (16, 53), rnsh_client._size_sent
+    assert (rnsh_client._term_rows, rnsh_client._term_cols) == (32, 80)
+
+    # what _pump_loop does each tick once the window frees up
+    ch.ready = True
+    assert rnsh_client._size_sent != (rnsh_client._term_rows, rnsh_client._term_cols)
+    rnsh_client._send_window_size()
+    assert len(ch.sent) == 1, ch.sent
+    w = P.WindowSizeMessage()
+    w.unpack(ch.sent[0].pack())
+    assert (w.rows, w.cols) == (32, 80), (w.rows, w.cols)
+    assert rnsh_client._size_sent == (32, 80)
+
+    # settled: no further sends
+    rnsh_client._send_window_size()
+    assert len(ch.sent) == 2, "resend guard is in _pump_loop, not the sender"
+    rnsh_client._channel = None
+    rnsh_client._size_sent = None
+    print("ok test_window_size_retries_when_channel_busy")
+
+
 def test_noop_ignored():
     g = _reset()
     rnsh_client._on_message(P.NoopMessage())

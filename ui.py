@@ -33,9 +33,21 @@ _SHELL_CTRL_ITEMS = (
     ("Down",               "send", b"\x1b[B"),
     ("Esc",                "send", b"\x1b"),
     ("Line/Char mode",     "mode", None),
+    # Label is computed live by _shell_menu_label() — it carries the grid.
+    ("Font",               "font", None),
     ("Quit shell",         "quit", None),
     ("Close menu",         "close", None),
 )
+
+# Shell terminal fonts, cycled largest-first from the control menu, all in the
+# CP437+CP866 slot layout _tb() maps into:
+#   spleen_6x12 -> 53x16   shell_6x10 -> 53x19
+#   shell_5x8   -> 64x24   shell_4x6  -> 80x32
+# Default is Spleen (BSD-2) to match the system font; the denser rungs are X11
+# misc-fixed (public domain), which is the only family carrying Cyrillic at
+# those sizes. 6x12 is the largest cell that still clears the old 40-column
+# grid and divides the 192px body evenly.
+_SHELL_FONTS = ("spleen_6x12", "shell_6x10", "shell_5x8", "shell_4x6")
 
 # Settings sub-pages
 _SET_MAIN      = 0
@@ -144,6 +156,85 @@ def _age(ts):
     return str(d // 86400) + "d"
 
 
+def _sw565(c):
+    """Byte-swap an RGB565 colour for framebuf.
+
+    framebuf stores 16-bit pixels in native (little-endian) order and
+    blit_buffer() ships the bytes to the panel raw, but the ST7789 wants
+    big-endian on the wire. tft.text() hides this by swapping internally
+    (_swap_bytes in st7789.c); blit_buffer does not, so we pre-swap here."""
+    return ((c << 8) | (c >> 8)) & 0xFFFF
+
+
+class _ShellFont:
+    """Glyph cache + row compositor for the rnsh terminal.
+
+    The shell deliberately does NOT render through tft.text() or tft.write().
+    Both cost one SPI window-set per glyph — measured at ~210us on this board
+    — so a body repaint costs 135ms for today's 40x12 text() screen and 565ms
+    for 80x32 via write(). Compositing a whole row into a framebuf and pushing
+    it with a single blit_buffer() measures 93ms at 64x24 and 102ms at 80x32
+    on real shell output: up to five times the characters, still faster than
+    the screen it replaces. tft.text() stays in use everywhere else.
+
+    Glyphs are 1-bit MONO_HLSB views over the font module's own bytes, drawn
+    through a 2-entry palette. That is ~9ms/screen slower than pre-rendered
+    RGB565 sprites, but it lets the foreground vary per cell — which is what
+    SGR colour needs, and we declare TERM=vt100 so those codes already arrive.
+    """
+
+    def __init__(self, modname, fg, bg):
+        import framebuf
+        self._fb = framebuf
+        mod = __import__(modname)
+        self.name = modname
+        self.w = mod.WIDTH
+        self.h = mod.HEIGHT
+        self.cols = SCREEN_W // self.w
+        self.rows = (BODY_ROWS * CHAR_H) // self.h   # same 192px body
+        # One writable copy of the glyph data; per-slot FrameBuffers are
+        # memoryview slices over it, built on first use — shell output touches
+        # ~95 of the 256 slots and each FrameBuffer object costs ~50 bytes.
+        self._glyphdata = bytearray(mod.FONT)
+        self._mv = memoryview(self._glyphdata)
+        self._glyphs = [None] * 256
+        self._rowbuf = bytearray(SCREEN_W * self.h * 2)
+        self._rowfb = framebuf.FrameBuffer(self._rowbuf, SCREEN_W, self.h,
+                                           framebuf.RGB565)
+        self._palbuf = bytearray(4)
+        self._pal = framebuf.FrameBuffer(self._palbuf, 2, 1, framebuf.RGB565)
+        self.set_colors(fg, bg)
+
+    def set_colors(self, fg, bg):
+        self._bg = _sw565(bg)
+        self._pal.pixel(0, 0, self._bg)
+        self._pal.pixel(1, 0, _sw565(fg))
+
+    def _glyph(self, slot):
+        g = self._glyphs[slot]
+        if g is None:
+            h = self.h
+            g = self._fb.FrameBuffer(self._mv[slot * h:(slot + 1) * h],
+                                     self.w, h, self._fb.MONO_HLSB)
+            self._glyphs[slot] = g
+        return g
+
+    def draw_row(self, tft, slots, y):
+        """Composite one row of glyph-index bytes (ui._tb output) and push it
+        with a single blit_buffer. Spaces are skipped — the row is already
+        background — so short lines cost proportionally less."""
+        fb = self._rowfb
+        fb.fill(self._bg)
+        pal = self._pal
+        w = self.w
+        x = 0
+        for s in slots:
+            if s != 0x20:
+                fb.blit(self._glyph(s), x, 0, -1, pal)
+            x += w
+        tft.blit_buffer(self._rowbuf, 0, y, SCREEN_W, self.h)
+
+
 class UI:
 
     def __init__(self, tft, font, get_key_func, node_name="T-Deck"):
@@ -215,6 +306,9 @@ class UI:
         self._shell_dest = None
         self._shell_menu = False          # control-key menu overlay open?
         self._shell_menu_idx = 0
+        self._shell_font = None           # _ShellFont, created on connect
+        self._shell_font_idx = 0          # index into _SHELL_FONTS
+        self._shell_cache = []            # body-row cache (own grid, own size)
 
         # Browser page view (STATE_BROWSER)
         self.browser_lines = []   # micron.render() rows of styled spans
@@ -1238,6 +1332,39 @@ class UI:
             return
         self._start_shell(self._shell_keys[self.ssh_idx])
 
+    def _set_shell_font(self, notify=False):
+        """(Re)build the shell row compositor for the current _shell_font_idx.
+        With notify set, the new geometry is also pushed to the remote pty.
+
+        Returns the _ShellFont, or None if no font module could be imported —
+        draw_shell then falls back to the 8x16 tft.text() grid so a missing
+        font file degrades the shell instead of breaking it."""
+        self._shell_font = None
+        gc.collect()
+        for _ in range(len(_SHELL_FONTS)):
+            name = _SHELL_FONTS[self._shell_font_idx]
+            try:
+                self._shell_font = _ShellFont(name, self.BODY_FG, self.BG_DARK)
+                break
+            except Exception as e:
+                print("shell font", name, "unavailable:", e)
+                self._shell_font_idx = (self._shell_font_idx + 1) % len(_SHELL_FONTS)
+        sf = self._shell_font
+        cols = sf.cols if sf else COLS
+        rows = sf.rows if sf else BODY_ROWS
+        self._shell_cache = [''] * rows
+        if self._terminal is not None:
+            self._terminal.cols = cols
+        if notify and self.on_shell_resize:
+            try:
+                self.on_shell_resize(rows, cols)
+            except Exception:
+                pass
+        self._shell_view = 0
+        self._cache = [''] * 15
+        self.dirty = True
+        return sf
+
     def _start_shell(self, dest_hash):
         """Enter the shell screen and kick off the connection."""
         self._shell_dest = dest_hash
@@ -1248,14 +1375,18 @@ class UI:
         self._shell_escape = False
         self._shell_view = 0
         self._shell_menu = False
+        self._terminal = None
         import terminal
-        self._terminal = terminal.Terminal(cols=COLS)
+        sf = self._set_shell_font()
+        cols = sf.cols if sf else COLS
+        rows = sf.rows if sf else BODY_ROWS
+        self._terminal = terminal.Terminal(cols=cols)
         self.state = STATE_SHELL
         self._state_change_ms = time.ticks_ms()
         self._cache = [''] * 15
         self.dirty = True
         if self.on_shell_connect:
-            self.on_shell_connect(dest_hash, COLS, BODY_ROWS)
+            self.on_shell_connect(dest_hash, cols, rows)
 
     def _draw_shell_manual(self):
         """SSH tab manual hex-entry screen."""
@@ -1541,30 +1672,52 @@ class UI:
         if self._shell_menu:
             self._draw_shell_menu()
             return
+        # Body grid comes from the shell font (64x24 or 80x32); the 8x16
+        # tft.text() grid is the fallback when no font module could be loaded.
+        sf = self._shell_font
+        rows = sf.rows if sf else BODY_ROWS
+        rh = sf.h if sf else CHAR_H
+        cols = sf.cols if sf else COLS
         lines = self._terminal.lines if self._terminal else [""]
         n = len(lines)
-        mx = max(0, n - BODY_ROWS)
+        mx = max(0, n - rows)
         if self._shell_view > mx:          # clamp (scrollback may have trimmed)
             self._shell_view = mx
-        start = max(0, n - BODY_ROWS - self._shell_view)
-        visible = lines[start:start + BODY_ROWS]
-        for i in range(BODY_ROWS):
-            y = BODY_Y + i * CHAR_H
-            ci = i + 1
+        start = max(0, n - rows - self._shell_view)
+        visible = lines[start:start + rows]
+        if len(self._shell_cache) != rows:
+            self._shell_cache = [''] * rows
+        cache = self._shell_cache
+        for i in range(rows):
+            y = BODY_Y + i * rh
             text = visible[i] if i < len(visible) else ""
             # cache key keys on absolute line index so a scroll shift forces redraw
             key = str(start + i) + "\x00" + text
-            if self._cache[ci] != key:
-                self._cache[ci] = key
-                self.tft.text(self.font, self._tb(_pad(text)), 0, y, self.BODY_FG, self.BG_DARK)
+            if cache[i] == key:
+                continue
+            cache[i] = key
+            if sf:
+                # Glyph-index bytes. Fast path: an all-ASCII line encodes 1:1
+                # to UTF-8, so the C encoder does the work and _tb()'s per-char
+                # Python loop is skipped — which is every line a shell emits
+                # except ones carrying Cyrillic or CP437 box glyphs.
+                clipped = text[:cols]
+                slots = clipped.encode()
+                if len(slots) != len(clipped):
+                    slots = self._tb(clipped)
+                sf.draw_row(self.tft, slots, y)
+            else:
+                self.tft.text(self.font, self._tb(_pad(text)), 0, y,
+                              self.BODY_FG, self.BG_DARK)
 
         # Scroll indicator on the right edge (below the navbar), when there's
-        # more scrollback than one screen.
+        # more scrollback than one screen. Drawn after the rows: a composited
+        # row blits the full 320px width and would otherwise paint over it.
         _track_h = BODY_ROWS * CHAR_H
         self.tft.fill_rect(SBAR_X, BODY_Y, SBAR_W, _track_h, self.BG_DARK)
-        if n > BODY_ROWS:
-            _bar_h = max(6, _track_h * BODY_ROWS // n)
-            _bar_y = BODY_Y + (n - BODY_ROWS - self._shell_view) * _track_h // n
+        if n > rows:
+            _bar_h = max(6, _track_h * rows // n)
+            _bar_y = BODY_Y + (n - rows - self._shell_view) * _track_h // n
             self.tft.fill_rect(SBAR_X, _bar_y, SBAR_W, _bar_h, self.DIM_CYAN)
 
         # Footer: transient status wins; else the input line (line mode, while
@@ -1580,9 +1733,9 @@ class UI:
             self._draw_input_line(self._safe_decode(self._shell_input))
         else:
             if self._shell_line_mode:
-                foot = "Bksp=quit  click=keys  trkbl=scrl"
+                foot = "Bksp=quit click=keys trkbl=scrl"
             else:
-                foot = "click=keys menu   trkbl=scroll"
+                foot = "click=keys menu  trkbl=scroll"
             if self._shell_view:
                 foot = "[+" + str(self._shell_view) + "] " + foot
             foot = foot[:COLS]
@@ -1600,11 +1753,15 @@ class UI:
             except Exception:
                 pass
 
+    def _shell_rows(self):
+        """Visible terminal rows for the active shell font (8x16 fallback)."""
+        return self._shell_font.rows if self._shell_font else BODY_ROWS
+
     def _shell_scroll(self, delta):
         """Scroll the local terminal scrollback (delta>0 = toward older lines)."""
         if self._terminal is None:
             return
-        mx = max(0, len(self._terminal.lines) - BODY_ROWS)
+        mx = max(0, len(self._terminal.lines) - self._shell_rows())
         self._shell_view = max(0, min(self._shell_view + delta, mx))
         self.dirty = True
 
@@ -1614,6 +1771,9 @@ class UI:
         self._shell_menu = True
         self._shell_menu_idx = 0
         self._cache = [''] * 15
+        # The menu paints over the body with the 8x16 font, so every composited
+        # terminal row underneath it is stale once the menu closes.
+        self._shell_cache = [''] * len(self._shell_cache)
         self.dirty = True
 
     def _shell_menu_move(self, delta):
@@ -1623,12 +1783,31 @@ class UI:
     def _shell_menu_close(self):
         self._shell_menu = False
         self._cache = [''] * 15
+        self._shell_cache = [''] * len(self._shell_cache)
         self.dirty = True
+
+    def _shell_menu_label(self, i):
+        """Menu row text. The font row shows the live grid, so the size can be
+        read off — and watched change — without leaving the menu."""
+        label, kind, _ = _SHELL_CTRL_ITEMS[i]
+        if kind == "font":
+            sf = self._shell_font
+            return "Font     %dx%d" % (sf.cols if sf else COLS,
+                                       sf.rows if sf else BODY_ROWS)
+        return label
 
     def _shell_menu_exec(self):
         _, kind, payload = _SHELL_CTRL_ITEMS[self._shell_menu_idx]
+        if kind == "font":
+            # Cycle in place. The menu deliberately stays open so repeated
+            # clicks step through the sizes with the label updating each time,
+            # instead of closing and making you reopen it to try the next one.
+            self._shell_font_idx = (self._shell_font_idx + 1) % len(_SHELL_FONTS)
+            self._set_shell_font(notify=True)   # clears both row caches
+            return
         self._shell_menu = False
         self._cache = [''] * 15
+        self._shell_cache = [''] * len(self._shell_cache)
         self.dirty = True
         if kind == "send":
             self._shell_send(payload)
@@ -1647,7 +1826,7 @@ class UI:
             y = BODY_Y + (i + 1) * CHAR_H
             ci = i + 2
             if i < n:
-                line = ("> " if i == self._shell_menu_idx else "  ") + _SHELL_CTRL_ITEMS[i][0]
+                line = ("> " if i == self._shell_menu_idx else "  ") + self._shell_menu_label(i)
                 if i == self._shell_menu_idx:
                     ck = "\x01" + line
                     if self._cache[ci] != ck:
@@ -1672,6 +1851,10 @@ class UI:
         self._shell_status = None
         self._shell_connected = False
         self._shell_menu = False
+        # Release the glyph cache + row buffer (~10KB) back to the heap.
+        self._shell_font = None
+        self._shell_cache = []
+        gc.collect()
         self.node_tab = TAB_SSH
         self.state = STATE_NODES
         self._state_change_ms = time.ticks_ms()
@@ -2398,7 +2581,8 @@ class UI:
                 self.dirty = True
             elif self.state == STATE_SHELL:
                 if not self._shell_menu:   # page scroll (menu ignores left/right)
-                    self._shell_scroll((BODY_ROWS - 1) if left else -(BODY_ROWS - 1))
+                    _pg = self._shell_rows() - 1
+                    self._shell_scroll(_pg if left else -_pg)
             elif self.state == STATE_SETTINGS:
                 self._settings_adjust(-1 if left else 1)
         if click:
@@ -2911,6 +3095,10 @@ class UI:
             # Redraw: immediate for input line, throttled for full redraws.
             # draw_input() is the chat input renderer; settings text pages
             # (WiFi pass / node name / TCP host) redraw via their own draw().
+            # The shell throttles harder: a repaint composites up to 2560
+            # glyphs, and every arriving stdout chunk marks it dirty. At LoRa
+            # data rates coalescing a burst into one repaint is invisible.
+            _throttle = 120 if self.state == STATE_SHELL else 50
             if self._input_dirty and not self.dirty:
                 spi_acquire_display()
                 if self.state == STATE_CHAT:
@@ -2919,7 +3107,7 @@ class UI:
                     self.draw()
                 spi_release_display()
                 self._input_dirty = False
-            elif self.dirty and time.ticks_diff(now, self._last_draw) > 50:
+            elif self.dirty and time.ticks_diff(now, self._last_draw) > _throttle:
                 spi_acquire_display()
                 self.draw()
                 spi_release_display()

@@ -17,8 +17,12 @@
 import time
 
 MAX_NODES = 16
-TERM_COLS = 40          # T-Deck terminal width (chars)
-TERM_ROWS = 14          # visible rows reported to the remote pty
+# Defaults only — the GUI passes the live geometry to connect(), derived from
+# the active shell font (ui._SHELL_FONTS: 6x12 -> 53x16, 6x10 -> 53x19,
+# 5x8 -> 64x24, 4x6 -> 80x32), and pushes a WindowSizeMessage via resize()
+# when the font is switched. These match ui's default font.
+TERM_COLS = 53          # T-Deck terminal width (chars)
+TERM_ROWS = 16          # visible rows reported to the remote pty
 CONNECT_PATH_WAIT = 30  # seconds to wait for a path
 VERSION_WAIT_CAP = 90   # upper bound on the version-reply wait
 LINK_ATTEMPTS = 4       # link-establishment retries (lossy multi-hop LoRa drops
@@ -41,6 +45,12 @@ _error = None           # (msg, fatal) from an ErrorMessage, or None
 _exit_code = None
 _stdin_buf = bytearray()
 _task_gen = 0           # bumped per connect; stale tasks self-cancel
+# Live terminal geometry. Held in module state rather than captured by
+# _session_task so a font switch mid-connect still reaches the pty — see
+# resize().
+_term_cols = TERM_COLS
+_term_rows = TERM_ROWS
+_size_sent = None       # geometry the pty has actually been told about
 
 
 # --- discovery --------------------------------------------------------------
@@ -121,8 +131,10 @@ def is_active():
 
 def connect(dest_hash, cols=TERM_COLS, rows=TERM_ROWS):
     """GUI: open an rnsh session to a listener (SSH tab click / manual hash)."""
+    global _term_cols, _term_rows
     import uasyncio as asyncio
-    asyncio.create_task(_session_task(dest_hash, cols, rows))
+    _term_cols, _term_rows = cols, rows
+    asyncio.create_task(_session_task(dest_hash))
 
 
 def send_input(data):
@@ -134,16 +146,38 @@ def send_input(data):
     _stdin_buf.extend(data)
 
 
-def resize(rows, cols):
-    """GUI: report a new terminal size to the remote pty."""
+def _send_window_size():
+    """Best-effort push of the current geometry to the pty; True once away.
+
+    The Channel refuses sends while its window is full — routine when output
+    is streaming — so a resize issued at a busy moment would be dropped and
+    the pty left permanently wrong. _pump_loop retries this until _size_sent
+    matches, which matters now that the font is cycled from the shell menu."""
+    global _size_sent
     if _state != RUNNING or _channel is None:
-        return
-    from rnsh_proto import WindowSizeMessage
+        return False
     try:
-        if _channel.is_ready_to_send():
-            _channel.send(WindowSizeMessage(rows, cols, None, None))
+        if not _channel.is_ready_to_send():
+            return False
+        from rnsh_proto import WindowSizeMessage
+        _channel.send(WindowSizeMessage(_term_rows, _term_cols, None, None))
+        _size_sent = (_term_rows, _term_cols)
+        return True
     except Exception:
-        pass
+        return False
+
+
+def resize(rows, cols):
+    """GUI: report a new terminal size to the remote pty (shell font switch).
+
+    The geometry is recorded unconditionally, before any RUNNING check: a font
+    switch during the connect — 30-90s over multi-hop LoRa, an easy window to
+    hit — would otherwise be dropped here while the ExecuteCommand still to be
+    sent carried the pre-switch size, leaving the pty wrong for the whole
+    session with no correction ever sent."""
+    global _term_cols, _term_rows
+    _term_cols, _term_rows = cols, rows
+    _send_window_size()
 
 
 def disconnect():
@@ -219,8 +253,9 @@ async def _await_channel_ready(timeout):
     return False
 
 
-async def _session_task(dest_hash, cols, rows):
+async def _session_task(dest_hash):
     global _link, _channel, _dest, _state, _peer_version, _error, _exit_code
+    global _size_sent
     import uasyncio as asyncio
     from urns.identity import Identity
     from urns.transport import Transport
@@ -235,6 +270,7 @@ async def _session_task(dest_hash, cols, rows):
     _peer_version = None
     _error = None
     _exit_code = None
+    _size_sent = None
 
     try:
         # 1. Path + identity (path response carries the announce).
@@ -344,9 +380,13 @@ async def _session_task(dest_hash, cols, rows):
             _status("channel not ready")
             _teardown()
             return
+        # Read the geometry now, not at connect time: the font may have been
+        # switched while the link was coming up.
         ch.send(rnsh_proto.ExecuteCommandMessage(
             cmdline=None, pipe_stdin=False, pipe_stdout=False, pipe_stderr=False,
-            tcflags=None, term="vt100", rows=rows, cols=cols, hpix=None, vpix=None))
+            tcflags=None, term="vt100", rows=_term_rows, cols=_term_cols,
+            hpix=None, vpix=None))
+        _size_sent = (_term_rows, _term_cols)   # ExecuteCommand carried it
 
         # 8. RUNNING: stdin pump; output arrives via _on_message.
         _state = RUNNING
@@ -367,6 +407,9 @@ async def _pump_loop(my_gen):
     import uasyncio as asyncio
     from rnsh_proto import StreamDataMessage
     while _state == RUNNING and not _stale(my_gen):
+        # Retry a geometry change the channel wasn't ready to take.
+        if _size_sent != (_term_rows, _term_cols):
+            _send_window_size()
         if _stdin_buf and _channel is not None and _channel.is_ready_to_send():
             # One message per ready slot; cap to the channel MDU minus the
             # 2-byte stream header (leave margin — rnsh uses mdu-8).
