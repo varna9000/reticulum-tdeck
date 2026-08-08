@@ -70,10 +70,15 @@ def color565(code):
 
 
 def _clean(s):
-    """Printable ASCII (32-126) plus basic Cyrillic (U+0400-U+045F, which
-    the UI transcodes to font glyphs; rare unmapped ones render '?') —
-    everything else is dropped."""
-    return "".join(c for c in s if 32 <= ord(c) < 127 or 0x400 <= ord(c) <= 0x45F)
+    """Printable ASCII (32-126) plus basic Cyrillic (U+0400-U+045F) plus the
+    box-drawing/block-element range banner art uses (U+2500-U+25A0, which
+    ui._GFX maps to font slots; heavy/rounded variants alias to single-line
+    glyphs) and the stray CP437 leftovers ° · ∙ √. Everything else is
+    dropped — this filter and ui._GFX must agree, or kept chars render '?'."""
+    return "".join(
+        c for c in s
+        if 32 <= ord(c) < 127 or 0x400 <= ord(c) <= 0x45F
+        or 0x2500 <= ord(c) <= 0x25A0 or ord(c) in (0xB0, 0xB7, 0x2219, 0x221A))
 
 
 class _State:
