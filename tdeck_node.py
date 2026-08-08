@@ -1591,7 +1591,13 @@ async def _auto_start_tcp():
 def main():
     import uasyncio as asyncio
 
-    gc.threshold(200000)  # Auto-GC after 200KB allocated (less frequent, fewer pauses)
+    # Auto-GC after 1MB allocated. Each collect is a full-heap pause (tens of
+    # ms — a dropped frame), and at the old 200KB threshold scroll-frame
+    # allocations (~10-20KB of row strings/spans each) triggered one every
+    # second or two of continuous scrolling. The pause cost scales with LIVE
+    # objects, not the threshold, so 5x rarer collects cost the same each —
+    # with 8MB of PSRAM the extra floating garbage is irrelevant.
+    gc.threshold(1024 * 1024)
 
     _auto_connect_wifi()
 
