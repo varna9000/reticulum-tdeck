@@ -9,9 +9,18 @@ carries what has to stay user-editable or is read as data:
     logo.jpg         <- splash image
 
 The five former natmods (ed25519/bz2/codec2/tjpgd/webp) are built into the
-app image as user C modules since the 3MiB-factory rebuild, so nothing goes
-in /lib any more -- a stale copy there would only be dead weight, since
-built-in modules win the import search.
+app image as user C modules since the 3MiB-factory rebuild, so /lib carries
+no *module the firmware already has* -- a stale same-named copy there would
+only be dead weight, since built-in modules win the import search.
+
+One deliberate exception: lib/ed25519_iram.mpy. Built-in C modules execute
+from flash XIP, which for the Ed25519/X25519 hot loops measures ~80x slower
+than IRAM on this board (verify 1461ms vs 17.6ms -- see FR.md). The natmod
+build of the same Monocypher code loads into IRAM at import. It ships under
+a name no built-in registers (ed25519_iram), so it is importable at all, and
+urns/crypto/ed25519.py prefers it and falls back to the built-in if the file
+is missing or IRAM is exhausted -- worst case is slow crypto, never the
+v1.1.0 no-radio failure mode.
 
 The corollary, and the reason this file lists so little: an import that is
 neither built in nor in tools/tdeck_manifest.py has nowhere left to come
@@ -50,6 +59,7 @@ CONTENTS = [
     ("tdeck_node.py", "main.py"),
     ("tdeck_config.py", "tdeck_config.py"),
     ("logo.jpg", "logo.jpg"),
+    ("vendor/uP-reticulum/firmware/lib/ed25519_iram.mpy", "lib/ed25519_iram.mpy"),
 ]
 
 BLOCK_SIZE = 4096  # esp32 flash sector, and what VfsLfs2 uses on a Partition
@@ -99,6 +109,8 @@ def main():
             raise SystemExit("missing %s" % src)
         with open(src, "rb") as f:
             data = f.read()
+        if "/" in dest:
+            fs.makedirs(dest.rsplit("/", 1)[0], exist_ok=True)
         with fs.open(dest, "wb") as f:
             f.write(data)
         total += len(data)
