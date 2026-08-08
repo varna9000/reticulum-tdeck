@@ -55,10 +55,14 @@ pwr.on()
 time.sleep_ms(100)
 
 # --- Shared SPI bus (display + LoRa) ---
-# Display: 40MHz (ST7789 max reliable on ESP32-S3)
-# LoRa:    10MHz (SX1262 max=16MHz, 10MHz safe for T-Deck trace lengths)
+# Display: 80MHz (GPIO-matrix pins, write-only path; verified clean on this
+#          panel 2026-08-08 — drop back to 40MHz if a future board revision
+#          shows artifacts). The S3 divider offers only 80/40/26.7/20.
+# LoRa:    10MHz (SX1262 datasheet max=16MHz — the radio can NEVER share the
+#          display clock, hence the acquire/release frequency switch; the
+#          switch itself is ~1ms, noise next to a ~100ms redraw)
 _SPI_PINS = {"sck": Pin(40), "mosi": Pin(41), "miso": Pin(LORA_MISO)}
-_SPI_DISP = 40_000_000
+_SPI_DISP = 80_000_000
 _SPI_LORA = 10_000_000
 spi = SPI(1, baudrate=_SPI_LORA, **_SPI_PINS)
 

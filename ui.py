@@ -517,12 +517,23 @@ class UI:
         if self._cache[idx] == key:
             return False
         self._cache[idx] = key
-        self.tft.text(self.font, self._tb(_pad(text)), 0, y, fg, bg or self.BG_DARK)
+        self._row(text, y, fg, bg)
         return True
 
     def _row(self, text, y, fg, bg=None):
-        """Draw a full-width padded row — overwrites old content, no flicker."""
-        self.tft.text(self.font, self._tb(_pad(text)), 0, y, fg, bg or self.BG_DARK)
+        """Draw a row and erase to full width — overwrites old content, no
+        flicker. Glyph compositing in the C driver costs ~220us per cell,
+        so padding with trailing spaces made every row pay for all COLS
+        cells; drawing the bare text and erasing the tail with fill_rect
+        (SPI-only, ~6x cheaper than space glyphs) roughly halves a typical
+        scroll frame."""
+        bg = bg or self.BG_DARK
+        g = self._tb(text[:COLS].rstrip()) if text else b''
+        if g:
+            self.tft.text(self.font, g, 0, y, fg, bg)
+        w = len(g) * CHAR_W
+        if w < SCREEN_W:
+            self.tft.fill_rect(w, y, SCREEN_W - w, 16, bg)
 
     def _text(self, text, x, y, fg, bg=None):
         """Draw text at pixel position."""
@@ -665,7 +676,7 @@ class UI:
             return
         self._cache[1] = cache_key
         y = BODY_Y
-        self.tft.text(self.font, _pad(""), 0, y, self.DIM_CYAN, self.BG_DARK)
+        self.tft.fill_rect(0, y, SCREEN_W, 16, self.BG_DARK)
         x = 0
         for i, label in enumerate(tabs):
             if i == self.node_tab:
