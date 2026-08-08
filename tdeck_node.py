@@ -55,14 +55,17 @@ pwr.on()
 time.sleep_ms(100)
 
 # --- Shared SPI bus (display + LoRa) ---
-# Display: 80MHz (GPIO-matrix pins, write-only path; verified clean on this
-#          panel 2026-08-08 — drop back to 40MHz if a future board revision
-#          shows artifacts). The S3 divider offers only 80/40/26.7/20.
+# Display: 40MHz. NOT 80: an 80MHz experiment (2026-08-08) rendered cleanly
+#          and benched 13% faster, then HARD-FROZE the VM after ~30min of
+#          use — stuck in a display-driver C wait with no Ctrl-C, WiFi/lwIP
+#          still alive. GPIO-matrix pins at 80MHz are marginal; a glitched
+#          transaction wedges the SPI peripheral wait forever. 40MHz is the
+#          max reliable clock on these pins, as this comment always said.
 # LoRa:    10MHz (SX1262 datasheet max=16MHz — the radio can NEVER share the
 #          display clock, hence the acquire/release frequency switch; the
-#          switch itself is ~1ms, noise next to a ~100ms redraw)
+#          switch itself is ~1ms, noise next to a redraw)
 _SPI_PINS = {"sck": Pin(40), "mosi": Pin(41), "miso": Pin(LORA_MISO)}
-_SPI_DISP = 80_000_000
+_SPI_DISP = 40_000_000
 _SPI_LORA = 10_000_000
 spi = SPI(1, baudrate=_SPI_LORA, **_SPI_PINS)
 
