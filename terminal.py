@@ -125,8 +125,23 @@ class Terminal:
 
     def _csi(self, params, final):
         f = final
-        if f == 0x4a:          # 'J' erase display; 2J / J -> clear screen
-            if params in (b"", b"2"):
+        if f == 0x4a:          # 'J' erase in display
+            if params in (b"", b"0"):
+                # Erase BELOW the cursor only. The cursor always sits on the
+                # last line of this scrollback model, so there is nothing
+                # after it to drop — just truncate the tail of the current
+                # line. zsh's ZLE emits ESC[J on every prompt redraw; mapping
+                # it to a full clear wipes the whole scrollback after each
+                # command (bash's readline uses ESC[K instead, which is why
+                # bash listeners never triggered this).
+                self.lines[-1] = self.lines[-1][:self.cur_col]
+            elif params == b"1":
+                # Erase above: blank the current line up to the cursor, keep
+                # the scrollback (text-log approximation).
+                line = self.lines[-1]
+                n = min(self.cur_col, len(line))
+                self.lines[-1] = " " * n + line[n:]
+            elif params in (b"2", b"3"):
                 self.lines = [""]
                 self.cur_col = 0
         elif f == 0x4b:        # 'K' erase in line (cursor -> end)
