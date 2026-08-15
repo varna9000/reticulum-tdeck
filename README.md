@@ -427,9 +427,9 @@ Before the rebuild the fully-booted app left **~8 KB** internal free and
 rebuild, with the app running **and WiFi connected**, ~115 KB internal
 remains free (135 KB measured at the REPL with the app stopped).
 
-The app partition grew for the built-in modules: factory is now 3 MiB and
-vfs 5 MiB (`tools/board_tdeck/partitions-tdeck-8MiB.csv`) — flashing this
-layout over the old one moves the filesystem (full reflash + restore;
+The app partition grew for the built-in modules: factory is now 3 MiB, and
+vfs is 1 MiB (`tools/board_tdeck/partitions-tdeck-8MiB.csv`) — flashing this
+layout over an older one moves the filesystem (full reflash + restore;
 back up `/rns/identity` first).
 
 ## Pin Map
@@ -640,11 +640,11 @@ The filesystem is **littlefs2**, not FAT, despite the partition table's `fat` su
 | `0x000000` | Bootloader | 19 KB |
 | `0x008000` | Partition table | 3 KB |
 | `0x010000` | MicroPython app (frozen modules + st7789 and codec/crypto C modules) | ~2.0 MB (3 MB partition) |
-| `0x300000` | littlefs2 VFS (main.py, tdeck_config.py, logo.jpg) | 5 MB |
+| `0x300000` | littlefs2 VFS (main.py, tdeck_config.py, logo.jpg) | 1 MB |
 
-Total image: 8 MB (matches the partition layout; the flash chip is physically 16 MB).
+Total image: 4 MB (matches the partition layout; the flash chip is physically 16 MB).
 
-The factory partition grew 2 MB → 3 MB when the five natmods became built-in C modules, shrinking the VFS 6 MB → 5 MB. Moving that table again relocates the filesystem: a full reflash and FS repopulation, so back up `/rns/identity` first.
+The factory partition grew 2 MB → 3 MB when the five natmods became built-in C modules. The VFS went the other way, 5 MB → 1 MB: nothing is persisted except the three app files and `/rns`, whose only growing member is `known_destinations.json` (~210 KB at the 768-entry cap) — a running device measures 128 KB used. Received photos and voice messages are deliberately never written to flash, so they do not enter this budget. The smaller table leaves 4 MB more for the other firmware an M5Launcher user has installed, and halves the download. Moving that table again relocates the filesystem: a full reflash and FS repopulation, so back up `/rns/identity` first.
 
 ### Frozen Module Manifest (`tdeck_manifest.py`)
 

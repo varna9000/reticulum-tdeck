@@ -13,8 +13,17 @@
 # the install. MicroPython finds the partition by label with subtype=ANY
 # (flashbdev.py -> Partition.find(TYPE_DATA, label="vfs")), so nothing on the
 # standalone path notices the change.
+#
+# vfs is 1MiB, not 5. Nothing persists media by design (received photos and
+# voice live in RAM caches only -- a security property, not an oversight), so
+# the filesystem holds main.py + tdeck_config.py + logo.jpg (~75KB) and /rns,
+# whose only growing member is known_destinations.json (~210KB at the 768-entry
+# cap). Measured on a running device: 128KB used. 1MiB is ~3x the worst case and
+# hands 4MiB back to the other firmware an M5Launcher user has installed. It is
+# still far above Launcher's 448KB (0x70000) threshold, below which a data
+# partition gets resized to a default instead of keeping its declared size.
 # Name,   Type, SubType,  Offset,  Size, Flags
 nvs,      data, nvs,      0x9000,  0x6000,
 phy_init, data, phy,      0xf000,  0x1000,
 factory,  app,  factory,  0x10000, 0x2F0000,
-vfs,      data, littlefs, 0x300000, 0x500000,
+vfs,      data, littlefs, 0x300000, 0x100000,
