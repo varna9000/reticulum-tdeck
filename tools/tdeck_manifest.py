@@ -51,7 +51,17 @@ shutil.copyfile(_root + "/tdeck_node.py", _stage + "/main.py")
 freeze(_stage, "main.py")
 
 # --- App modules (top-level) ---
-# tdeck_config.py — on filesystem, user-editable
+# tdeck_config.py is frozen as a FALLBACK and also shipped on the filesystem.
+# sys.path is ['', '.frozen', '/lib'] (py/runtime.c:140-143 then
+# ports/esp32/main.c:133), so a filesystem copy still shadows this one and stays
+# user-editable — the frozen copy only matters when there is no filesystem.
+#
+# That case is real: deleting the original app in M5Launcher erases the data
+# partition registered to it, taking the whole VFS with it. Without a frozen
+# fallback the app died on its very first statement (`from tdeck_config import
+# ...`) with no display initialised and no way to say why — a blank screen.
+# With it, boot gets far enough to bring up the panel and report the problem.
+freeze(_root, "tdeck_config.py")
 freeze(_root, "ui.py")
 freeze(_root, "sound.py")
 freeze(_root, "es7210.py")
