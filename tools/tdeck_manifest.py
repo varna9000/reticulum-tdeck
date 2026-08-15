@@ -25,9 +25,33 @@ _root = os.environ["TDECK_ROOT"]
 # (vendor/uP-reticulum) — run `git submodule update --init` before building.
 _vendor = _root + "/vendor/uP-reticulum/firmware"
 
+# --- Entry point ---
+# tdeck_node.py is frozen AS main.py, not shipped on the filesystem.
+#
+# This is what makes an app-only update safe. M5Launcher can install a bare app
+# image (no partition table), which leaves the data partition — and therefore
+# /rns/identity and the message history — untouched. But the filesystem copy of
+# main.py would then stay at the OLD version while every frozen module moved to
+# the new one, and main.py is precisely the file that wires callbacks into
+# ui.py; a signature change between releases would break the pair. Freezing it
+# means the entry point travels with the modules it is coupled to.
+#
+# pyexec_file_if_exists() consults frozen modules BEFORE the filesystem
+# (shared/runtime/pyexec.c), so the frozen copy wins even on a device whose VFS
+# still carries an older main.py from a previous release.
+#
+# Trade-off: main.py is no longer user-editable on the device. tdeck_config.py
+# stays on the filesystem and stays editable — sys.path puts '' ahead of
+# '.frozen', so a filesystem copy still shadows any frozen one — and that is
+# the file users actually change (pins, radio parameters, node name).
+import shutil
+_stage = _root + "/tools/firmware_build/frozen_stage"
+os.makedirs(_stage, exist_ok=True)
+shutil.copyfile(_root + "/tdeck_node.py", _stage + "/main.py")
+freeze(_stage, "main.py")
+
 # --- App modules (top-level) ---
-# tdeck_config.py  — on filesystem, user-editable
-# tdeck_node.py    — on filesystem as main.py, user-editable
+# tdeck_config.py — on filesystem, user-editable
 freeze(_root, "ui.py")
 freeze(_root, "sound.py")
 freeze(_root, "es7210.py")

@@ -60,10 +60,15 @@ PART_CSV = os.path.join(HERE, "board_tdeck", "partitions-tdeck-8MiB.csv")
 
 # (source path relative to repo root, name on the device)
 CONTENTS = [
-    ("tdeck_node.py", "main.py"),
     ("tdeck_config.py", "tdeck_config.py"),
     ("logo.jpg", "logo.jpg"),
 ]
+# main.py is NOT here any more: tdeck_node.py is frozen as main.py by
+# tools/tdeck_manifest.py so that an app-only update (which carries no
+# filesystem payload, and therefore preserves /rns) also carries the entry
+# point. Shipping a filesystem copy too would be dead weight — frozen wins in
+# pyexec_file_if_exists — and actively misleading, since editing it would do
+# nothing.
 
 BLOCK_SIZE = 4096  # esp32 flash sector, and what VfsLfs2 uses on a Partition
 
