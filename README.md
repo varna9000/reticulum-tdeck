@@ -52,10 +52,23 @@ T-Deck that does not have it yet.
 
 ## Setup
 
-There is **one firmware file**, `tdeck_firmware.bin`, and it works both ways: install it from an SD
-card through M5Launcher (Option A), or flash it over USB with esptool (Option B). It is the same
-download for both — there is no separate "Launcher build". Option C is for people who want to modify
-the code.
+Two files are published with each release:
+
+| File | Use it when | Keeps identity & messages? |
+|---|---|---|
+| `tdeck_firmware.bin` (4 MB) | First install, or when you want a clean device | No — sets up fresh storage |
+| `tdeck_update.bin` (2 MB) | Updating a T-Deck that already runs this | **Yes** |
+
+`tdeck_firmware.bin` is the complete image and works **both ways**: install it from an SD card
+through M5Launcher (Option A) or flash it over USB with esptool (Option B). It is the same download
+for both — there is no separate "Launcher build".
+
+`tdeck_update.bin` is the app on its own with no storage area attached. M5Launcher installs a bare
+app image through a different path that never touches data partitions, so your identity, settings and
+message history survive the update. It needs the messenger already installed, so use the full image
+first.
+
+Option C is for people who want to modify the code.
 
 ### Option A: Install with M5Launcher (recommended)
 
@@ -73,9 +86,29 @@ Switching the T-Deck off and on again brings up the Launcher first, and the mess
 itself a couple of seconds later. That is the Launcher doing its job — it stays on the device so you
 can install other firmware later and choose between them.
 
-Note that installing this way replaces the app's storage area, so the device comes up with a new
-identity and an empty message history, exactly as it would after flashing over USB. Back up anything
-you want to keep first.
+Note that installing `tdeck_firmware.bin` replaces the app's storage area, so the device comes up
+with a new identity and an empty message history, exactly as it would after flashing over USB. Use
+`tdeck_update.bin` to update an existing device without losing anything.
+
+#### Updating without taking the SD card out
+
+M5Launcher offers three routes that avoid the card shuffle, in rough order of convenience:
+
+- **Web interface** (`WUI` in the Launcher menu) — the Launcher serves a page over your wifi, or
+  raises its own access point called `Launcher`; browse to `http://launcher.local` (default login
+  `admin` / `launcher`) and use its OTA tab to upload a `.bin` straight into flash. **No SD card is
+  involved at all.**
+- **Install from a URL** — add a favourite with a direct link in the Launcher's `config.conf`, then
+  OTA → Favorite List → Install pulls it over wifi into flash, again with no card:
+  ```json
+  "favorite": [
+    { "name": "T-Deck Messenger", "fid": "",
+      "link": "https://github.com/varna9000/reticulum-tdeck/releases/latest/download/tdeck_update.bin" }
+  ]
+  ```
+- **USB card reader** (`USB` in the Launcher menu) — exposes the inserted microSD to your computer as
+  a removable drive, so you can drop a new `.bin` on it over the cable and then install it from the
+  Launcher's file browser. The card stays in the device.
 
 ### Option B: Flash over USB
 
