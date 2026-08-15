@@ -1,0 +1,21 @@
+# Place the Monocypher crypto core in internal RAM instead of flash.
+#
+# `noflash` maps text -> iram0_text and rodata -> dram0_data, which is exactly
+# where the ed25519_iram.mpy natmod ended up when MicroPython committed it at
+# import. Executing this code from flash XIP instead costs ~83x on this board
+# (Ed25519 verify 1461ms XIP vs 17.6ms IRAM) because Monocypher's inner loops
+# plus its constant tables do not fit the ESP32-S3's 16KB icache and thrash
+# against the PSRAM heap in the shared dcache.
+#
+# Doing it at link time is what lets the firmware run with NO filesystem: a
+# Launcher install has no VFS partition to load a .mpy from, and falling back
+# to the flash-resident build is not an acceptable trade.
+#
+# Only the archive built from monocypher.c / monocypher-ed25519.c is mapped —
+# the MicroPython glue stays in flash (it is argument marshalling, called once
+# per operation).
+
+[mapping:ed25519_mono]
+archive: libed25519_mono.a
+entries:
+    * (noflash)

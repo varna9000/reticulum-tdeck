@@ -13,14 +13,18 @@ app image as user C modules since the 3MiB-factory rebuild, so /lib carries
 no *module the firmware already has* -- a stale same-named copy there would
 only be dead weight, since built-in modules win the import search.
 
-One deliberate exception: lib/ed25519_iram.mpy. Built-in C modules execute
-from flash XIP, which for the Ed25519/X25519 hot loops measures ~80x slower
-than IRAM on this board (verify 1461ms vs 17.6ms -- see FR.md). The natmod
-build of the same Monocypher code loads into IRAM at import. It ships under
-a name no built-in registers (ed25519_iram), so it is importable at all, and
-urns/crypto/ed25519.py prefers it and falls back to the built-in if the file
-is missing or IRAM is exhausted -- worst case is slow crypto, never the
-v1.1.0 no-radio failure mode.
+lib/ed25519_iram.mpy used to be shipped here, because a built-in C module
+executes from flash XIP and the Ed25519/X25519 hot loops measured ~80x slower
+that way (verify 1461ms vs 17.6ms) while a natmod is committed to IRAM at
+import. That is no longer needed: tools/c_modules/ed25519_fast now builds
+Monocypher into its own archive and an ldgen `noflash` fragment places it in
+IRAM at LINK time, so the built-in is the fast path. urns/crypto/ed25519.py
+still tries `ed25519_iram` first, gets ImportError, and falls through to the
+built-in -- which is now IRAM-resident, so the fallback costs nothing.
+
+Dropping the .mpy is what makes an M5Launcher install viable at full speed:
+the natmod could only ever be loaded from a filesystem, and it also cost a
+second ~45KB IRAM allocation on top of the statically-placed copy.
 
 The corollary, and the reason this file lists so little: an import that is
 neither built in nor in tools/tdeck_manifest.py has nowhere left to come
@@ -59,7 +63,6 @@ CONTENTS = [
     ("tdeck_node.py", "main.py"),
     ("tdeck_config.py", "tdeck_config.py"),
     ("logo.jpg", "logo.jpg"),
-    ("vendor/uP-reticulum/firmware/lib/ed25519_iram.mpy", "lib/ed25519_iram.mpy"),
 ]
 
 BLOCK_SIZE = 4096  # esp32 flash sector, and what VfsLfs2 uses on a Partition

@@ -2,8 +2,19 @@
 # codec2/ed25519/webp/tjpgd/bz2 moved from /lib natmods into the app image),
 # vfs shrunk 6MiB -> 5MiB. Changing this table moves the FS: full reflash +
 # FS repopulation required (back up /rns/identity first!).
-# Name,   Type, SubType, Offset,  Size, Flags
-nvs,      data, nvs,     0x9000,  0x6000,
-phy_init, data, phy,     0xf000,  0x1000,
-factory,  app,  factory, 0x10000, 0x2F0000,
-vfs,      data, fat,     0x300000, 0x500000,
+#
+# SubType of "vfs" is littlefs (0x83), NOT fat, because that is what the
+# partition actually holds -- inisetup/build_vfs both make it littlefs2, and
+# the old "fat" label was a lie that cost nothing until M5Launcher.
+# Launcher 2.8.0 installs a merged image by reproducing the data partitions
+# declared in this table, and it clamps any FAT partition not labelled
+# sys/system to 448KB, TRUNCATING the payload. A littlefs/spiffs subtype whose
+# label is not "spiffs" keeps its declared size verbatim, so 0x500000 survives
+# the install. MicroPython finds the partition by label with subtype=ANY
+# (flashbdev.py -> Partition.find(TYPE_DATA, label="vfs")), so nothing on the
+# standalone path notices the change.
+# Name,   Type, SubType,  Offset,  Size, Flags
+nvs,      data, nvs,      0x9000,  0x6000,
+phy_init, data, phy,      0xf000,  0x1000,
+factory,  app,  factory,  0x10000, 0x2F0000,
+vfs,      data, littlefs, 0x300000, 0x500000,
