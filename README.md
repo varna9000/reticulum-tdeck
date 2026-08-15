@@ -90,6 +90,14 @@ Note that installing `tdeck_firmware.bin` replaces the app's storage area, so th
 with a new identity and an empty message history, exactly as it would after flashing over USB. Use
 `tdeck_update.bin` to update an existing device without losing anything.
 
+> **Do not delete the app entry from your original full install.** M5Launcher keeps each installed
+> firmware in its own slot, so updates sit alongside older versions rather than replacing them — that
+> is by design, and the labels come from the filename. But the Launcher registers the storage area to
+> whichever app *first created* it, so deleting that entry erases your identity and message history
+> with it, even though a newer version is the one actually using them. Verified on hardware: the
+> device then boots with no filesystem at all. Deleting old **update** slots is safe — an app-only
+> install registers no storage of its own.
+
 #### Updating without taking the SD card out
 
 M5Launcher offers three routes that avoid the card shuffle, in rough order of convenience:
