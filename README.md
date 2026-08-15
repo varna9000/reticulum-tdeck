@@ -52,6 +52,11 @@ T-Deck that does not have it yet.
 
 ## Setup
 
+There is **one firmware file**, `tdeck_firmware.bin`, and it works both ways: install it from an SD
+card through M5Launcher (Option A), or flash it over USB with esptool (Option B). It is the same
+download for both — there is no separate "Launcher build". Option C is for people who want to modify
+the code.
+
 ### Option A: Install with M5Launcher (recommended)
 
 1. If the T-Deck does not have [M5Launcher](https://github.com/bmorcelli/Launcher) on it yet, put it
