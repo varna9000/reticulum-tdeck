@@ -113,6 +113,20 @@ git submodule update --init \
     lib/tinyusb
 cd "$BUILD_DIR"
 
+# Pin the tinyusb managed component. esp_tinyusb 1.0 (MicroPython v1.24's
+# pin) references CFG_TUD_CDC_EP_BUFSIZE, which tinyusb 0.17 renamed — but
+# its manifest allows tinyusb 0.*, so the IDF component manager pulls an
+# incompatible release on a fresh resolve. Constrain it and force a
+# re-resolve if the constraint was missing.
+MAIN_YML="micropython/ports/esp32/main_esp32s3/idf_component.yml"
+if [ -f "$MAIN_YML" ] && ! grep -q 'espressif/tinyusb' "$MAIN_YML"; then
+    # awk, not sed: inserting a line portably is beyond BSD sed's -i
+    awk '{print} /^  espressif\/esp_tinyusb:/{print "  espressif/tinyusb: \"<0.17.0\""}' \
+        "$MAIN_YML" > "$MAIN_YML.tmp" && mv "$MAIN_YML.tmp" "$MAIN_YML"
+    rm -f  micropython/ports/esp32/dependencies.lock
+    rm -rf micropython/ports/esp32/managed_components
+fi
+
 # --- Step 3: st7789_mpy C driver ---
 if [ ! -d "st7789_mpy" ]; then
     echo "=== Cloning st7789_mpy ==="
