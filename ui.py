@@ -470,6 +470,7 @@ class UI:
         self._wifi_err = ""            # last connect failure note (shown on scan page)
         self._tcp_connecting = False   # True while an async TCP connect is running
         self._screen_timeout_ms = _SCREEN_TIMEOUT_MS  # configurable inactivity sleep
+        self._wake_mode = 0  # 0 = messages only, 1 = messages + announces, 2 = never
 
         # LoRa radio config editor (Settings > LoRa cfg). _lora_cfg mirrors the
         # live interface params (pushed in by tdeck_node.py via set_lora_config);
@@ -535,6 +536,7 @@ class UI:
         self.on_browser_exit = None   # () -> None — left the browser (free the link)
         self.on_net_seed = None       # () -> None — populate nomad_nodes from storage
         self.on_screen_timeout = None # (ms) -> None — persist inactivity timeout
+        self.on_wake_mode = None      # (mode) -> None — persist auto-wake policy
         self.on_auto_announce = None  # (enabled) -> None — start/stop periodic announce
         self.on_delete_peer = None    # (dest_hash_bytes) -> None — forget a peer/node
         # rnsh shell callbacks (wired by tdeck_node.py)
@@ -2262,13 +2264,18 @@ class UI:
                     self._cache = [''] * 15
                     self.dirty = True
                     return True
-                elif self._settings_idx == 8:  # Radio stats page
+                elif self._settings_idx == 8:  # Auto-wake policy cycle
+                    self._cycle_wake(1)
+                    self._cache = [''] * 15
+                    self.dirty = True
+                    return True
+                elif self._settings_idx == 9:  # Radio stats page
                     self._settings_page = _SET_RADIO
                     self._settings_scroll = 0
                     self._cache = [''] * 15
                     self.dirty = True
                     return True
-                elif self._settings_idx == 9:  # LoRa radio config page
+                elif self._settings_idx == 10:  # LoRa radio config page
                     self._settings_page = _SET_LORA
                     self._lora_edit = dict(self._lora_cfg)
                     self._lora_field = 0
@@ -2276,11 +2283,11 @@ class UI:
                     self._cache = [''] * 15
                     self.dirty = True
                     return True
-                # idx 10 (address) is informational — Enter does nothing
+                # idx 11 (address) is informational — Enter does nothing
         elif self._settings_page == _SET_RADIO:
             if ch == 0x1B or ch == 0x08:
                 self._settings_page = _SET_MAIN
-                self._settings_idx = 8
+                self._settings_idx = 9
                 self._cache = [''] * 15
                 self.dirty = True
                 return True
@@ -2289,7 +2296,7 @@ class UI:
                 self._lora_edit = None
                 self._lora_applying = ""
                 self._settings_page = _SET_MAIN
-                self._settings_idx = 9
+                self._settings_idx = 10
                 self._cache = [''] * 15
                 self.dirty = True
                 return True
@@ -2507,6 +2514,9 @@ class UI:
         ms = self._screen_timeout_ms
         return "never" if not ms else str(ms // 1000) + "s"
 
+    def _wake_label(self):
+        return ("msgs", "all", "never")[self._wake_mode]
+
     def _draw_settings_main(self):
         self._draw_row_cached(1, "Settings", BODY_Y, self.NEON_CYAN)
 
@@ -2526,14 +2536,15 @@ class UI:
         kbbl_line = "KbBL: " + ("ON" if self._kbd_bl else "OFF")
         anc_line = "Announce: " + ("AUTO" if self._auto_announce else "manual")
         sleep_line = "Sleep: " + self._timeout_label()
+        wake_line = "Wake: " + self._wake_label()
         radio_line = "Radio stats"
         c = self._lora_cfg
         loracfg_line = ("LoRa cfg: %dk SF%d BW%s"
                         % (c["freq_khz"], c["sf"], c["bw"]))
         addr_line = "Addr: " + (self.my_address or "?")
         items = [wifi_line, tcp_line, name_line, lora_line, vol_line,
-                 kbbl_line, anc_line, sleep_line, radio_line, loracfg_line,
-                 addr_line]
+                 kbbl_line, anc_line, sleep_line, wake_line, radio_line,
+                 loracfg_line, addr_line]
         for i in range(BODY_ROWS - 1):
             y = BODY_Y + (i + 1) * CHAR_H
             if i < len(items):
@@ -3047,9 +3058,9 @@ class UI:
 
     def _settings_scroll_down(self):
         if self._settings_page == _SET_MAIN:
-            # 11 items: WiFi TCP Name LoRa Vol KbBL Announce Sleep Radio
+            # 12 items: WiFi TCP Name LoRa Vol KbBL Announce Sleep Wake Radio
             #           LoRaCfg Addr
-            if self._settings_idx < 10:
+            if self._settings_idx < 11:
                 self._settings_idx += 1
         elif self._settings_page == _SET_WIFI_SCAN:
             if self._settings_idx < len(self._wifi_networks) - 1:
@@ -3076,6 +3087,15 @@ class UI:
         if self.on_screen_timeout:
             try:
                 self.on_screen_timeout(self._screen_timeout_ms)
+            except Exception:
+                pass
+
+    def _cycle_wake(self, delta=1):
+        """Step the auto-wake policy: 0 = messages, 1 = everything, 2 = never."""
+        self._wake_mode = (self._wake_mode + delta) % 3
+        if self.on_wake_mode:
+            try:
+                self.on_wake_mode(self._wake_mode)
             except Exception:
                 pass
 
@@ -3148,6 +3168,8 @@ class UI:
                 self.on_volume(self._volume)
         elif self._settings_idx == 7:    # Sleep timeout
             self._cycle_timeout(delta)
+        elif self._settings_idx == 8:    # Auto-wake policy
+            self._cycle_wake(delta)
         else:
             return
         self._cache = [''] * 15

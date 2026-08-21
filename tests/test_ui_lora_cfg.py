@@ -67,7 +67,7 @@ def _open_lora(cfg=None):
     g.set_lora_config(cfg or _DEFAULT)
     g.state = ui.STATE_SETTINGS
     g._settings_page = ui._SET_MAIN
-    g._settings_idx = 9  # LoRa cfg row (inserted before the inert Addr row)
+    g._settings_idx = 10  # LoRa cfg row (inserted before the inert Addr row)
     g.handle_key(b"\x0d")
     return g
 

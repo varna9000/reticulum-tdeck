@@ -372,10 +372,18 @@ def test_settings_timeout_and_volume_adjust():
     g._volume = 10
     g._settings_adjust(1)
     assert g._volume == 10                       # clamped
+    g._settings_idx = 8                          # Wake policy
+    saved_w = []
+    g.on_wake_mode = lambda m: saved_w.append(m)
+    g._wake_mode = 0
+    g._settings_adjust(1)
+    assert g._wake_mode == 1 and saved_w[-1] == 1
+    g._settings_adjust(-1)
+    assert g._wake_mode == 0                     # wraps both ways
     g._settings_idx = 0
     for _ in range(20):
         g._settings_scroll_down()
-    assert g._settings_idx == 10                  # 11 items now (LoRa cfg added)
+    assert g._settings_idx == 11                  # 12 items now (Wake added)
 
 
 def test_browser_prev_next_and_paging():
