@@ -401,13 +401,15 @@ Press `s` from the node list to open settings. Navigate with trackball, select w
 
 **Sleep** — Cycle the screen inactivity timeout (10 s / 30 s / 60 s / never). The screen never sleeps mid-transfer or mid-audio.
 
+**Wake** — What wakes the screen automatically: `msgs` (incoming messages only, the default), `all` (messages and peer announces — the pre-1.4 behaviour, keeps the screen lit on a busy mesh), or `never` (input only).
+
 Connecting to WiFi or a TCP server no longer freezes the UI — the screen shows `Connecting...` while the work runs in the background, then reports the result.
 
 All settings (WiFi credentials, TCP host/port, node name, TCP enabled state, volume, keyboard backlight, auto-announce, sleep timeout) are saved to `/rns/settings.json` and restored on boot. If WiFi and TCP were enabled when the device was last used, they reconnect automatically on startup.
 
 ### Screen Power-Off
 
-The screen turns off automatically after a configurable inactivity timeout (10 s default; set to 30 s / 60 s / never under Settings → Sleep) to save battery, and never sleeps while a page transfer or audio playback is in progress. Any keypress, trackball event, incoming message, or peer announce wakes the screen. The first input after wake is consumed (not processed) to prevent accidental actions. The MCU stays awake to receive LoRa packets — only the backlight is toggled. All SPI display writes are skipped while the screen is off, freeing the bus for LoRa.
+The screen turns off automatically after a configurable inactivity timeout (10 s default; set to 30 s / 60 s / never under Settings → Sleep) to save battery, and never sleeps while a page transfer or audio playback is in progress. Any keypress or trackball event wakes the screen; whether an incoming message or peer announce also wakes it follows the Settings → Wake policy (messages only by default). The first input after wake is consumed (not processed) to prevent accidental actions. The MCU stays awake to receive LoRa packets — only the backlight is toggled. All SPI display writes are skipped while the screen is off, freeing the bus for LoRa.
 
 ### Screen Lock
 
