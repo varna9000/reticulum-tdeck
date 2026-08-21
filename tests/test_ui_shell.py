@@ -20,6 +20,7 @@ class _Pin:
     OUT = 1
     PULL_UP = 2
     IRQ_FALLING = 4
+    IRQ_RISING = 8
 
     def __init__(self, *a, **k):
         pass
@@ -301,6 +302,84 @@ def test_exit_then_any_key_leaves():
     assert g._shell_status and "exited" in g._shell_status
     g.handle_key(b"x")
     assert g.state == ui.STATE_NODES
+
+
+class _ClickPin:
+    def __init__(self):
+        self.v = 1
+
+    def value(self):
+        return self.v
+
+
+def test_click_isr_classifies_short_and_long():
+    g = _mkui()
+    p = _ClickPin()
+    clock = [10000]
+    real = _time.ticks_ms
+    _time.ticks_ms = lambda: clock[0]
+    try:
+        p.v = 0; g._irq_handler_click(p)          # press
+        clock[0] += 100
+        p.v = 1; g._irq_handler_click(p)          # released well under 700ms
+        assert (g._irq_click, g._irq_long_click) == (1, 0)
+        clock[0] += 500
+        p.v = 0; g._irq_handler_click(p)
+        clock[0] += 800
+        p.v = 1; g._irq_handler_click(p)          # held past the threshold
+        assert (g._irq_click, g._irq_long_click) == (1, 1)
+        p.v = 1; g._irq_handler_click(p)          # stray release: ignored
+        assert (g._irq_click, g._irq_long_click) == (1, 1)
+    finally:
+        _time.ticks_ms = real
+
+
+def test_long_click_locks_and_a_single_click_unlocks():
+    g = _mkui()
+    g._irq_long_click = 1; g.handle_trackball()
+    assert g.locked and not g._screen_on
+
+    # Locked: rolls and external wakes are still discarded
+    g._irq_right = 1; g.handle_trackball()
+    assert g.node_tab == ui.TAB_MSG and not g._screen_on
+    g.wake_screen()
+    assert not g._screen_on
+
+    # One click is enough to get back in — no hold required
+    g._irq_click = 1; g.handle_trackball()
+    assert not g.locked and g._screen_on and g.dirty
+
+
+def test_a_long_click_still_unlocks():
+    # The gesture that locked it keeps working as a way back in, so a user
+    # who holds out of habit is not stuck.
+    g = _mkui()
+    g._irq_long_click = 1; g.handle_trackball()
+    g._irq_long_click = 1; g.handle_trackball()
+    assert not g.locked and g._screen_on
+
+
+def test_the_unlocking_click_is_swallowed():
+    # The click that unlocks must not also act on whatever the cursor was
+    # sitting on, and anything drained alongside it goes too.
+    g = _mkui()
+    g._irq_long_click = 1; g.handle_trackball()
+    g._irq_click = 1; g._irq_right = 1; g.handle_trackball()
+    assert not g.locked
+    assert g.node_tab == ui.TAB_MSG
+
+
+def test_a_click_alone_never_locks():
+    g = _mkui()
+    g._irq_click = 1; g.handle_trackball()
+    assert not g.locked
+
+
+def test_lock_refused_while_recording():
+    g = _mkui()
+    g.state = ui.STATE_RECORDING
+    g._irq_long_click = 1; g.handle_trackball()
+    assert not g.locked and g._screen_on
 
 
 if __name__ == "__main__":

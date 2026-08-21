@@ -241,6 +241,8 @@ The device starts on the node list screen with three tabs: **MSG** (LXMF chat pe
 | Open settings | Press `s` |
 | Ping selected peer (MSG) | Press `p` |
 | Delete selected peer/node | Press `d` |
+| Lock the device | Hold trackball click (0.7 s), anywhere |
+| Unlock the device | Any trackball click |
 
 Deleting a peer forgets its chat history and cached media locally; it
 re-appears on the next announce. When the peer list fills up (16 entries) the
@@ -406,6 +408,10 @@ All settings (WiFi credentials, TCP host/port, node name, TCP enabled state, vol
 ### Screen Power-Off
 
 The screen turns off automatically after a configurable inactivity timeout (10 s default; set to 30 s / 60 s / never under Settings → Sleep) to save battery, and never sleeps while a page transfer or audio playback is in progress. Any keypress, trackball event, incoming message, or peer announce wakes the screen. The first input after wake is consumed (not processed) to prevent accidental actions. The MCU stays awake to receive LoRa packets — only the backlight is toggled. All SPI display writes are skipped while the screen is off, freeing the bus for LoRa.
+
+### Screen Lock
+
+Holding the trackball click for 0.7 s locks the device from any screen: the screen blanks and every keypress and trackball event is dropped, including the wakes an incoming message or peer announce would normally trigger. The keyboard is still drained in the background so nothing queues up behind the lock. Notification sounds and unread counters keep working, and the radio keeps receiving — only the display and input are shut out. A single click unlocks and repaints — the ball is recessed enough that an accidental press is unlikely, and needing a 0.7 s hold just to see the screen reads as a stuck device. Locking is refused while a voice message is recording.
 
 ### Status Bar
 
