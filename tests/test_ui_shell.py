@@ -93,8 +93,8 @@ def test_ssh_tab_lists_nodes():
     assert g.node_tab == ui.TAB_SSH
     g.add_shell_node(b"\xa3" * 16, hops=2)
     g.draw()
-    # SSH(1) in the tab bar; the hash prefix shows as the row name
-    assert any("SSH(1)" in str(c[1]) for c in g.tft.calls if c[0] == "text")
+    # RNSH(1) in the tab bar; the hash prefix shows as the row name
+    assert any("RNSH(1)" in str(c[1]) for c in g.tft.calls if c[0] == "text")
     assert g._shell_keys == [b"\xa3" * 16]
 
 

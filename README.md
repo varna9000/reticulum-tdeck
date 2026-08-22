@@ -21,7 +21,7 @@ Text displays in English as well as Bulgarian, Russian, Ukrainian and Belarusian
 
 <p>
 <img src="images/splash.jpeg" width="49%" alt="Splash screen"/>
-<img src="images/lxmf-list.jpeg" width="49%" alt="Messenger — LXMF peer list with MSG / NET / SSH tabs"/>
+<img src="images/lxmf-list.jpeg" width="49%" alt="Messenger — LXMF peer list with MSG / NET / RNSH tabs"/>
 </p>
 <p>
 <img src="images/nomadnet-reader.jpeg" width="49%" alt="NomadNet browser rendering a node page with block-glyph banner art"/>
@@ -229,14 +229,14 @@ mpremote cp tdeck_node.py :/main.py
 
 ### Node List Screen
 
-The device starts on the node list screen with three tabs: **MSG** (LXMF chat peers), **NET** (browsable NomadNet nodes), and **SSH** (rnsh shell listeners), all populated from announces. Peers with unread messages are marked with `*`. A NomadNet instance announces both aspects, so it appears in both MSG and NET — chattable in MSG, browsable in NET.
+The device starts on the node list screen with three tabs: **MSG** (LXMF chat peers), **NET** (browsable NomadNet nodes), and **RNSH** (rnsh shell listeners), all populated from announces. Peers with unread messages are marked with `*`. A NomadNet instance announces both aspects, so it appears in both MSG and NET — chattable in MSG, browsable in NET.
 
 | Action | Input |
 |---|---|
-| Switch MSG/NET/SSH tab | Trackball left/right (or `b`) |
+| Switch MSG/NET/RNSH tab | Trackball left/right (or `b`) |
 | Select peer/node | Trackball up/down |
 | Open chat / node page / shell | Trackball click (or Enter) |
-| Enter rnsh hash manually (SSH) | Press `m` |
+| Enter rnsh hash manually (RNSH) | Press `m` |
 | Send announce | Press `a` |
 | Open settings | Press `s` |
 | Ping selected peer (MSG) | Press `p` |
@@ -273,9 +273,9 @@ re-fetching over LoRa.
 
 v1 limitations: read-only (form fields render as placeholders), pages are capped at 16 KB, and nodes that require identification will time out.
 
-### rnsh Shell (SSH tab)
+### rnsh Shell (RNSH tab)
 
-The SSH tab lists [rnsh](https://github.com/acehoss/rnsh) listeners heard via announces; press `m` to type a listener's 32-hex destination hash directly. Clicking one establishes an encrypted link, identifies your node, exchanges protocol versions, and starts the remote default shell on a pty. Output renders as a **scrolling text log** on a **53×16 grid** (see the font note below) — line-oriented commands (`ls -l`, `ps`, `git log`, `cat`) keep their column layout instead of wrapping; full-screen TUIs (`vim`, `htop`) won't render correctly (ANSI cursor addressing is stripped in this MVP). The listener must authorize your **identity hash** (shown at boot and on the SSH manual-entry screen) via its `-a` flag or `~/.config/rnsh/allowed_identities`, unless it runs `--no-auth`.
+The RNSH tab lists [rnsh](https://github.com/acehoss/rnsh) listeners heard via announces; press `m` to type a listener's 32-hex destination hash directly. Clicking one establishes an encrypted link, identifies your node, exchanges protocol versions, and starts the remote default shell on a pty. Output renders as a **scrolling text log** on a **53×16 grid** (see the font note below) — line-oriented commands (`ls -l`, `ps`, `git log`, `cat`) keep their column layout instead of wrapping; full-screen TUIs (`vim`, `htop`) won't render correctly (ANSI cursor addressing is stripped in this MVP). The listener must authorize your **identity hash** (shown at boot and on the RNSH manual-entry screen) via its `-a` flag or `~/.config/rnsh/allowed_identities`, unless it runs `--no-auth`.
 
 | Action | Input |
 |---|---|
