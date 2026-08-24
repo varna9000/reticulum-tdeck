@@ -374,7 +374,7 @@ def test_settings_timeout_and_volume_adjust():
     g._settings_idx = 0
     for _ in range(20):
         g._settings_scroll_down()
-    assert g._settings_idx == 9                   # 10 items now
+    assert g._settings_idx == 10                  # 11 items now (LoRa cfg added)
 
 
 def test_browser_prev_next_and_paging():

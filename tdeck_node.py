@@ -257,6 +257,21 @@ def _lora_status(online):
         asyncio.create_task(_reannounce())
 
 LORA_CONFIG["on_status"] = _lora_status
+
+# Overlay any radio params saved from Settings > LoRa cfg onto LORA_CONFIG
+# before the interface is built, so a retune persists across reboots. Inlined
+# JSON read — _load_settings() is defined further down, after this runs.
+try:
+    import json as _json
+    with open("/rns/settings.json", "r") as _sf:
+        _saved_lora = _json.load(_sf).get("lora")
+    if _saved_lora:
+        for _k in ("freq_khz", "sf", "bw", "coding_rate", "tx_power"):
+            if _saved_lora.get(_k) is not None:
+                LORA_CONFIG[_k] = _saved_lora[_k]
+except Exception:
+    pass
+
 spi_acquire_lora()
 rns.setup_interfaces()
 spi_release_lora()
@@ -903,6 +918,38 @@ def lora_reset():
     gui.dirty = True
 
 
+_LORA_PARAM_KEYS = ("freq_khz", "sf", "bw", "coding_rate", "tx_power")
+
+
+def on_lora_config(params):
+    """Live-retune the mesh radio from Settings > LoRa cfg. Applies via the
+    interface's reconfigure() (no restart), then on success updates LORA_CONFIG
+    (so a later manual reset keeps the new params) and persists them under the
+    'lora' settings key. Returns True on success so the UI can show the result."""
+    lora = None
+    for iface in rns.interfaces:
+        if iface.__class__.__name__ == 'LoRaInterface':
+            lora = iface
+            break
+    if not lora or not hasattr(lora, 'reconfigure'):
+        return False
+    try:
+        ok = lora.reconfigure(params)
+    except Exception as e:
+        if DEBUG >= 1:
+            print("[LoRa] reconfigure error:", e)
+        return False
+    if ok:
+        for k in _LORA_PARAM_KEYS:
+            if k in params:
+                LORA_CONFIG[k] = params[k]
+        settings = _load_settings()
+        settings["lora"] = {k: LORA_CONFIG[k] for k in _LORA_PARAM_KEYS}
+        _save_settings(settings)
+        gui.set_lora_config(LORA_CONFIG)
+    return ok
+
+
 _tcp_iface = None  # track separately so rns.run() doesn't double-start it
 _lora_task = None  # track poll_loop task to cancel on restart
 _tcp_task = None
@@ -1193,6 +1240,8 @@ gui.on_tcp_toggle = tcp_toggle
 gui.on_tcp_connect = tcp_connect_async
 gui.on_node_name = set_node_name
 gui.on_lora_reset = lora_reset
+gui.on_lora_config = on_lora_config
+gui.set_lora_config(LORA_CONFIG)   # seed the editor with the booted radio params
 def on_volume(v):
     """Settings volume slider: apply (tones regenerate, PCM attenuates),
     persist, and play a short blip at the new level as confirmation."""

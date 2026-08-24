@@ -56,6 +56,25 @@ _SET_WIFI_PASS = 2
 _SET_TCP_HOST  = 3
 _SET_NODE_NAME = 4
 _SET_RADIO     = 5
+_SET_LORA      = 6   # editable radio params (freq/bw/sf/cr/tx)
+_SET_LORA_FREQ = 7   # numeric entry sub-page for the frequency
+
+# LoRa radio config: allowed values for the editor. BW is offered as the
+# three practical LoRa bandwidths (the SX1262 also supports narrower ones,
+# rarely used on a mesh). SF/CR/TX clamp at their bounds; freq is stepped
+# or typed in kHz. These are the ranges the sx126x driver's configure()
+# accepts (SF 6-12, CR 4/5-4/8), narrowed to sane mesh values.
+_LORA_FIELDS = ("freq_khz", "bw", "sf", "coding_rate", "tx_power")
+_LORA_BW_CHOICES = ("125", "250", "500")
+_LORA_SF_MIN = 7
+_LORA_SF_MAX = 12
+_LORA_CR_MIN = 5     # 4/5
+_LORA_CR_MAX = 8     # 4/8
+_LORA_TX_MIN = 0
+_LORA_TX_MAX = 22
+_LORA_FREQ_STEP = 100      # kHz per trackball step
+_LORA_FREQ_MIN = 137000    # kHz — SX1262 usable low end
+_LORA_FREQ_MAX = 1020000   # kHz — SX1262 usable high end
 
 # Layout constants (320x240 landscape, 8x16 font)
 SCREEN_W = 320
@@ -161,6 +180,10 @@ def _pad(s, width=COLS):
     if len(s) >= width:
         return s[:width]
     return s + ' ' * (width - len(s))
+
+
+def _clamp(v, lo, hi):
+    return lo if v < lo else (hi if v > hi else v)
 
 
 # Wall clock is meaningful only after network time sync (no RTC battery)
@@ -441,6 +464,17 @@ class UI:
         self._tcp_connecting = False   # True while an async TCP connect is running
         self._screen_timeout_ms = _SCREEN_TIMEOUT_MS  # configurable inactivity sleep
 
+        # LoRa radio config editor (Settings > LoRa cfg). _lora_cfg mirrors the
+        # live interface params (pushed in by tdeck_node.py via set_lora_config);
+        # _lora_edit is a working copy held only while the page is open, so
+        # backing out without Apply discards. _lora_field is the selected row
+        # (0-4 = fields, 5 = the Apply & Save row).
+        self._lora_cfg = {"freq_khz": 868000, "bw": "125", "sf": 7,
+                          "coding_rate": 5, "tx_power": 14}
+        self._lora_edit = None
+        self._lora_field = 0
+        self._lora_applying = ""   # "", "applied", or "failed" — transient status
+
         # Message ids. Every cache and callback below refers to a message by
         # id, never by list position: trimming history at MAX_HISTORY shifts
         # every position, so positions silently point at the wrong message
@@ -480,6 +514,7 @@ class UI:
         self.on_tcp_connect = None    # (host, port) -> None — async; calls set_tcp_result
         self.on_node_name = None      # (name) -> None
         self.on_lora_reset = None     # () -> bool
+        self.on_lora_config = None    # (params) -> bool — live-apply + persist radio params
         self.on_volume = None         # (level) -> None
         self.on_kbd_backlight = None  # (enabled) -> bool
         self.on_audio_play = None     # (codec2_bytes, mode) -> None
@@ -2209,7 +2244,15 @@ class UI:
                     self._cache = [''] * 15
                     self.dirty = True
                     return True
-                # idx 9 (address) is informational — Enter does nothing
+                elif self._settings_idx == 9:  # LoRa radio config page
+                    self._settings_page = _SET_LORA
+                    self._lora_edit = dict(self._lora_cfg)
+                    self._lora_field = 0
+                    self._lora_applying = ""
+                    self._cache = [''] * 15
+                    self.dirty = True
+                    return True
+                # idx 10 (address) is informational — Enter does nothing
         elif self._settings_page == _SET_RADIO:
             if ch == 0x1B or ch == 0x08:
                 self._settings_page = _SET_MAIN
@@ -2217,6 +2260,61 @@ class UI:
                 self._cache = [''] * 15
                 self.dirty = True
                 return True
+        elif self._settings_page == _SET_LORA:
+            if ch == 0x1B or ch == 0x08:   # back — discard unapplied edits
+                self._lora_edit = None
+                self._lora_applying = ""
+                self._settings_page = _SET_MAIN
+                self._settings_idx = 9
+                self._cache = [''] * 15
+                self.dirty = True
+                return True
+            elif ch == 0x0D:   # Enter / trackball click
+                if self._lora_field == 0:          # Freq -> numeric entry page
+                    self._settings_page = _SET_LORA_FREQ
+                    self.cmd_buf = bytearray()     # type a fresh value; Enter empty keeps current
+                    self._cache = [''] * 15
+                    self.dirty = True
+                elif self._lora_field == 5:        # Apply & Save
+                    self._lora_apply()
+                else:                              # BW/SF/CR/TX -> cycle forward
+                    self._lora_cycle(_LORA_FIELDS[self._lora_field], 1)
+                    self._lora_applying = ""
+                    self._cache = [''] * 15
+                    self.dirty = True
+                return True
+        elif self._settings_page == _SET_LORA_FREQ:
+            if ch == 0x1B:   # cancel, keep old freq
+                self._settings_page = _SET_LORA
+                self._cache = [''] * 15
+                self.dirty = True
+                return True
+            elif ch == 0x08:   # Backspace (empty -> back)
+                if len(self.cmd_buf) > 0:
+                    self.cmd_buf = self.cmd_buf[:-1]
+                    self._input_dirty = True
+                else:
+                    self._settings_page = _SET_LORA
+                    self._cache = [''] * 15
+                    self.dirty = True
+                return True
+            elif ch == 0x0D:   # save — parse, clamp, store into the edit copy
+                try:
+                    v = int(self.cmd_buf.decode().strip())
+                except Exception:
+                    v = self._lora_edit["freq_khz"]
+                self._lora_edit["freq_khz"] = _clamp(v, _LORA_FREQ_MIN, _LORA_FREQ_MAX)
+                self._lora_applying = ""
+                self.cmd_buf = bytearray()
+                self._settings_page = _SET_LORA
+                self._cache = [''] * 15
+                self.dirty = True
+                return True
+            elif 0x30 <= ch <= 0x39:   # digits only
+                self.cmd_buf += key
+                self._input_dirty = True
+                return True
+            return True   # swallow anything else on the numeric page
         elif self._settings_page == _SET_WIFI_SCAN:
             if ch == 0x1B or ch == 0x08:
                 self._settings_page = _SET_MAIN
@@ -2376,6 +2474,10 @@ class UI:
             self._draw_node_name()
         elif self._settings_page == _SET_RADIO:
             self._draw_settings_radio()
+        elif self._settings_page == _SET_LORA:
+            self._draw_settings_lora()
+        elif self._settings_page == _SET_LORA_FREQ:
+            self._draw_lora_freq()
 
     def _timeout_label(self):
         ms = self._screen_timeout_ms
@@ -2401,9 +2503,13 @@ class UI:
         anc_line = "Announce: " + ("AUTO" if self._auto_announce else "manual")
         sleep_line = "Sleep: " + self._timeout_label()
         radio_line = "Radio stats"
+        c = self._lora_cfg
+        loracfg_line = ("LoRa cfg: %dk SF%d BW%s"
+                        % (c["freq_khz"], c["sf"], c["bw"]))
         addr_line = "Addr: " + (self.my_address or "?")
         items = [wifi_line, tcp_line, name_line, lora_line, vol_line,
-                 kbbl_line, anc_line, sleep_line, radio_line, addr_line]
+                 kbbl_line, anc_line, sleep_line, radio_line, loracfg_line,
+                 addr_line]
         for i in range(BODY_ROWS - 1):
             y = BODY_Y + (i + 1) * CHAR_H
             if i < len(items):
@@ -2448,6 +2554,74 @@ class UI:
             else:
                 self._draw_row_cached(i + 2, "", y, self.NEON_CYAN)
         self._draw_settings_bottom_bar()
+
+    def _lora_field_lines(self):
+        """Human-readable value strings for the five editable fields, in
+        _LORA_FIELDS order. Reads the pending edit copy if the page is open."""
+        e = self._lora_edit or self._lora_cfg
+        return [
+            "Freq   " + str(e["freq_khz"]) + " kHz",
+            "BW     " + str(e["bw"]) + " kHz",
+            "SF     " + str(e["sf"]),
+            "CR     4/" + str(e["coding_rate"]),
+            "TX     " + str(e["tx_power"]) + " dBm",
+        ]
+
+    def _draw_settings_lora(self):
+        modified = self._lora_edit is not None and self._lora_edit != self._lora_cfg
+        hdr = "< LoRa Radio" + ("   *modified" if modified else "")
+        self._draw_row_cached(1, hdr, BODY_Y,
+                              self.NEON_MAG if modified else self.NEON_CYAN)
+
+        apply_line = "[ Apply & Save ]"
+        if self._lora_applying == "applied":
+            status = "applied -- now live & saved"
+        elif self._lora_applying == "failed":
+            status = "apply FAILED -- radio unchanged"
+        else:
+            status = "must match every peer you talk to"
+
+        # (text, selectable field index or None)
+        body = [(fl, fi) for fi, fl in enumerate(self._lora_field_lines())]
+        body.append(("", None))
+        body.append((apply_line, 5))
+        body.append((status, None))
+
+        for i in range(BODY_ROWS - 1):
+            y = BODY_Y + (i + 1) * CHAR_H
+            if i < len(body):
+                text, field = body[i]
+                line = "  " + text
+                if field is not None and field == self._lora_field:
+                    cache_key = '\x01' + line
+                    if self._cache[i + 2] != cache_key:
+                        self._cache[i + 2] = cache_key
+                        self.tft.text(self.font, self._tb(_pad(line)), 0, y,
+                                      self.YELLOW, self.SEL_BG)
+                        self.tft.fill_rect(4, y, 3, CHAR_H, self.NEON_MAG)
+                else:
+                    if text == apply_line:
+                        color = self.NEON_GREEN
+                    elif self._lora_applying == "failed" and text == status:
+                        color = self.NEON_MAG
+                    else:
+                        color = self.NEON_CYAN
+                    self._draw_row_cached(i + 2, line, y, color)
+            else:
+                self._draw_row_cached(i + 2, "", y, self.NEON_CYAN)
+
+        self._draw_settings_bottom_bar()
+
+    def _draw_lora_freq(self):
+        self._draw_row_cached(1, "LoRa Frequency (kHz)", BODY_Y, self.NEON_CYAN)
+        cur = (self._lora_edit or self._lora_cfg)["freq_khz"]
+        self._draw_row_cached(2, "  current " + str(cur) + " kHz",
+                              BODY_Y + CHAR_H, self.NEON_CYAN)
+        self._draw_row_cached(3, "  range " + str(_LORA_FREQ_MIN) + "-"
+                              + str(_LORA_FREQ_MAX), BODY_Y + 2 * CHAR_H, self.DIM_CYAN)
+        for i in range(3, BODY_ROWS):
+            self._draw_row_cached(i + 1, "", BODY_Y + i * CHAR_H, self.NEON_CYAN)
+        self._draw_input_line(self.cmd_buf.decode())
 
     def _draw_settings_bottom_bar(self):
         self.tft.text(self.font, _pad(""), 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
@@ -2810,11 +2984,16 @@ class UI:
         elif self._settings_page == _SET_RADIO:
             if self._settings_scroll > 0:
                 self._settings_scroll -= 1
+        elif self._settings_page == _SET_LORA:
+            if self._lora_field > 0:
+                self._lora_field -= 1
+                self.dirty = True
 
     def _settings_scroll_down(self):
         if self._settings_page == _SET_MAIN:
-            # 10 items: WiFi TCP Name LoRa Vol KbBL Announce Sleep Radio Addr
-            if self._settings_idx < 9:
+            # 11 items: WiFi TCP Name LoRa Vol KbBL Announce Sleep Radio
+            #           LoRaCfg Addr
+            if self._settings_idx < 10:
                 self._settings_idx += 1
         elif self._settings_page == _SET_WIFI_SCAN:
             if self._settings_idx < len(self._wifi_networks) - 1:
@@ -2825,6 +3004,10 @@ class UI:
         elif self._settings_page == _SET_RADIO:
             if self._settings_scroll < max(0, self._radio_rows - (BODY_ROWS - 1)):
                 self._settings_scroll += 1
+        elif self._settings_page == _SET_LORA:
+            if self._lora_field < 5:   # 0-4 fields, 5 = Apply row
+                self._lora_field += 1
+                self.dirty = True
 
     def _cycle_timeout(self, delta=1):
         """Step the screen inactivity timeout through the preset choices."""
@@ -2840,8 +3023,67 @@ class UI:
             except Exception:
                 pass
 
+    def set_lora_config(self, cfg):
+        """Sync the live radio params into the UI (called on boot and after a
+        successful apply). Keeps _lora_cfg as the truth the editor starts from.
+        bw is normalised to str so it matches _LORA_BW_CHOICES."""
+        for k in _LORA_FIELDS:
+            if k in cfg and cfg[k] is not None:
+                self._lora_cfg[k] = cfg[k]
+        self._lora_cfg["bw"] = str(self._lora_cfg["bw"])
+
+    def _lora_cycle(self, field, delta):
+        """Step one pending field by delta (trackball L/R or click). BW wraps
+        through the choice list; SF/CR/TX clamp; freq steps by _LORA_FREQ_STEP."""
+        e = self._lora_edit
+        if e is None:
+            return
+        if field == "freq_khz":
+            e["freq_khz"] = _clamp(e["freq_khz"] + delta * _LORA_FREQ_STEP,
+                                   _LORA_FREQ_MIN, _LORA_FREQ_MAX)
+        elif field == "bw":
+            choices = _LORA_BW_CHOICES
+            try:
+                i = choices.index(str(e["bw"]))
+            except ValueError:
+                i = 0
+            e["bw"] = choices[(i + delta) % len(choices)]
+        elif field == "sf":
+            e["sf"] = _clamp(e["sf"] + delta, _LORA_SF_MIN, _LORA_SF_MAX)
+        elif field == "coding_rate":
+            e["coding_rate"] = _clamp(e["coding_rate"] + delta, _LORA_CR_MIN, _LORA_CR_MAX)
+        elif field == "tx_power":
+            e["tx_power"] = _clamp(e["tx_power"] + delta, _LORA_TX_MIN, _LORA_TX_MAX)
+
+    def _lora_apply(self):
+        """Push the pending edit to the radio via on_lora_config; on success
+        commit it to _lora_cfg (so the main-page summary and a later reset use
+        the new values). The page stays open showing the result."""
+        params = dict(self._lora_edit)
+        params["bw"] = str(params["bw"])
+        ok = False
+        if self.on_lora_config:
+            try:
+                ok = bool(self.on_lora_config(params))
+            except Exception:
+                ok = False
+        if ok:
+            self._lora_cfg = dict(self._lora_edit)
+            self._lora_applying = "applied"
+        else:
+            self._lora_applying = "failed"
+        self._cache = [''] * 15
+        self.dirty = True
+
     def _settings_adjust(self, delta):
-        """Trackball left/right on an adjustable main-settings row."""
+        """Trackball left/right on an adjustable settings row."""
+        if self._settings_page == _SET_LORA:
+            if 0 <= self._lora_field <= 4:
+                self._lora_cycle(_LORA_FIELDS[self._lora_field], delta)
+                self._lora_applying = ""
+                self._cache = [''] * 15
+                self.dirty = True
+            return
         if self._settings_page != _SET_MAIN:
             return
         if self._settings_idx == 4:      # Volume
