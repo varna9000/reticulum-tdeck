@@ -90,9 +90,19 @@ else
     echo "=== MicroPython already present ==="
 fi
 
-# Build mpy-cross (suppress Apple Clang VLA warning)
+# Build mpy-cross. Each -Wno-error is compiler-specific and unknown ones are
+# hard errors, so probe before use: gnu-folding-constant is Apple-Clang-only
+# (VLA warning), unterminated-string-initialization arrived in GCC 15 and
+# fires -Werror on MicroPython v1.24 sources.
 echo "=== Building mpy-cross ==="
-make -C micropython/mpy-cross CFLAGS_EXTRA="-Wno-error=gnu-folding-constant" -j$(sysctl -n hw.ncpu 2>/dev/null || nproc) 2>&1 | tail -3
+MPYCROSS_CFLAGS=""
+for _flag in gnu-folding-constant unterminated-string-initialization; do
+    if echo 'int main(void){return 0;}' | \
+       cc -fsyntax-only "-Wno-error=$_flag" -x c - 2>/dev/null; then
+        MPYCROSS_CFLAGS="$MPYCROSS_CFLAGS -Wno-error=$_flag"
+    fi
+done
+make -C micropython/mpy-cross CFLAGS_EXTRA="$MPYCROSS_CFLAGS" -j$(sysctl -n hw.ncpu 2>/dev/null || nproc) 2>&1 | tail -3
 
 # Ensure MicroPython submodules are present
 echo "=== Checking MicroPython submodules ==="
@@ -102,6 +112,20 @@ git submodule update --init \
     lib/micropython-lib \
     lib/tinyusb
 cd "$BUILD_DIR"
+
+# Pin the tinyusb managed component. esp_tinyusb 1.0 (MicroPython v1.24's
+# pin) references CFG_TUD_CDC_EP_BUFSIZE, which tinyusb 0.17 renamed — but
+# its manifest allows tinyusb 0.*, so the IDF component manager pulls an
+# incompatible release on a fresh resolve. Constrain it and force a
+# re-resolve if the constraint was missing.
+MAIN_YML="micropython/ports/esp32/main_esp32s3/idf_component.yml"
+if [ -f "$MAIN_YML" ] && ! grep -q 'espressif/tinyusb' "$MAIN_YML"; then
+    # awk, not sed: inserting a line portably is beyond BSD sed's -i
+    awk '{print} /^  espressif\/esp_tinyusb:/{print "  espressif/tinyusb: \"<0.17.0\""}' \
+        "$MAIN_YML" > "$MAIN_YML.tmp" && mv "$MAIN_YML.tmp" "$MAIN_YML"
+    rm -f  micropython/ports/esp32/dependencies.lock
+    rm -rf micropython/ports/esp32/managed_components
+fi
 
 # --- Step 3: st7789_mpy C driver ---
 if [ ! -d "st7789_mpy" ]; then
