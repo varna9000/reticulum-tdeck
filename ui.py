@@ -747,7 +747,7 @@ class UI:
         tabs = (
             " MSG(" + str(len(self._peer_keys)) + ("*" if un else "") + ") ",
             " NET(" + str(len(self._node_keys)) + ") ",
-            " SSH(" + str(len(self._shell_keys)) + ") ",
+            " RNSH(" + str(len(self._shell_keys)) + ") ",
         )
         cache_key = str(self.node_tab) + "".join(tabs)
         if self._cache[1] == cache_key:
