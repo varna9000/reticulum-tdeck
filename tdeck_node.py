@@ -493,8 +493,9 @@ def _on_message_inner(message):
             gui.snr = iface.snr
             break
 
-    # Wake screen and play notification
-    gui.wake_screen()
+    # Wake screen and play notification (mode 2 = never wake automatically)
+    if gui._wake_mode != 2:
+        gui.wake_screen()
     if DEBUG >= 1:
         print("[RX] wake ok")
     sound.play_rx()
@@ -556,7 +557,8 @@ def on_announce(destination_hash, display_name):
         pass
 
     gui.add_peer(destination_hash, display_name, rssi=rssi, hops=hops, via=via)
-    gui.wake_screen()
+    if gui._wake_mode == 1:  # only mode 1 wakes on announces; a live mesh never sleeps otherwise
+        gui.wake_screen()
     if DEBUG >= 1:
         print("[Peer]", display_name or "?", "[" + destination_hash.hex()[:8] + "]",
               "hops:", hops)
@@ -1225,6 +1227,13 @@ def set_screen_timeout(ms):
     _save_settings(settings)
 
 
+def set_wake_mode(mode):
+    """GUI: persist the auto-wake policy (0 = messages, 1 = all, 2 = never)."""
+    settings = _load_settings()
+    settings["wake_mode"] = int(mode)
+    _save_settings(settings)
+
+
 def forget_peer(key):
     """GUI: a peer was deleted — drop its LXMF-hash mappings too so a fresh
     announce re-adds it cleanly."""
@@ -1256,6 +1265,7 @@ gui.on_kbd_backlight = set_kbd_backlight
 gui.on_ping = on_ping
 gui.on_auto_announce = set_auto_announce
 gui.on_screen_timeout = set_screen_timeout
+gui.on_wake_mode = set_wake_mode
 gui.on_delete_peer = forget_peer
 gui.get_radio_stats = get_radio_stats
 gui.my_address = dest.hexhash
@@ -1600,6 +1610,9 @@ def _auto_connect_wifi():
     _st = settings.get("screen_timeout_ms")
     if _st is not None:
         gui._screen_timeout_ms = int(_st)
+    _wm = settings.get("wake_mode")
+    if _wm is not None:
+        gui._wake_mode = int(_wm)
     # WiFi reconnect is deferred to the event loop (_auto_connect_wifi_async) so a
     # slow or absent AP can never block boot on the loading screen.
 

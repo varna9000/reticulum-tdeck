@@ -91,7 +91,8 @@ def _on_announce(dest_hash, app_data, packet):
         return
     _gui.add_nomad_node(dest_hash, _decode_name(app_data),
                         hops=_node_hops(dest_hash))
-    _gui.wake_screen()
+    if _gui._wake_mode == 1:  # announces wake only under Wake: all
+        _gui.wake_screen()
 
 
 

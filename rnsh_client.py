@@ -94,7 +94,8 @@ def _on_announce(dest_hash, app_data, packet):
         return
     if _gui is not None:
         _gui.add_shell_node(dest_hash, hops=_node_hops(dest_hash))
-        _gui.wake_screen()
+        if _gui._wake_mode == 1:  # announces wake only under Wake: all
+            _gui.wake_screen()
 
 
 
