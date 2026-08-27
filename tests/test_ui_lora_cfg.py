@@ -20,6 +20,7 @@ class _Pin:
     OUT = 1
     PULL_UP = 2
     IRQ_FALLING = 4
+    IRQ_RISING = 8
 
     def __init__(self, *a, **k):
         pass

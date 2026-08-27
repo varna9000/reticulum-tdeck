@@ -108,6 +108,8 @@ MAX_CACHED_IMAGES = 3  # max JPEG payloads kept in RAM
 # Horizontal stays high: tab switches should be deliberate.
 _TB_DEBOUNCE_MS = 30
 _TB_H_DEBOUNCE_MS = 150
+# Trackball click held at least this long toggles the device lock
+_TB_LONG_PRESS_MS = 700
 
 # Screen power-off timeout options (ms); 0 = never sleep
 _SCREEN_TIMEOUT_MS = 10000
@@ -422,17 +424,22 @@ class UI:
         self._irq_up = 0
         self._irq_down = 0
         self._irq_click = 0
+        self._irq_long_click = 0
         self._irq_left = 0
         self._irq_right = 0
         # ISR debounce timestamps (ticks_ms is ISR-safe)
         self._irq_last_scroll = 0
         self._irq_last_click = 0
         self._irq_last_h = 0
+        self._irq_press_ms = 0  # falling edge of the click currently held
+        self._irq_pressed = 0   # 1 between a press and its release
 
-        # Register hardware interrupts on trackball pins
+        # Register hardware interrupts on trackball pins. The click pin needs
+        # both edges: press starts the timer, release decides short vs. long.
         self._tb_up.irq(trigger=Pin.IRQ_FALLING, handler=self._irq_handler_up)
         self._tb_down.irq(trigger=Pin.IRQ_FALLING, handler=self._irq_handler_down)
-        self._tb_click.irq(trigger=Pin.IRQ_FALLING, handler=self._irq_handler_click)
+        self._tb_click.irq(trigger=Pin.IRQ_FALLING | Pin.IRQ_RISING,
+                           handler=self._irq_handler_click)
         self._tb_left.irq(trigger=Pin.IRQ_FALLING, handler=self._irq_handler_left)
         self._tb_right.irq(trigger=Pin.IRQ_FALLING, handler=self._irq_handler_right)
 
@@ -498,6 +505,7 @@ class UI:
         self._last_activity = time.ticks_ms()
         self._screen_on = True
         self._bl = None  # backlight pin, set by set_backlight()
+        self.locked = False  # long-press lock: screen off, all input dropped
 
         # Node identity/info (set by tdeck_node.py)
         self.my_address = None       # own LXMF address hex string
@@ -541,7 +549,11 @@ class UI:
     def set_backlight(self, bl_pin):
         self._bl = bl_pin
 
-    def wake_screen(self):
+    def wake_screen(self, force=False):
+        # One guard for every wake source — including the message/announce
+        # wakes tdeck_node.py fires from the RX path. Only unlocking forces.
+        if self.locked and not force:
+            return
         if not self._screen_on:
             if self._bl:
                 self._bl.value(1)
@@ -555,6 +567,18 @@ class UI:
             if self._bl:
                 self._bl.value(0)
             self._screen_on = False
+
+    def lock(self):
+        """Blank the screen and ignore input until the next trackball click.
+        Sounds, unread counters and the radio keep running."""
+        self.locked = True
+        self.sleep_screen()
+
+    def unlock(self):
+        self.locked = False
+        self.wake_screen(force=True)
+        self._cache = [''] * 15  # row caches are stale after the screen blanked
+        self.dirty = True
 
     # --- Drawing helpers ---
 
@@ -2764,10 +2788,23 @@ class UI:
             self._irq_down += 1
 
     def _irq_handler_click(self, pin):
+        # Fires on both edges. Hard-IRQ context: int arithmetic and attribute
+        # stores only — anything that allocates raises inside the ISR.
         t = time.ticks_ms()
-        if time.ticks_diff(t, self._irq_last_click) >= 200:
-            self._irq_last_click = t
-            self._irq_click += 1
+        if pin.value():  # rising edge: button released, classify the press
+            # A release we never saw the press of (button held across boot)
+            # carries no valid hold time — drop it rather than read it as long.
+            if self._irq_pressed:
+                self._irq_pressed = 0
+                if time.ticks_diff(t, self._irq_press_ms) >= _TB_LONG_PRESS_MS:
+                    self._irq_last_click = t  # release bounce adds no click
+                    self._irq_long_click += 1
+                elif time.ticks_diff(t, self._irq_last_click) >= 200:
+                    self._irq_last_click = t
+                    self._irq_click += 1
+        else:            # falling edge: button pressed, start the hold timer
+            self._irq_press_ms = t
+            self._irq_pressed = 1
 
     def _irq_handler_left(self, pin):
         t = time.ticks_ms()
@@ -2785,11 +2822,30 @@ class UI:
         """Drain IRQ-captured trackball events."""
         # Read and reset counters — no disable_irq needed; worst case
         # an ISR fires between read and reset, losing one tick (harmless).
+        long_click = self._irq_long_click;  self._irq_long_click = 0
         up = self._irq_up;  self._irq_up = 0
         down = self._irq_down;  self._irq_down = 0
         click = self._irq_click;  self._irq_click = 0
         left = self._irq_left;  self._irq_left = 0
         right = self._irq_right;  self._irq_right = 0
+
+        # Locking takes a long click; getting back in takes any click. The
+        # ball sits recessed and stiff enough that a pocket press is not a
+        # real risk, and demanding a 0.7s hold to look at the screen reads as
+        # a stuck device. Either way the event is swallowed, so the click
+        # that unlocks cannot also act on whatever it landed on.
+        if self.locked:
+            if click or long_click:
+                self.unlock()
+                return True
+            return False
+
+        # Locking is refused while recording: the mic thread owns the CPU and
+        # no display state may change until capture ends.
+        if long_click:
+            if self.state != STATE_RECORDING:
+                self.lock()
+            return True
 
         if not (up or down or click or left or right):
             return False
@@ -3388,6 +3444,8 @@ class UI:
                 key = self.get_key()
                 if key == b'\x00':
                     break
+                if self.locked:
+                    continue  # keep draining the I2C queue, drop the keys
                 if not self._screen_on:
                     self.wake_screen()
                     # Drain remaining keys — first press only wakes

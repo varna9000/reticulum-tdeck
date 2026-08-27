@@ -24,7 +24,7 @@ sys.modules.setdefault("uasyncio", types.ModuleType("uasyncio"))
 
 
 class _Pin:
-    IN = OUT = PULL_UP = IRQ_FALLING = 0
+    IN = OUT = PULL_UP = IRQ_FALLING = IRQ_RISING = 0
 
     def __init__(self, *a, **k):
         pass
