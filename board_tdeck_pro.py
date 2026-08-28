@@ -14,6 +14,7 @@
 import time
 from machine import Pin, SPI, I2C
 
+import tdeck_pro_config as config
 from tdeck_pro_config import (
     BOARD_1V8_EN, LORA_EN,
     DISP_CS, DISP_DC, DISP_BUSY,
@@ -29,6 +30,17 @@ import tca8418
 # ~700 ms, so the transfer is never the bottleneck. Keep it conservative.
 _SPI_DISP = 8_000_000
 _SPI_LORA = 10_000_000
+
+# --- board traits ----------------------------------------------------------
+# What tdeck_node.py has to branch on. Everything else it reaches for by name.
+#
+# HAS_TRACKBALL is the load-bearing one. ui.py's trackball block claims GPIO
+# 0, 1, 2, 3 and 15; on this board GPIO 3 is the SX1262 chip select. Construct
+# the UI without trackball=False and the radio silently never works.
+HAS_TRACKBALL   = False   # no pointing device; arrows live on the alt layer
+HAS_AUDIO       = False   # PCM5102A DAC present, driver not ported
+HAS_MIC         = False   # no ES7210, so no Codec2 voice either
+HAS_JPEG_SPLASH = False   # blit_buffer here is a per-pixel Python loop
 
 # One shared pin set. Confirmed on hardware: the panel and the radio are on the
 # same SCK/MOSI, so only the clock rate differs between them.
@@ -83,6 +95,21 @@ panel = eink_gdeq031t10.GDEQ031T10(
 
 tft = eink_shim.EinkShim(panel)
 
+# No backlight to drive. ui.set_backlight(board.bl) then becomes a no-op and
+# the screen-timeout path just stops redrawing, which on e-ink leaves the last
+# frame legible on the panel rather than blanking it.
+bl = None
+
+
+def flush():
+    """Push the frame to the panel. The only slow call in a redraw.
+
+    Drawing never touches the panel: every ui.py call lands in a framebuffer
+    and records a dirty rectangle. Call this once per rendered screen. Once per
+    draw call would be 86 refreshes at ~700 ms, which is ten minutes a screen.
+    """
+    tft.flush()
+
 # --- keyboard --------------------------------------------------------------
 
 # I2C pins confirmed by tools/tdeck_pro_bringup.py; variant.h never names them.
@@ -98,10 +125,12 @@ else:
 
 
 def set_kbd_backlight(on):
+    """Returns True when the backlight was actually driven, matching the v1."""
     if keyboard is not None:
         keyboard.set_backlight(on)
     else:
         _kbd_bl.value(1 if on else 0)
+    return True
 
 
 # --- key routing -----------------------------------------------------------
@@ -127,20 +156,24 @@ def attach_ui(gui):
 
 
 def get_key():
-    """One keystroke, or b'' if nothing is pending.
+    """One keystroke, or b'\\x00' if nothing is pending.
 
-    Same contract as tdeck_node.get_key() on the v1, so this drops straight
-    into UI(get_key_func=...). Arrow keys are consumed here and turned into
-    navigation events rather than being passed through as characters.
+    Same contract as the v1's i2c.readfrom(KBD_ADDR, 1), so this drops straight
+    into UI(get_key_func=...). Note the empty result is b'\\x00' and not the
+    driver's b'': ui.py and tdeck_node.py both test against b'\\x00', and a
+    board adapter is the right place to absorb that difference.
+
+    Arrow keys are consumed here and turned into navigation events rather than
+    being passed through as characters.
     """
     if keyboard is None:
-        return b''
+        return b'\x00'
     k = keyboard.get_key()
     if not k:
-        return b''
+        return b'\x00'
     nav = _NAV.get(k[0])
     if nav is not None:
         if _gui is not None:
             _gui.nav_event(nav)
-        return b''
+        return b'\x00'
     return k

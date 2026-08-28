@@ -62,6 +62,18 @@ freeze(_stage, "main.py")
 # ...`) with no display initialised and no way to say why — a blank screen.
 # With it, boot gets far enough to bring up the panel and report the problem.
 freeze(_root, "tdeck_config.py")
+
+# --- Board layer ---
+# tdeck_node.py no longer hardwires the T-Deck v1: board.py picks a hardware
+# module from board_id.py. Only the v1 board module is frozen here, because
+# this firmware IS the v1 firmware -- board_tdeck_pro.py is deployed onto a
+# stock MicroPython Pro from the filesystem instead. board_id.py is frozen at
+# its checked-in value ("tdeck_v1") and, like tdeck_config.py, a filesystem
+# copy still shadows it.
+freeze(_root, "board.py")
+freeze(_root, "board_id.py")
+freeze(_root, "board_tdeck_v1.py")
+
 freeze(_root, "ui.py")
 freeze(_root, "sound.py")
 freeze(_root, "es7210.py")
