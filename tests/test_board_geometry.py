@@ -70,7 +70,9 @@ def test_v1_unchanged():
     ui = load_ui(None)
     for name, want in (("SCREEN_W", 320), ("SCREEN_H", 240), ("COLS", 40),
                        ("INPUT_Y", 224), ("SEP_Y", 222), ("BODY_ROWS", 12),
-                       ("CHAR_W", 8), ("CHAR_H", 16), ("BODY_Y", 26)):
+                       ("CHAR_W", 8), ("CHAR_H", 16), ("BODY_Y", 26),
+                       ("CACHE_ROWS", 15), ("FOOT_SLOT", 13),
+                       ("INPUT_SLOT", 14)):
         got = getattr(ui, name)
         check("%s == %d" % (name, want), got == want, "got %r" % got)
 
@@ -79,7 +81,9 @@ def test_pro_portrait():
     print("T-Deck Pro (240x320 portrait)")
     ui = load_ui((240, 320))
     for name, want in (("SCREEN_W", 240), ("SCREEN_H", 320), ("COLS", 30),
-                       ("INPUT_Y", 304), ("SEP_Y", 302), ("BODY_ROWS", 17)):
+                       ("INPUT_Y", 304), ("SEP_Y", 302), ("BODY_ROWS", 17),
+                       ("CACHE_ROWS", 20), ("FOOT_SLOT", 18),
+                       ("INPUT_SLOT", 19)):
         got = getattr(ui, name)
         check("%s == %d" % (name, want), got == want, "got %r" % got)
 
@@ -103,6 +107,19 @@ def test_layout_fits_panel():
               "%d+%d > %d" % (ui.SBAR_X, ui.SBAR_W, w))
         check("%s: at least 10 body rows" % label, ui.BODY_ROWS >= 10,
               "only %d" % ui.BODY_ROWS)
+        # The row cache is indexed by slot, and the highest body slot a list
+        # page writes is BODY_ROWS + 1 (`ci = i + 2` over BODY_ROWS - 1 rows,
+        # plus the identity row _draw_shell_manual puts at BODY_ROWS). Sizing
+        # it by hand is how a taller panel walks off the end of the list.
+        check("%s: footer slot clears the body rows" % label,
+              ui.FOOT_SLOT > ui.BODY_ROWS,
+              "foot %d vs %d body rows" % (ui.FOOT_SLOT, ui.BODY_ROWS))
+        check("%s: input slot is distinct from the footer" % label,
+              ui.INPUT_SLOT != ui.FOOT_SLOT)
+        check("%s: cache holds every slot" % label,
+              ui.CACHE_ROWS > max(ui.FOOT_SLOT, ui.INPUT_SLOT),
+              "%d slots, highest index %d"
+              % (ui.CACHE_ROWS, max(ui.FOOT_SLOT, ui.INPUT_SLOT)))
 
 
 def test_pro_geometry_file_matches():

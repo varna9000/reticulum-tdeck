@@ -95,6 +95,14 @@ BODY_Y = 26       # main area start (6px gap below navbar for frame line)
 SEP_Y = INPUT_Y - 2              # separator line just above the input bar
 BODY_ROWS = (SEP_Y - 4 - BODY_Y) // CHAR_H
 
+# Row cache slots: the navbar, one per body row, then the footer hint line and
+# the input line. The body rows have to scale with the panel or a taller screen
+# indexes past the end of the list -- the T-Deck Pro has 17 body rows where the
+# v1 has 12. On the v1 these come out 15 / 13 / 14, the constants they replace.
+CACHE_ROWS = BODY_ROWS + 3
+FOOT_SLOT = BODY_ROWS + 1
+INPUT_SLOT = BODY_ROWS + 2
+
 # Scrollbar lane — kept 1px clear of the frame's right corner arm at x=319
 SBAR_X = SCREEN_W - 3   # 317
 SBAR_W = 2
@@ -316,6 +324,12 @@ class UI:
         self.get_key = get_key_func
         self.node_name = node_name
 
+        # Panels that are written directly have nothing to push; an e-ink panel
+        # does, and the cost is a ~700 ms refresh. So drawing never touches it
+        # and _flush() is called once per rendered screen instead. Resolved
+        # once here rather than per redraw.
+        self._panel_flush = getattr(tft, "flush", None)
+
         # Cyberpunk color palette (RGB565)
         self.YELLOW     = 0xFFE0
         self.BG_DARK    = 0x0821  # very dark blue-grey — main background
@@ -334,9 +348,9 @@ class UI:
         self._prev_state = -1  # force full clear on first draw
         self._state_change_ms = 0  # debounce rapid state flips
 
-        # Row cache: 15 slots (navbar + 12 body + sep + input)
+        # Row cache: navbar + one slot per body row + footer + input.
         # Compared before drawing — skip SPI if row unchanged.
-        self._cache = [''] * 15
+        self._cache = [''] * CACHE_ROWS
         self._nav_bat_cache = ''
         self._nav_mid_cache = ''
         self._nav_right_cache = ''
@@ -556,13 +570,22 @@ class UI:
     def set_backlight(self, bl_pin):
         self._bl = bl_pin
 
+    def _flush(self):
+        """Push a completed frame to the panel, where the panel needs it.
+
+        Every call site sits between spi_acquire_display() and
+        spi_release_display(), because on e-ink this is the transfer.
+        """
+        if self._panel_flush is not None:
+            self._panel_flush()
+
     def wake_screen(self):
         if not self._screen_on:
             if self._bl:
                 self._bl.value(1)
             self._screen_on = True
             self.dirty = True
-            self._cache = [''] * 15
+            self._cache = [''] * CACHE_ROWS
         self._last_activity = time.ticks_ms()
 
     def sleep_screen(self):
@@ -869,8 +892,8 @@ class UI:
         # Footer hints — drawn once per state/tab change (frame is drawn
         # centrally by draw()).
         _nf_key = "NF" + str(self.node_tab)
-        if self._cache[13] != _nf_key:
-            self._cache[13] = _nf_key
+        if self._cache[FOOT_SLOT] != _nf_key:
+            self._cache[FOOT_SLOT] = _nf_key
             self.tft.text(self.font, _pad(""), 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
             self.tft.text(self.font, "(", 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
             self.tft.text(self.font, "a", CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
@@ -1015,8 +1038,8 @@ class UI:
             else:
                 foot = "(r)load (n)ext (p)rev  click  <back"
             fcol = self.DIM_CYAN
-        if self._cache[13] != foot:
-            self._cache[13] = foot
+        if self._cache[FOOT_SLOT] != foot:
+            self._cache[FOOT_SLOT] = foot
             self.tft.text(self.font, self._tb(_pad(foot)), 0, INPUT_Y, fcol, self.BG_DARK)
 
     # --- Chat screen ---
@@ -1185,8 +1208,8 @@ class UI:
             _pos = max_scroll - self.chat_scroll if max_scroll else 0
             _bar_y = _track_y + _pos * (_track_h - _bar_h) // max(1, max_scroll)
             _sk = str(_bar_y) + ":" + str(_bar_h)
-            if self._cache[13] != _sk:
-                self._cache[13] = _sk
+            if self._cache[FOOT_SLOT] != _sk:
+                self._cache[FOOT_SLOT] = _sk
                 self.tft.fill_rect(SBAR_X, _track_y, SBAR_W, _track_h, self.BG_DARK)
                 self.tft.fill_rect(SBAR_X, _bar_y, SBAR_W, _bar_h, self.DIM_CYAN)
 
@@ -1196,9 +1219,9 @@ class UI:
         inp = self.cmd_buf.decode()
         if inp:
             ik = "> " + inp
-            if self._cache[14] == ik:
+            if self._cache[INPUT_SLOT] == ik:
                 return
-            self._cache[14] = ik
+            self._cache[INPUT_SLOT] = ik
             self._draw_input_line(inp)
         else:
             _on_image = self.chat_cursor >= 0 and self.chat_cursor in self._visible_image_lines
@@ -1214,9 +1237,9 @@ class UI:
             # Record hint only when not navigating messages (0 = mic key)
             _show_rec = self.chat_cursor < 0
             ik = ("IMG" if _on_image else "BACK") + _ts_txt + ("R" if _show_rec else "")
-            if self._cache[14] == ik:
+            if self._cache[INPUT_SLOT] == ik:
                 return
-            self._cache[14] = ik
+            self._cache[INPUT_SLOT] = ik
             self.tft.text(self.font, _pad("> _"), 0, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
             if _ts_txt:
                 self.tft.text(self.font, _pad(_ts_txt, 16), 6 * CHAR_W, INPUT_Y,
@@ -1300,6 +1323,7 @@ class UI:
             self.tft.fill_rect(0, SCREEN_H - 18, SCREEN_W, 18, 0x0000)
             self._center_text("any key = back", SCREEN_H - 17, self.DIM_CYAN)
         finally:
+            self._flush()
             spi_release_display()
         self._image_drawn = True
 
@@ -1311,7 +1335,7 @@ class UI:
         self.state = STATE_CHAT
         self._prev_state = -1  # force full screen clear in draw()
         self._state_change_ms = time.ticks_ms()
-        self._cache = [''] * 15
+        self._cache = [''] * CACHE_ROWS
         self.dirty = True
 
     # --- Text wrapping ---
@@ -1394,7 +1418,7 @@ class UI:
         elif (key == b'm' or key == b'M') and self.node_tab == TAB_SSH:
             self._shell_manual = True
             self._shell_hex = bytearray()
-            self._cache = [''] * 15
+            self._cache = [''] * CACHE_ROWS
             self.dirty = True
             return True
         elif key == b'd' or key == b'D':
@@ -1436,7 +1460,7 @@ class UI:
                 self.on_shell_seed()
             except Exception:
                 pass
-        self._cache = [''] * 15  # rows, tab bar and footer all change
+        self._cache = [''] * CACHE_ROWS  # rows, tab bar and footer all change
         self.dirty = True
 
     def _open_selected_node(self):
@@ -1490,7 +1514,7 @@ class UI:
             except Exception:
                 pass
         self._shell_view = 0
-        self._cache = [''] * 15
+        self._cache = [''] * CACHE_ROWS
         self.dirty = True
         return sf
 
@@ -1512,7 +1536,7 @@ class UI:
         self._terminal = terminal.Terminal(cols=cols)
         self.state = STATE_SHELL
         self._state_change_ms = time.ticks_ms()
-        self._cache = [''] * 15
+        self._cache = [''] * CACHE_ROWS
         self.dirty = True
         if self.on_shell_connect:
             self.on_shell_connect(dest_hash, cols, rows)
@@ -1530,14 +1554,14 @@ class UI:
                               BODY_Y + (BODY_ROWS - 1) * CHAR_H, self.NEON_GREEN)
         self._draw_input_line(self._shell_hex.decode())
         foot = "Enter=connect  Esc=cancel"
-        if self._cache[13] != foot:
-            self._cache[13] = foot
+        if self._cache[FOOT_SLOT] != foot:
+            self._cache[FOOT_SLOT] = foot
             self.tft.text(self.font, self._tb(_pad(foot)), 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
 
     def _handle_shell_manual_key(self, ch, key):
         if ch == 0x1B:   # Esc — cancel
             self._shell_manual = False
-            self._cache = [''] * 15
+            self._cache = [''] * CACHE_ROWS
             self.dirty = True
             return True
         if ch == 0x08:   # Backspace
@@ -1597,7 +1621,7 @@ class UI:
         self._shell_keys.clear()
         self.ssh_idx = 0
         self.ssh_scroll = 0
-        self._cache = [''] * 15
+        self._cache = [''] * CACHE_ROWS
         self.dirty = True
 
     # Callbacks invoked by rnsh_client -------------------------------------
@@ -1854,11 +1878,11 @@ class UI:
         if self._shell_status:
             foot = self._shell_status[:COLS]
             fkey = "S\x00" + foot
-            if self._cache[13] != fkey:
-                self._cache[13] = fkey
+            if self._cache[FOOT_SLOT] != fkey:
+                self._cache[FOOT_SLOT] = fkey
                 self.tft.text(self.font, self._tb(_pad(foot)), 0, INPUT_Y, self.NEON_MAG, self.BG_DARK)
         elif self._shell_line_mode and self._shell_input:
-            self._cache[13] = ''           # input redraws live; repaint on next status change
+            self._cache[FOOT_SLOT] = ''           # input redraws live; repaint on next status change
             self._draw_input_line(self._safe_decode(self._shell_input))
         else:
             if self._shell_line_mode:
@@ -1868,8 +1892,8 @@ class UI:
             if self._shell_view:
                 foot = "[+" + str(self._shell_view) + "] " + foot
             foot = foot[:COLS]
-            if self._cache[13] != foot:
-                self._cache[13] = foot
+            if self._cache[FOOT_SLOT] != foot:
+                self._cache[FOOT_SLOT] = foot
                 self.tft.text(self.font, self._tb(_pad(foot)), 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
 
     def _shell_send(self, data):
@@ -1899,7 +1923,7 @@ class UI:
     def _shell_menu_open(self):
         self._shell_menu = True
         self._shell_menu_idx = 0
-        self._cache = [''] * 15
+        self._cache = [''] * CACHE_ROWS
         # The menu paints over the body with the 8x16 font, so every composited
         # terminal row underneath it is stale once the menu closes.
         self._shell_cache = [''] * len(self._shell_cache)
@@ -1911,7 +1935,7 @@ class UI:
 
     def _shell_menu_close(self):
         self._shell_menu = False
-        self._cache = [''] * 15
+        self._cache = [''] * CACHE_ROWS
         self._shell_cache = [''] * len(self._shell_cache)
         self.dirty = True
 
@@ -1935,7 +1959,7 @@ class UI:
             self._set_shell_font(notify=True)   # clears both row caches
             return
         self._shell_menu = False
-        self._cache = [''] * 15
+        self._cache = [''] * CACHE_ROWS
         self._shell_cache = [''] * len(self._shell_cache)
         self.dirty = True
         if kind == "send":
@@ -1966,8 +1990,8 @@ class UI:
             else:
                 self._draw_row_cached(ci, "", y, self.NEON_CYAN)
         foot = "click=send  U/D=move  Bksp=close"
-        if self._cache[13] != foot:
-            self._cache[13] = foot
+        if self._cache[FOOT_SLOT] != foot:
+            self._cache[FOOT_SLOT] = foot
             self.tft.text(self.font, self._tb(_pad(foot)), 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
 
     def _leave_shell(self):
@@ -1987,7 +2011,7 @@ class UI:
         self.node_tab = TAB_SSH
         self.state = STATE_NODES
         self._state_change_ms = time.ticks_ms()
-        self._cache = [''] * 15
+        self._cache = [''] * CACHE_ROWS
         self.dirty = True
 
     def _handle_key_shell(self, ch, key):
@@ -2036,7 +2060,7 @@ class UI:
             if line == b"~l":
                 self._shell_line_mode = False
                 self._shell_view = 0
-                self._cache = [''] * 15
+                self._cache = [''] * CACHE_ROWS
                 self.dirty = True
                 return True
             self._shell_send(line + b"\n")
@@ -2065,7 +2089,7 @@ class UI:
                 return True
             if ch == 0x6C:                 # 'l' -> line mode
                 self._shell_line_mode = True
-                self._cache = [''] * 15
+                self._cache = [''] * CACHE_ROWS
                 self.dirty = True
                 return True
             if ch == 0x7E:                 # '~~' -> literal tilde
@@ -2152,13 +2176,17 @@ class UI:
         capture content includes audio from ~the keypress (DMA ring), so the
         user can speak at once; 'Warming mic...' appears only if the slow
         ADC re-warm fallback engages (driven by _recording_loop)."""
+        # No callback means the board has no microphone. Entering the state
+        # anyway would show a recording screen that never records.
+        if self.on_record_start is None:
+            return
         self._rec_seconds = 0
         self._rec_level = 0
         self._rec_warming = False
         self.state = STATE_RECORDING
         self._prev_state = -1
         self._state_change_ms = time.ticks_ms()
-        self._cache = [''] * 15
+        self._cache = [''] * CACHE_ROWS
         self.dirty = True
         if self.on_record_start:
             self.on_record_start()
@@ -2173,7 +2201,7 @@ class UI:
             self.on_record_stop(send=send)
         self.state = STATE_CHAT
         self._state_change_ms = time.ticks_ms()
-        self._cache = [''] * 15
+        self._cache = [''] * CACHE_ROWS
         self.dirty = True
         return True
 
@@ -2191,7 +2219,7 @@ class UI:
                     self._settings_scroll = 0
                     self._wifi_networks = []
                     self._wifi_scanning = True
-                    self._cache = [''] * 15
+                    self._cache = [''] * CACHE_ROWS
                     self.dirty = True
                     if self.on_wifi_scan:
                         asyncio.create_task(self._do_wifi_scan())
@@ -2209,33 +2237,33 @@ class UI:
                         # Go to host entry sub-page
                         self._settings_page = _SET_TCP_HOST
                         self.cmd_buf = bytearray(self._tcp_target.encode()) if self._tcp_target else bytearray(self._tcp_default.encode())
-                    self._cache = [''] * 15
+                    self._cache = [''] * CACHE_ROWS
                     self.dirty = True
                     return True
                 elif self._settings_idx == 2:  # Node name
                     self._settings_page = _SET_NODE_NAME
                     self.cmd_buf = bytearray(self.node_name.encode())
-                    self._cache = [''] * 15
+                    self._cache = [''] * CACHE_ROWS
                     self.dirty = True
                     return True
                 elif self._settings_idx == 3:  # LoRa reset
                     if self.on_lora_reset:
                         self.on_lora_reset()
-                    self._cache = [''] * 15
+                    self._cache = [''] * CACHE_ROWS
                     self.dirty = True
                     return True
                 elif self._settings_idx == 4:  # Volume
                     self._volume = (self._volume + 1) % 11  # cycle 0-10
                     if self.on_volume:
                         self.on_volume(self._volume)
-                    self._cache = [''] * 15
+                    self._cache = [''] * CACHE_ROWS
                     self.dirty = True
                     return True
                 elif self._settings_idx == 5:  # Keyboard backlight toggle
                     if self.on_kbd_backlight:
                         if self.on_kbd_backlight(not self._kbd_bl):
                             self._kbd_bl = not self._kbd_bl
-                    self._cache = [''] * 15
+                    self._cache = [''] * CACHE_ROWS
                     self.dirty = True
                     return True
                 elif self._settings_idx == 6:  # Auto-announce toggle
@@ -2245,18 +2273,18 @@ class UI:
                             self.on_auto_announce(self._auto_announce)
                         except Exception:
                             pass
-                    self._cache = [''] * 15
+                    self._cache = [''] * CACHE_ROWS
                     self.dirty = True
                     return True
                 elif self._settings_idx == 7:  # Sleep timeout cycle
                     self._cycle_timeout(1)
-                    self._cache = [''] * 15
+                    self._cache = [''] * CACHE_ROWS
                     self.dirty = True
                     return True
                 elif self._settings_idx == 8:  # Radio stats page
                     self._settings_page = _SET_RADIO
                     self._settings_scroll = 0
-                    self._cache = [''] * 15
+                    self._cache = [''] * CACHE_ROWS
                     self.dirty = True
                     return True
                 elif self._settings_idx == 9:  # LoRa radio config page
@@ -2264,7 +2292,7 @@ class UI:
                     self._lora_edit = dict(self._lora_cfg)
                     self._lora_field = 0
                     self._lora_applying = ""
-                    self._cache = [''] * 15
+                    self._cache = [''] * CACHE_ROWS
                     self.dirty = True
                     return True
                 # idx 10 (address) is informational — Enter does nothing
@@ -2272,7 +2300,7 @@ class UI:
             if ch == 0x1B or ch == 0x08:
                 self._settings_page = _SET_MAIN
                 self._settings_idx = 8
-                self._cache = [''] * 15
+                self._cache = [''] * CACHE_ROWS
                 self.dirty = True
                 return True
         elif self._settings_page == _SET_LORA:
@@ -2281,27 +2309,27 @@ class UI:
                 self._lora_applying = ""
                 self._settings_page = _SET_MAIN
                 self._settings_idx = 9
-                self._cache = [''] * 15
+                self._cache = [''] * CACHE_ROWS
                 self.dirty = True
                 return True
             elif ch == 0x0D:   # Enter / trackball click
                 if self._lora_field == 0:          # Freq -> numeric entry page
                     self._settings_page = _SET_LORA_FREQ
                     self.cmd_buf = bytearray()     # type a fresh value; Enter empty keeps current
-                    self._cache = [''] * 15
+                    self._cache = [''] * CACHE_ROWS
                     self.dirty = True
                 elif self._lora_field == 5:        # Apply & Save
                     self._lora_apply()
                 else:                              # BW/SF/CR/TX -> cycle forward
                     self._lora_cycle(_LORA_FIELDS[self._lora_field], 1)
                     self._lora_applying = ""
-                    self._cache = [''] * 15
+                    self._cache = [''] * CACHE_ROWS
                     self.dirty = True
                 return True
         elif self._settings_page == _SET_LORA_FREQ:
             if ch == 0x1B:   # cancel, keep old freq
                 self._settings_page = _SET_LORA
-                self._cache = [''] * 15
+                self._cache = [''] * CACHE_ROWS
                 self.dirty = True
                 return True
             elif ch == 0x08:   # Backspace (empty -> back)
@@ -2310,7 +2338,7 @@ class UI:
                     self._input_dirty = True
                 else:
                     self._settings_page = _SET_LORA
-                    self._cache = [''] * 15
+                    self._cache = [''] * CACHE_ROWS
                     self.dirty = True
                 return True
             elif ch == 0x0D:   # save — parse, clamp, store into the edit copy
@@ -2322,7 +2350,7 @@ class UI:
                 self._lora_applying = ""
                 self.cmd_buf = bytearray()
                 self._settings_page = _SET_LORA
-                self._cache = [''] * 15
+                self._cache = [''] * CACHE_ROWS
                 self.dirty = True
                 return True
             elif 0x30 <= ch <= 0x39:   # digits only
@@ -2334,7 +2362,7 @@ class UI:
             if ch == 0x1B or ch == 0x08:
                 self._settings_page = _SET_MAIN
                 self._settings_idx = 0
-                self._cache = [''] * 15
+                self._cache = [''] * CACHE_ROWS
                 self.dirty = True
                 return True
             elif ch == 0x0D and self._wifi_networks:
@@ -2344,7 +2372,7 @@ class UI:
                     self._wifi_err = ""
                     self._settings_page = _SET_WIFI_PASS
                     self.cmd_buf = bytearray()
-                    self._cache = [''] * 15
+                    self._cache = [''] * CACHE_ROWS
                     self.dirty = True
                     return True
             elif key == b'r' or key == b'R':  # rescan
@@ -2353,7 +2381,7 @@ class UI:
                 self._wifi_err = ""
                 self._wifi_networks = []
                 self._wifi_scanning = True
-                self._cache = [''] * 15
+                self._cache = [''] * CACHE_ROWS
                 self.dirty = True
                 if self.on_wifi_scan:
                     asyncio.create_task(self._do_wifi_scan())
@@ -2364,7 +2392,7 @@ class UI:
             if ch == 0x1B:
                 self._settings_page = _SET_WIFI_SCAN
                 self._settings_idx = 0
-                self._cache = [''] * 15
+                self._cache = [''] * CACHE_ROWS
                 self.dirty = True
                 return True
             elif ch == 0x08:  # Backspace
@@ -2374,13 +2402,13 @@ class UI:
                 else:
                     self._settings_page = _SET_WIFI_SCAN
                     self._settings_idx = 0
-                    self._cache = [''] * 15
+                    self._cache = [''] * CACHE_ROWS
                     self.dirty = True
                 return True
             elif ch == 0x0D:  # Enter — connect (async; UI shows "connecting")
                 password = self.cmd_buf.decode()
                 self.cmd_buf = bytearray()
-                self._cache = [''] * 15
+                self._cache = [''] * CACHE_ROWS
                 if self.on_wifi_connect:
                     self._wifi_connecting = True
                     self.dirty = True
@@ -2400,7 +2428,7 @@ class UI:
             if ch == 0x1B:
                 self._settings_page = _SET_MAIN
                 self._settings_idx = 1
-                self._cache = [''] * 15
+                self._cache = [''] * CACHE_ROWS
                 self.dirty = True
                 return True
             elif ch == 0x08:  # Backspace
@@ -2410,7 +2438,7 @@ class UI:
                 else:
                     self._settings_page = _SET_MAIN
                     self._settings_idx = 1
-                    self._cache = [''] * 15
+                    self._cache = [''] * CACHE_ROWS
                     self.dirty = True
                 return True
             elif ch == 0x0D:  # Enter — parse host:port and connect (async)
@@ -2426,13 +2454,13 @@ class UI:
                         pass
                 if host and port and self.on_tcp_connect:
                     self._tcp_connecting = True
-                    self._cache = [''] * 15
+                    self._cache = [''] * CACHE_ROWS
                     self.dirty = True
                     self.on_tcp_connect(host, port)
                     return True
                 self._settings_page = _SET_MAIN
                 self._settings_idx = 1
-                self._cache = [''] * 15
+                self._cache = [''] * CACHE_ROWS
                 self.dirty = True
                 return True
             elif 0x20 <= ch < 0x7F:  # Printable
@@ -2443,7 +2471,7 @@ class UI:
             if ch == 0x1B:
                 self._settings_page = _SET_MAIN
                 self._settings_idx = 2
-                self._cache = [''] * 15
+                self._cache = [''] * CACHE_ROWS
                 self.dirty = True
                 return True
             elif ch == 0x08:  # Backspace
@@ -2453,7 +2481,7 @@ class UI:
                 else:
                     self._settings_page = _SET_MAIN
                     self._settings_idx = 2
-                    self._cache = [''] * 15
+                    self._cache = [''] * CACHE_ROWS
                     self.dirty = True
                 return True
             elif ch == 0x0D:  # Enter — save name
@@ -2465,7 +2493,7 @@ class UI:
                         self.on_node_name(name)
                 self._settings_page = _SET_MAIN
                 self._settings_idx = 2
-                self._cache = [''] * 15
+                self._cache = [''] * CACHE_ROWS
                 self.dirty = True
                 return True
             elif 0x20 <= ch < 0x7F:  # Printable
@@ -2710,7 +2738,7 @@ class UI:
                               else (msg or "scan failed"))
             print("[WiFi] scan failed:", repr(e))
         self._wifi_scanning = False
-        self._cache = [''] * 15
+        self._cache = [''] * CACHE_ROWS
         self.dirty = True
 
     def set_wifi_result(self, ip):
@@ -2729,7 +2757,7 @@ class UI:
             self._wifi_err = "connect failed"
             self._settings_page = _SET_WIFI_SCAN
             self._settings_idx = 0
-        self._cache = [''] * 15
+        self._cache = [''] * CACHE_ROWS
         self.dirty = True
 
     def set_tcp_result(self, ok, addr):
@@ -2740,7 +2768,7 @@ class UI:
             self._tcp_target = addr
         self._settings_page = _SET_MAIN
         self._settings_idx = 1
-        self._cache = [''] * 15
+        self._cache = [''] * CACHE_ROWS
         self.dirty = True
 
     def _draw_node_name(self):
@@ -3106,7 +3134,7 @@ class UI:
             self._lora_applying = "applied"
         else:
             self._lora_applying = "failed"
-        self._cache = [''] * 15
+        self._cache = [''] * CACHE_ROWS
         self.dirty = True
 
     def _settings_adjust(self, delta):
@@ -3115,7 +3143,7 @@ class UI:
             if 0 <= self._lora_field <= 4:
                 self._lora_cycle(_LORA_FIELDS[self._lora_field], delta)
                 self._lora_applying = ""
-                self._cache = [''] * 15
+                self._cache = [''] * CACHE_ROWS
                 self.dirty = True
             return
         if self._settings_page != _SET_MAIN:
@@ -3128,7 +3156,7 @@ class UI:
             self._cycle_timeout(delta)
         else:
             return
-        self._cache = [''] * 15
+        self._cache = [''] * CACHE_ROWS
         self.dirty = True
 
     # --- Data management ---
@@ -3148,7 +3176,7 @@ class UI:
         self.selected_idx = 0
         self.node_scroll = 0
         self.chat_scroll = 0
-        self._cache = [''] * 15
+        self._cache = [''] * CACHE_ROWS
         self.dirty = True
 
     def _forget_peer_state(self, key):
@@ -3227,7 +3255,7 @@ class UI:
                 self.ssh_idx = max(0, len(self._shell_keys) - 1)
             if self.ssh_scroll > max(0, len(self._shell_keys) - (BODY_ROWS - 1)):
                 self.ssh_scroll = max(0, len(self._shell_keys) - (BODY_ROWS - 1))
-        self._cache = [''] * 15
+        self._cache = [''] * CACHE_ROWS
         self.dirty = True
 
     def add_nomad_node(self, dest_hash, name, hops=None, seen=None):
@@ -3259,7 +3287,7 @@ class UI:
         self._node_keys.clear()
         self.net_idx = 0
         self.net_scroll = 0
-        self._cache = [''] * 15
+        self._cache = [''] * CACHE_ROWS
         self.dirty = True
 
     @staticmethod
@@ -3390,7 +3418,7 @@ class UI:
         if self.state != self._prev_state:
             self.tft.fill_rect(0, NAV_H, SCREEN_W, SCREEN_H - NAV_H, self.BG_DARK)
             self.tft.fill_rect(0, SEP_Y, SCREEN_W, 1, self.DIM_CYAN)
-            self._cache = [''] * 15  # invalidate all rows
+            self._cache = [''] * CACHE_ROWS  # invalidate all rows
             self._prev_state = self.state
 
         self.draw_navbar()
@@ -3443,6 +3471,7 @@ class UI:
         # Initial draw
         spi_acquire_display()
         self.draw()
+        self._flush()
         spi_release_display()
 
         while True:
@@ -3472,6 +3501,7 @@ class UI:
                 spi_acquire_display()
                 self._nav_mid_cache = ''  # force center section redraw
                 self.draw_navbar()
+                self._flush()
                 spi_release_display()
                 self._progress_dirty = False
 
@@ -3488,11 +3518,13 @@ class UI:
                     self.draw_input()
                 else:
                     self.draw()
+                self._flush()
                 spi_release_display()
                 self._input_dirty = False
             elif self.dirty and time.ticks_diff(now, self._last_draw) > _throttle:
                 spi_acquire_display()
                 self.draw()
+                self._flush()
                 spi_release_display()
                 self._last_draw = now
 
