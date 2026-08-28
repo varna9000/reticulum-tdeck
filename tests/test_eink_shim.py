@@ -217,11 +217,15 @@ def test_large_change_is_full():
 
 def test_fast_refresh_budget():
     p, s = new()
-    s.flush()
+    s.fill(DARK)
+    s.flush()                      # establishes the baseline
     p.full = 0
     p.rects = []
+    # Each pass has to change something, or the shim rightly skips the
+    # refresh and the budget never advances -- it counts refreshes the panel
+    # actually performed, which is what ghosting accumulates from.
     for i in range(12):
-        s.text(font, "x", 0, 0, WHITE, DARK)
+        s.text(font, chr(ord("a") + i), 0, 0, WHITE, DARK)
         s.flush()
     check("ghosting budget forces a full refresh within 11 partials",
           p.full >= 1,
@@ -230,7 +234,8 @@ def test_fast_refresh_budget():
 
 def test_dirty_rect_union():
     p, s = new()
-    s.flush()
+    s.fill(DARK)
+    s.flush()                      # establishes the baseline
     p.rects = []
     p.full = 0
     s.fill_rect(10, 10, 8, 8, WHITE)
@@ -239,6 +244,63 @@ def test_dirty_rect_union():
     check("dirty rectangles are unioned into one refresh",
           len(p.rects) == 1 and p.rects[0] == (10, 10, 48, 58),
           "got %r" % (p.rects,))
+
+
+def test_redraw_of_identical_content_is_skipped():
+    """ui.py repaints the navbar, the body frame and the scrollbar lane on
+    every pass. On a TFT that is free. Here each one would mark the screen
+    dirty and buy a refresh of a screen that looks exactly the same, so the
+    shim compares against what the panel is actually showing."""
+    p, s = new()
+    s.fill(DARK)
+    s.text(font, "hello", 0, 0, WHITE, DARK)
+    s.flush()
+    p.full = 0
+    p.rects = []
+
+    # Same content, drawn again: dirty, but nothing moved.
+    s.text(font, "hello", 0, 0, WHITE, DARK)
+    s.flush()
+    check("redrawing identical content touches nothing",
+          p.full == 0 and not p.rects,
+          "full=%d rects=%r" % (p.full, p.rects))
+
+    # And a real change still gets through.
+    s.text(font, "world", 0, 0, WHITE, DARK)
+    s.flush()
+    check("a real change still refreshes", p.full or p.rects,
+          "full=%d rects=%r" % (p.full, p.rects))
+
+
+def test_refresh_narrows_to_the_rows_that_moved():
+    """The dirty rectangle records where drawing happened; the rows compared
+    against the panel record where pixels changed. Refreshing the second is
+    the whole point -- a full-width erase followed by one changed line should
+    not cost a full-panel refresh."""
+    p, s = new()
+    s.fill(DARK)
+    s.flush()
+    p.full = 0
+    p.rects = []
+
+    # Erase a tall band, then put the same blank content back except one row.
+    s.fill_rect(0, 0, 240, 160, DARK)
+    s.text(font, "x", 0, 96, WHITE, DARK)
+    s.flush()
+    check("a mostly unchanged band refreshes only the changed rows",
+          len(p.rects) == 1 and p.rects[0][1] >= 96
+          and p.rects[0][1] + p.rects[0][3] <= 112,
+          "got %r (full=%d)" % (p.rects, p.full))
+
+
+def test_first_flush_is_full():
+    """Nothing has been pushed yet, so what the panel holds is unknown and
+    there is nothing to diff against."""
+    p, s = new()
+    s.text(font, "hi", 0, 0, WHITE, DARK)
+    s.flush()
+    check("the first flush refreshes the whole panel", p.full == 1,
+          "full=%d rects=%r" % (p.full, p.rects))
 
 
 def test_flush_noop_when_clean():
@@ -261,6 +323,9 @@ if __name__ == "__main__":
     test_large_change_is_full()
     test_fast_refresh_budget()
     test_dirty_rect_union()
+    test_redraw_of_identical_content_is_skipped()
+    test_refresh_narrows_to_the_rows_that_moved()
+    test_first_flush_is_full()
     test_flush_noop_when_clean()
     print()
     if _failures:

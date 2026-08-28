@@ -39,6 +39,17 @@ echo "== SX126x radio driver =="
 # silently dropped. txb stays 0.
 for f in "$SRC"/lib/lora/*.py; do run cp "$f" ":lora/$(basename "$f")"; done
 
+echo "== clearing stale root copies of /lib modules =="
+# sys.path is ['', '.frozen', '/lib'], so a leftover copy in the device root
+# shadows the one this script installs -- silently, and forever. An earlier
+# bring-up session left eink_shim.py, eink_gdeq031t10.py, tca8418.py and
+# spleen_8x16.py there, and every deploy after it updated /lib while the device
+# went on running the old code.
+for f in eink_gdeq031t10.py eink_shim.py tca8418.py spleen_8x16.py \
+         adc_reader.py shell_4x6.py shell_5x8.py shell_6x10.py shell_6x12.py; do
+    run rm ":$f" 2>/dev/null || true
+done
+
 echo "== drivers =="
 run cp "$SRC/lib/eink_gdeq031t10.py" :lib/eink_gdeq031t10.py
 run cp "$SRC/lib/eink_shim.py"       :lib/eink_shim.py

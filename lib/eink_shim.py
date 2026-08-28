@@ -49,6 +49,7 @@ class EinkShim:
     def __init__(self, panel):
         self._p = panel
         self.fb = panel.fb
+        self._buf = panel.buf
         self.width = panel.WIDTH
         self.height = panel.HEIGHT
 
@@ -56,6 +57,17 @@ class EinkShim:
         self._dx0 = self._dy0 = self._dx1 = self._dy1 = 0
         self._dirty = False
         self._partials = 0
+
+        # Copy of the framebuffer as the panel last saw it. The dirty rectangle
+        # records where drawing happened, not where pixels changed, and ui.py
+        # repaints several things unconditionally every pass -- the navbar, the
+        # body frame, the scrollbar lane. On a TFT that is a few hundred
+        # microseconds; here it would turn every redraw into a ~1.3 s refresh
+        # of a screen that looks exactly the same. Comparing 9600 bytes to find
+        # out costs a few milliseconds, so it is always worth doing.
+        self._stride = panel.WIDTH // 8
+        self._shown = bytearray(len(panel.buf))
+        self._shown_valid = False
 
         # Reusable 8x16 glyph buffer, so text() allocates nothing per character.
         self._gbuf = bytearray(16)
@@ -201,12 +213,36 @@ class EinkShim:
     def init(self):
         self._p.init()
 
+    def _changed_rows(self, y0, y1):
+        """Rows in [y0, y1) whose bytes differ from what the panel shows.
+
+        Returns (first, last_exclusive), or None when the region is identical.
+        Row granularity rather than pixel: the panel's own write window is
+        byte-aligned anyway, and this keeps the comparison to one slice per
+        row.
+        """
+        stride = self._stride
+        buf = self._buf
+        shown = self._shown
+        first = -1
+        last = y0
+        for y in range(y0, y1):
+            o = y * stride
+            if buf[o:o + stride] != shown[o:o + stride]:
+                if first < 0:
+                    first = y
+                last = y + 1
+        if first < 0:
+            return None
+        return first, last
+
     def flush(self, force_full=False):
         """Push pending changes to the panel. This is the only slow call.
 
-        Chooses a full refresh when the dirty area is large, when the fast
+        Chooses a full refresh when the changed area is large, when the fast
         refresh budget is spent, or when asked. Otherwise refreshes just the
-        dirty rectangle.
+        rows that actually differ from what is on the panel -- which is often
+        none of them, and then this returns without touching the hardware.
         """
         if not self._dirty and not force_full:
             return
@@ -214,14 +250,24 @@ class EinkShim:
         x0, y0, x1, y1 = self._dx0, self._dy0, self._dx1, self._dy1
         self._dirty = False
 
+        if self._shown_valid and not force_full:
+            rows = self._changed_rows(y0, y1)
+            if rows is None:
+                return          # drawn over, but nothing actually moved
+            y0, y1 = rows
+
         area = (x1 - x0) * (y1 - y0)
         if force_full or area >= _FULL_REFRESH_PIXELS or \
+                not self._shown_valid or \
                 self._partials >= _FAST_REFRESH_LIMIT:
             self._partials = 0
             self._p.flush()
         else:
             self._partials += 1
             self._p.flush_rect(x0, y0, x1 - x0, y1 - y0)
+
+        self._shown[:] = self._buf
+        self._shown_valid = True
 
     # --- compatibility no-ops ---------------------------------------------
 
