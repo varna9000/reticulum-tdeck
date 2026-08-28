@@ -76,18 +76,24 @@ _LORA_FREQ_STEP = 100      # kHz per trackball step
 _LORA_FREQ_MIN = 137000    # kHz — SX1262 usable low end
 _LORA_FREQ_MAX = 1020000   # kHz — SX1262 usable high end
 
-# Layout constants (320x240 landscape, 8x16 font)
-SCREEN_W = 320
-SCREEN_H = 240
+# Layout constants. The T-Deck v1 is 320x240 landscape; the T-Deck Pro is
+# 240x320 portrait. Everything below is derived from the screen size so one
+# layout serves both, and a board with a different panel only has to declare
+# its geometry. Absent that module the v1 numbers are reproduced exactly.
+try:
+    from board_geometry import SCREEN_W, SCREEN_H
+except ImportError:
+    SCREEN_W = 320
+    SCREEN_H = 240
 CHAR_W = 8
 CHAR_H = 16
-COLS = 40          # 320 / 8
+COLS = SCREEN_W // CHAR_W        # 40 at 320 wide, 30 at 240
 NAV_H = 20        # navbar height (1 row + 4px padding)
 NAV_TY = 2        # navbar text y offset (2px top padding)
-INPUT_Y = 224      # status bar y (bottom of screen, 224+16=240)
+INPUT_Y = SCREEN_H - CHAR_H      # status bar, flush with the bottom edge
 BODY_Y = 26       # main area start (6px gap below navbar for frame line)
-BODY_ROWS = 12    # 12 * 16 = 192px, ends at y=218, frame bottom at 219
-SEP_Y = 222       # separator line just above input bar
+SEP_Y = INPUT_Y - 2              # separator line just above the input bar
+BODY_ROWS = (SEP_Y - 4 - BODY_Y) // CHAR_H
 
 # Scrollbar lane — kept 1px clear of the frame's right corner arm at x=319
 SBAR_X = SCREEN_W - 3   # 317
@@ -303,7 +309,8 @@ class _ShellFont:
 
 class UI:
 
-    def __init__(self, tft, font, get_key_func, node_name="T-Deck"):
+    def __init__(self, tft, font, get_key_func, node_name="T-Deck",
+                 trackball=True):
         self.tft = tft
         self.font = font
         self.get_key = get_key_func
@@ -412,12 +419,6 @@ class UI:
         self._progress_dirty = False
         self.announce_flash = 0  # timestamp of last announce flash
 
-        # Trackball pins
-        self._tb_up    = Pin(3, Pin.IN, Pin.PULL_UP)
-        self._tb_down  = Pin(15, Pin.IN, Pin.PULL_UP)
-        self._tb_left  = Pin(1, Pin.IN, Pin.PULL_UP)
-        self._tb_right = Pin(2, Pin.IN, Pin.PULL_UP)
-        self._tb_click = Pin(0, Pin.IN, Pin.PULL_UP)
         # IRQ counters (written by ISR, drained by main loop)
         self._irq_up = 0
         self._irq_down = 0
@@ -429,12 +430,26 @@ class UI:
         self._irq_last_click = 0
         self._irq_last_h = 0
 
-        # Register hardware interrupts on trackball pins
-        self._tb_up.irq(trigger=Pin.IRQ_FALLING, handler=self._irq_handler_up)
-        self._tb_down.irq(trigger=Pin.IRQ_FALLING, handler=self._irq_handler_down)
-        self._tb_click.irq(trigger=Pin.IRQ_FALLING, handler=self._irq_handler_click)
-        self._tb_left.irq(trigger=Pin.IRQ_FALLING, handler=self._irq_handler_left)
-        self._tb_right.irq(trigger=Pin.IRQ_FALLING, handler=self._irq_handler_right)
+        # Trackball pins, and the hardware interrupts that feed the counters
+        # above. Boards without a trackball pass trackball=False and drive the
+        # same counters through nav_event() instead -- on the T-Deck Pro these
+        # GPIOs are LoRa CS, GPS PPS, the keyboard interrupt and the
+        # vibration motor, so claiming them as pulled-up inputs would break
+        # the radio.
+        if trackball:
+            self._tb_up    = Pin(3, Pin.IN, Pin.PULL_UP)
+            self._tb_down  = Pin(15, Pin.IN, Pin.PULL_UP)
+            self._tb_left  = Pin(1, Pin.IN, Pin.PULL_UP)
+            self._tb_right = Pin(2, Pin.IN, Pin.PULL_UP)
+            self._tb_click = Pin(0, Pin.IN, Pin.PULL_UP)
+            self._tb_up.irq(trigger=Pin.IRQ_FALLING, handler=self._irq_handler_up)
+            self._tb_down.irq(trigger=Pin.IRQ_FALLING, handler=self._irq_handler_down)
+            self._tb_click.irq(trigger=Pin.IRQ_FALLING, handler=self._irq_handler_click)
+            self._tb_left.irq(trigger=Pin.IRQ_FALLING, handler=self._irq_handler_left)
+            self._tb_right.irq(trigger=Pin.IRQ_FALLING, handler=self._irq_handler_right)
+        else:
+            self._tb_up = self._tb_down = self._tb_left = None
+            self._tb_right = self._tb_click = None
 
         # Battery voltage comes from adc_reader (board-declared pin/divider,
         # initialized by tdeck_node via adc_reader.init_battery)
@@ -2750,6 +2765,25 @@ class UI:
         else:
             # Address input line
             self._draw_input_line(self.cmd_buf.decode())
+
+    def nav_event(self, name):
+        """Feed a navigation event from something other than a trackball.
+
+        Boards constructed with trackball=False have no pointing device, so
+        their key handler calls this for the arrow and select keys. It drives
+        the same counters the ISRs do, which keeps every navigation path in
+        this class identical across boards.
+        """
+        if name == "up":
+            self._irq_up += 1
+        elif name == "down":
+            self._irq_down += 1
+        elif name == "left":
+            self._irq_left += 1
+        elif name == "right":
+            self._irq_right += 1
+        elif name == "click":
+            self._irq_click += 1
 
     def _irq_handler_up(self, pin):
         t = time.ticks_ms()
