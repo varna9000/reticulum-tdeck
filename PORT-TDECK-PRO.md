@@ -26,17 +26,49 @@ hardware (2026-08-28, MicroPython v1.24.1).
 - `lib/tca8418.py` -- key matrix driver with the Pro's keymap, taken from
   Meshtastic's `TDeckProKeyboard.cpp`.
 - `board_tdeck_pro.py` -- power gates, SPI arbitration, wires the three above.
+- `board.py`, `board_id.py`, `board_tdeck_v1.py` -- the board layer that lets
+  one `tdeck_node.py` serve both machines.
 - `tdeck_pro_config.py` -- pin map.
 - `board_geometry_tdeck_pro.py` -- 240x320, copied to `board_geometry.py` on
   deploy.
 - `lora_boards.py` -- `tdeck_pro_sx1262` preset (in the uP-reticulum submodule).
 - `tools/tdeck_pro_bringup.py` -- hardware bring-up, run this first.
+- `tools/deploy_pro.sh` -- deploys the full app onto stock MicroPython.
 - `tests/test_eink_shim.py`, `tests/test_tca8418.py`,
-  `tests/test_board_geometry.py` -- 61 host-side checks.
+  `tests/test_board_geometry.py`, `tests/test_board.py`,
+  `tests/test_ui_flush.py` -- host-side checks, 14 suites in all.
+
+## The board layer
+
+`tdeck_node.py` used to bring up the T-Deck v1 inline in its first 230 lines.
+It now imports `board`, and `board.py` re-exports one of two implementations:
+
+    board_id.BOARD  ->  board_tdeck_v1  |  board_tdeck_pro
+
+The re-export list at the bottom of `board.py` is the contract, written out by
+name rather than with `import *` so that a board missing a piece fails at
+import instead of at first use. It covers the config module, the shared SPI bus
+and its arbitration, the display surface and its `flush`, the keyboard, and
+four traits the app branches on: `HAS_TRACKBALL`, `HAS_AUDIO`, `HAS_MIC`,
+`HAS_JPEG_SPLASH`.
+
+`board_id.py` is a marker the deploy script writes, not a hardware probe.
+Probing would mean driving pins before anything knows which board they belong
+to, and the two boards disagree about what those pins are -- GPIO 3 is a
+trackball axis on the v1 and the LoRa chip select on the Pro. It is checked in
+as `tdeck_v1`, which is what every existing install is, and `tools/deploy_pro.sh`
+overwrites it on a Pro.
+
+Two calls the Pro needs and the v1 does not, both no-ops on the v1:
+
+- `board.attach_ui(gui)` right after the UI is constructed, or the arrow keys
+  go nowhere.
+- `board.flush()` / `UI._flush()` once per rendered screen. Nothing reaches the
+  panel until something flushes.
 
 ## Changes to shared code
 
-Both are backward compatible, and the existing v1 test suites still pass.
+All are backward compatible, and the existing v1 test suites still pass.
 
 **`ui.py` layout constants are now derived from screen size.** They used to be
 hardcoded for 320x240. `ui.py` imports `board_geometry` if it exists and falls
@@ -50,6 +82,20 @@ interrupts. On the Pro those pins are the side button, GPS PPS, the vibration
 motor, **LoRa chip select** and the keyboard interrupt. Running it unmodified
 takes the radio's CS line away and the radio never works. Boards passing
 `trackball=False` drive the same counters through the new `UI.nav_event()`.
+
+**The row cache is sized from the panel.** `ui.py` skips drawing a row whose
+text has not changed, keyed by slot in a fixed 15-entry list: navbar, 12 body
+rows, footer, input. The Pro has 17 body rows, which walked off the end of that
+list and collided the footer with a body row. The slots are now `CACHE_ROWS`,
+`FOOT_SLOT` and `INPUT_SLOT`, derived from `BODY_ROWS`; on the v1 they come out
+15, 13 and 14, the constants they replace.
+
+**`UI` flushes the panel once per rendered screen.** `UI._flush()` calls
+`tft.flush()` where the display object has one and does nothing where it does
+not, so the v1's ST7789 is untouched. Every call site sits inside the
+`spi_acquire_display()` / `spi_release_display()` window, because on e-ink the
+flush *is* the SPI transfer. `tests/test_ui_flush.py` holds that: drawing
+alone never reaches the panel, and no flush happens with the bus released.
 
 ## Three things worth knowing
 
@@ -153,7 +199,17 @@ mpremote connect /dev/cu.usbmodem101 run tools/tdeck_pro_bringup.py
 ```
 
 Then headless uReticulum with the `tdeck_pro_sx1262` preset to prove the radio
-on air, and only then the display and keyboard.
+on air, and only then the display and keyboard:
+
+```bash
+# 4. Radio only, no display or keyboard involved
+./tools/deploy_pro_headless.sh /dev/cu.usbmodem101
+mpremote connect /dev/cu.usbmodem101 run tools/tdeck_pro_headless.py
+
+# 5. The whole messenger
+./tools/deploy_pro.sh /dev/cu.usbmodem101
+mpremote connect /dev/cu.usbmodem101 exec 'import tdeck_node'
+```
 
 **Set a US frequency.** `tdeck_config.py` ships 868800 kHz, which is EU. The Pro
 config defaults to 914875 kHz, and it has to match every other node on your
