@@ -515,8 +515,12 @@ def on_announce(destination_hash, display_name):
     except Exception:
         pass
 
+    # add_peer marks the UI dirty, so the node list is up to date the moment
+    # anyone looks at it. It deliberately does not wake the screen: an announce
+    # is a presence beacon, not a message for us, and peers running the 90 s
+    # auto-announce loop would wake the deck every 90 seconds forever. A
+    # received message wakes it -- see the LXMF delivery handler above.
     gui.add_peer(destination_hash, display_name, rssi=rssi, hops=hops, via=via)
-    gui.wake_screen()
     if DEBUG >= 1:
         print("[Peer]", display_name or "?", "[" + destination_hash.hex()[:8] + "]",
               "hops:", hops)
