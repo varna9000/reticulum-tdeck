@@ -97,6 +97,25 @@ not, so the v1's ST7789 is untouched. Every call site sits inside the
 flush *is* the SPI transfer. `tests/test_ui_flush.py` holds that: drawing
 alone never reaches the panel, and no flush happens with the bus released.
 
+**The keyboard backlight follows the screen where nothing else can show it.**
+`sleep_screen()` dims the display backlight and `wake_screen()` brings it back,
+which on the v1 both saves the power and shows the state. The Pro has no
+display backlight at all: `board.bl` is `None`, e-ink holds its last frame with
+no power, and a sleeping deck is indistinguishable from a crashed one. So where
+`self._bl is None`, the two transitions drive the keyboard light instead. It
+becomes the only visible sign the deck is awake, and it is the largest
+discretionary draw on the board, which makes the inactivity timeout worth
+something on the Pro for the first time.
+
+Two things this keeps separate. The user's preference is the master, held in
+`_kbd_bl`, and a wake never lights a deck whose owner turned the light off;
+`_kbd_bl_lit` is what the hardware is actually doing. And sleep and wake go
+through a new `on_kbd_backlight_drive` rather than `on_kbd_backlight`, because
+the latter persists the setting -- routing an inactivity timeout through it
+would rewrite `settings.json` on every idle and every keypress that wakes the
+deck. `tests/test_kbd_backlight_sleep.py` holds both, and holds that a board
+with a display backlight keeps its old behaviour.
+
 ## Three things worth knowing
 
 **The panel is slow, so drawing must never touch it.** A partial refresh is
@@ -174,9 +193,9 @@ Three things cost time getting there, all worth knowing:
 
 ## Still unresolved
 
-The CST328 touch controller answers at 0x1A but has no driver, and the BQ27220
-fuel gauge answers at 0x55 but battery reporting is not wired up. Neither
-blocks the messenger. The device at 0x28 is unidentified.
+The CST328 touch controller answers at 0x1A but has no driver; navigation is on
+the keyboard, so nothing needs it. The device at 0x28 is unidentified. Neither
+blocks the messenger.
 
 ## Bring-up order
 

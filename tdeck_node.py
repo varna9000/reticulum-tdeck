@@ -1199,6 +1199,9 @@ def on_volume(v):
 
 gui.on_volume = on_volume
 gui.on_kbd_backlight = set_kbd_backlight
+# Sleep and wake drive the light straight at the board: set_kbd_backlight
+# saves settings.json, which must not happen on every idle timeout.
+gui.on_kbd_backlight_drive = board.set_kbd_backlight
 gui.on_ping = on_ping
 gui.on_auto_announce = set_auto_announce
 gui.on_screen_timeout = set_screen_timeout
@@ -1536,7 +1539,8 @@ def _auto_connect_wifi():
         gui.node_name = saved_name
         _apply_display_name(saved_name)
     if settings.get("kbd_backlight") and board.set_kbd_backlight(True):
-        gui._kbd_bl = True
+        gui._kbd_bl = True      # the saved preference
+        gui._kbd_bl_lit = True  # and the state it just left the hardware in
     saved_vol = settings.get("volume")
     if saved_vol is not None:
         sound.set_volume(saved_vol)

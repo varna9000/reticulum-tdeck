@@ -493,7 +493,12 @@ class UI:
         self._settings_scroll = 0
         self._radio_rows = 0  # row count of the radio stats page (for scroll clamp)
         self._volume = 8  # 0-10, synced with sound.volume
-        self._kbd_bl = False  # keyboard backlight state (restored from settings)
+        # The keyboard backlight has a preference and a hardware state, and on
+        # boards with no display backlight they are not the same thing: the
+        # light follows the screen in and out of its inactivity sleep, while
+        # _kbd_bl stays whatever the user chose. See _kbd_tracks_screen().
+        self._kbd_bl = False      # user preference (restored from settings)
+        self._kbd_bl_lit = False  # what the hardware is actually doing
         self._auto_announce = False   # periodic re-announce toggle
         self._wifi_connecting = False  # True while an async WiFi connect is running
         self._wifi_err = ""            # last connect failure note (shown on scan page)
@@ -552,7 +557,8 @@ class UI:
         self.on_lora_reset = None     # () -> bool
         self.on_lora_config = None    # (params) -> bool — live-apply + persist radio params
         self.on_volume = None         # (level) -> None
-        self.on_kbd_backlight = None  # (enabled) -> bool
+        self.on_kbd_backlight = None  # (enabled) -> bool; persists the setting
+        self.on_kbd_backlight_drive = None  # (on) -> bool; drives only, no save
         self.on_battery = None        # () -> volts | None, set from the board
         self.on_audio_play = None     # (codec2_bytes, mode) -> None
         self.on_record_start = None   # () -> None
@@ -578,6 +584,42 @@ class UI:
     def set_backlight(self, bl_pin):
         self._bl = bl_pin
 
+    def _kbd_tracks_screen(self):
+        """True where the keyboard backlight should follow the screen's sleep.
+
+        Gated on there being no display backlight, which is the reason it
+        matters rather than a proxy for it. A board with one already dims on
+        sleep and already saves the power; a board without -- the e-ink Pro --
+        blanks nothing, holds its last frame with no power, and gives no sign
+        at all of whether it is awake. There the keyboard light is the only
+        thing that can show it, and it is the largest discretionary draw on
+        the board, so leaving it lit through an hour of sleep is the one place
+        the timeout could save real current and currently does not.
+        """
+        return self._bl is None
+
+    def _drive_kbd_backlight(self, on):
+        """Drive the light for a sleep or a wake, leaving the preference alone.
+
+        Deliberately not on_kbd_backlight: that one persists the setting, and
+        going through it here would rewrite settings.json on every idle and
+        every keypress that wakes the deck.
+        """
+        cb = self.on_kbd_backlight_drive
+        if cb is None or not cb(on):
+            return False
+        self._kbd_bl_lit = bool(on)
+        return True
+
+    def set_kbd_backlight_pref(self, on):
+        """The user changed the setting: persist it, and match the hardware."""
+        on = bool(on)
+        if self.on_kbd_backlight is None or not self.on_kbd_backlight(on):
+            return False
+        self._kbd_bl = on
+        self._kbd_bl_lit = on
+        return True
+
     def _flush(self):
         """Push a completed frame to the panel, where the panel needs it.
 
@@ -594,6 +636,8 @@ class UI:
             self._screen_on = True
             self.dirty = True
             self._cache = [''] * CACHE_ROWS
+            if self._kbd_tracks_screen() and self._kbd_bl and not self._kbd_bl_lit:
+                self._drive_kbd_backlight(True)
         self._last_activity = time.ticks_ms()
 
     def sleep_screen(self):
@@ -601,6 +645,8 @@ class UI:
             if self._bl:
                 self._bl.value(0)
             self._screen_on = False
+            if self._kbd_tracks_screen() and self._kbd_bl_lit:
+                self._drive_kbd_backlight(False)
 
     # --- Drawing helpers ---
 
@@ -2275,9 +2321,7 @@ class UI:
                     self.dirty = True
                     return True
                 elif self._settings_idx == 5:  # Keyboard backlight toggle
-                    if self.on_kbd_backlight:
-                        if self.on_kbd_backlight(not self._kbd_bl):
-                            self._kbd_bl = not self._kbd_bl
+                    self.set_kbd_backlight_pref(not self._kbd_bl)
                     self._cache = [''] * CACHE_ROWS
                     self.dirty = True
                     return True
