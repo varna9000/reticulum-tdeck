@@ -57,7 +57,11 @@ KEY_UP    = const(0xB5)
 KEY_DOWN  = const(0xB6)
 KEY_RIGHT = const(0xB7)
 
-_BL_TOGGLE = const(0xAB)
+# Alt+B. Surfaced like any other key rather than acted on here: the backlight
+# has a persisted setting and, on a board with no display backlight, a state
+# that tracks the screen's sleep. Toggling the pin behind the UI's back would
+# desynchronise both. board_tdeck_pro.get_key() routes it to the UI.
+KEY_BL_TOGGLE = const(0xAB)
 
 # Layers per key index: (base, shift, sym, alt). None means the key emits
 # nothing on that layer. Index order is row-major across the 4x10 matrix.
@@ -86,7 +90,7 @@ _KEYMAP = (
     (b'$', None, None, None),
     (b'm', b'M', b'.', None),
     (b'n', b'N', b',', None),
-    (b'b', b'B', b'!', bytes([_BL_TOGGLE])),
+    (b'b', b'B', b'!', bytes([KEY_BL_TOGGLE])),
     (b'v', b'V', b'?', None),
     (b'c', b'C', b'9', None),
     (b'x', b'X', b'8', bytes([KEY_DOWN])),
@@ -117,7 +121,6 @@ class TCA8418:
         self._i2c = i2c
         self._addr = addr
         self._bl = bl_pin
-        self._bl_on = False
         self._layer = _LAYER_BASE
         self._layer_at = 0
         self.reset()
@@ -176,10 +179,6 @@ class TCA8418:
         """The Pro drives the keyboard backlight from a GPIO, not over I2C."""
         if self._bl is not None:
             self._bl.value(1 if on else 0)
-        self._bl_on = bool(on)
-
-    def toggle_backlight(self):
-        self.set_backlight(not self._bl_on)
 
     # --- key reading -------------------------------------------------------
 
@@ -246,8 +245,5 @@ class TCA8418:
             break
 
         if out is None:
-            return b''
-        if out[0] == _BL_TOGGLE:
-            self.toggle_backlight()
             return b''
         return out

@@ -169,6 +169,31 @@ def test_toggling_off_while_awake_puts_it_out():
     check("a later wake does not resurrect it", d.lit is False)
 
 
+def test_alt_b_goes_through_the_preference():
+    """Alt+B used to toggle the pin inside the keyboard driver, which is behind
+    the UI's back: Settings kept showing the old value, nothing was persisted,
+    and once the light started tracking the screen's sleep the two fought. It
+    routes through the preference now, so one keystroke moves everything."""
+    print("alt+b keeps the setting, the state and the hardware together")
+    d = Deck(display_backlight=False)
+
+    d.gui.toggle_kbd_backlight()
+    check("alt+b lights it", d.lit is True)
+    check("the setting agrees", d.gui._kbd_bl is True)
+    check("and it was persisted", d.saves == [True], str(d.saves))
+
+    d.gui.sleep_screen()
+    check("an alt+b light still goes out on sleep", d.lit is False)
+    d.gui.wake_screen()
+    check("and comes back on wake", d.lit is True)
+
+    d.gui.toggle_kbd_backlight()
+    check("alt+b again puts it out", d.lit is False)
+    check("the setting followed", d.gui._kbd_bl is False)
+    d.gui.wake_screen()
+    check("and a later wake does not resurrect it", d.lit is False)
+
+
 def test_a_refused_drive_leaves_the_state_honest():
     """set_kbd_backlight returns False when the write failed. The UI must not
     then claim the light is lit, or it will never retry."""
@@ -187,6 +212,7 @@ if __name__ == "__main__":
     test_sleep_never_writes_settings()
     test_a_board_with_a_display_backlight_is_untouched()
     test_toggling_off_while_awake_puts_it_out()
+    test_alt_b_goes_through_the_preference()
     test_a_refused_drive_leaves_the_state_honest()
     print()
     if _failures:

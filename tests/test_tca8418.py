@@ -209,12 +209,23 @@ def test_modifier_toggle_off():
 # --- backlight -------------------------------------------------------------
 
 def test_backlight():
+    """Alt+B is surfaced, not acted on here.
+
+    The backlight has a persisted setting, and on a board with no display
+    backlight a state that follows the screen's sleep. A driver that toggled
+    the pin itself would desynchronise both -- the Settings screen would show
+    the wrong value, the choice would not survive a reboot, and the next
+    sleep/wake would fight it. board_tdeck_pro.get_key() routes the key to the
+    UI instead.
+    """
     print("backlight")
     i2c, bl, kb = new()
     check("backlight starts off", bl.v == 0)
-    out = tap(i2c, kb, 29, 24)        # alt + b -> BL_TOGGLE
-    check("backlight toggle consumes the key", out == b'')
-    check("backlight turned on", bl.v == 1)
+    out = tap(i2c, kb, 29, 24)        # alt + b
+    check("alt+b surfaces the key rather than consuming it",
+          out == bytes([tca8418.KEY_BL_TOGGLE]), repr(out))
+    check("and the driver does not drive the pin behind the UI's back",
+          bl.v == 0)
 
 
 # --- FIFO draining (regression: hardware 2026-08-28) -----------------------

@@ -611,6 +611,11 @@ class UI:
         self._kbd_bl_lit = bool(on)
         return True
 
+    def toggle_kbd_backlight(self):
+        """Alt+B. Goes through the preference so the Settings screen agrees,
+        the choice is persisted, and sleep/wake keep tracking it."""
+        return self.set_kbd_backlight_pref(not self._kbd_bl)
+
     def set_kbd_backlight_pref(self, on):
         """The user changed the setting: persist it, and match the hardware."""
         on = bool(on)

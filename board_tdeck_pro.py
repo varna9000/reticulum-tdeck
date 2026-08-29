@@ -206,4 +206,10 @@ def get_key():
         if _gui is not None:
             _gui.nav_event(nav)
         return b'\x00'
+    if k[0] == tca8418.KEY_BL_TOGGLE:
+        # The driver surfaces alt+B rather than driving the pin itself, so the
+        # toggle lands on the UI's persisted setting instead of going behind it.
+        if _gui is not None:
+            _gui.toggle_kbd_backlight()
+        return b'\x00'
     return k
