@@ -20,8 +20,10 @@ from tdeck_pro_config import (
     DISP_CS, DISP_DC, DISP_BUSY,
     LORA_SCK, LORA_MOSI, LORA_MISO,
     I2C_SDA, I2C_SCL, KBD_ADDR, KBD_BL_PIN,
+    BQ27220_ADDR,
 )
 
+import bq27220
 import eink_gdeq031t10
 import eink_shim
 import tca8418
@@ -41,6 +43,7 @@ HAS_TRACKBALL   = False   # no pointing device; arrows live on the alt layer
 HAS_AUDIO       = False   # PCM5102A DAC present, driver not ported
 HAS_MIC         = False   # no ES7210, so no Codec2 voice either
 HAS_JPEG_SPLASH = False   # blit_buffer here is a per-pixel Python loop
+MONO_DISPLAY    = True    # 1-bit panel: "dimmed" cannot be shown as a shade
 
 # One shared pin set. Confirmed on hardware: the panel and the radio are on the
 # same SCK/MOSI, so only the clock rate differs between them.
@@ -122,6 +125,33 @@ if KBD_ADDR in i2c.scan():
 else:
     print("[board] TCA8418 did not answer at 0x%02x; keyboard disabled"
           % KBD_ADDR)
+
+
+# --- battery -----------------------------------------------------------
+
+# No ADC divider on this board, so peripherals/adc_reader.py has nothing to
+# read and the UI would sit at 0.0 V forever. The gauge is the sense path here.
+gauge = None
+if BQ27220_ADDR in i2c.scan():
+    gauge = bq27220.BQ27220(i2c, BQ27220_ADDR)
+else:
+    print("[board] BQ27220 did not answer at 0x%02x; battery unavailable"
+          % BQ27220_ADDR)
+
+
+def battery_voltage():
+    """Pack voltage in volts, or None when there is no reading."""
+    if gauge is None:
+        return None
+    return gauge.voltage()
+
+
+def battery_percent():
+    """State of charge 0..100, or None. The gauge knows this properly, unlike
+    the v1, which can only infer it from voltage."""
+    if gauge is None:
+        return None
+    return gauge.soc()
 
 
 def set_kbd_backlight(on):

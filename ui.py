@@ -330,6 +330,13 @@ class UI:
         # once here rather than per redraw.
         self._panel_flush = getattr(tft, "flush", None)
 
+        # On a 1-bit panel there is no dim: DIM_CYAN and NEON_GREEN both land
+        # on the ink side of the shim's luminance threshold (80 and 63 on its
+        # 0..187 scale), so an unlit battery segment drawn dim comes out just
+        # as black as a lit one and the pack always reads full. Unlit has to be
+        # background there. Colour displays keep the dim shade.
+        self._mono = bool(getattr(tft, "mono", False))
+
         # Cyberpunk color palette (RGB565)
         self.YELLOW     = 0xFFE0
         self.BG_DARK    = 0x0821  # very dark blue-grey — main background
@@ -546,6 +553,7 @@ class UI:
         self.on_lora_config = None    # (params) -> bool — live-apply + persist radio params
         self.on_volume = None         # (level) -> None
         self.on_kbd_backlight = None  # (enabled) -> bool
+        self.on_battery = None        # () -> volts | None, set from the board
         self.on_audio_play = None     # (codec2_bytes, mode) -> None
         self.on_record_start = None   # () -> None
         self.on_record_stop = None    # (send: bool) -> None
@@ -691,6 +699,10 @@ class UI:
         # high, so a bare voltage there reads like a bug. Show "USB" instead.
         if self.bat_v >= 4.3:
             bat_v_str = "USB"
+        elif self.bat_v <= 0.0:
+            # Nothing has reported a voltage yet. "0.0V" reads as a flat pack;
+            # this reads as what it is, an unknown.
+            bat_v_str = "--"
         else:
             bat_v_str = "{:.1f}V".format(self.bat_v)
         name = self.node_name[:10]
@@ -744,7 +756,7 @@ class UI:
             self._nav_bat_cache = bat_key
             # Battery icon (28x12 at top-left)
             gr = self.NEON_GREEN
-            dm = self.DIM_CYAN
+            dm = self.BG_DARK if self._mono else self.DIM_CYAN
             self.tft.fill_rect(1, 4, 26, 12, gr)
             self.tft.fill_rect(2, 5, 24, 10, hb)
             self.tft.fill_rect(27, 7, 2, 6, gr)
@@ -1234,8 +1246,11 @@ class UI:
                     _ts_txt = _fmt_time(_hist[_i][2]) if _i >= 0 else ""
                 except Exception:
                     _ts_txt = ""
-            # Record hint only when not navigating messages (0 = mic key)
-            _show_rec = self.chat_cursor < 0
+            # Record hint only when not navigating messages (0 = mic key), and
+            # only where there is a microphone to record with. on_record_start
+            # is left unset by boards that have none -- the T-Deck Pro has no
+            # ES7210 -- so offering the key there advertises a dead end.
+            _show_rec = self.chat_cursor < 0 and self.on_record_start is not None
             ik = ("IMG" if _on_image else "BACK") + _ts_txt + ("R" if _show_rec else "")
             if self._cache[INPUT_SLOT] == ik:
                 return
@@ -3396,12 +3411,25 @@ class UI:
             self.dirty = True
 
     def update_battery(self):
-        """Read battery voltage via adc_reader (None if no battery sense)."""
-        try:
-            import adc_reader
-            v = adc_reader.battery_voltage()
-        except Exception:
-            v = None
+        """Read pack voltage, leaving the last good value alone on a miss.
+
+        on_battery comes from the board, because the two boards sense the
+        battery in completely different ways: the v1 through an ADC divider,
+        the Pro through a BQ27220 gauge. Falls back to adc_reader so a board
+        that sets no hook behaves as it always did.
+        """
+        v = None
+        if self.on_battery is not None:
+            try:
+                v = self.on_battery()
+            except Exception:
+                v = None
+        else:
+            try:
+                import adc_reader
+                v = adc_reader.battery_voltage()
+            except Exception:
+                v = None
         if v is not None:
             self.bat_v = v
 

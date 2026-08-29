@@ -45,7 +45,7 @@ echo "== clearing stale root copies of /lib modules =="
 # bring-up session left eink_shim.py, eink_gdeq031t10.py, tca8418.py and
 # spleen_8x16.py there, and every deploy after it updated /lib while the device
 # went on running the old code.
-for f in eink_gdeq031t10.py eink_shim.py tca8418.py spleen_8x16.py \
+for f in eink_gdeq031t10.py eink_shim.py tca8418.py spleen_8x16.py bq27220.py \
          adc_reader.py shell_4x6.py shell_5x8.py shell_6x10.py shell_6x12.py; do
     run rm ":$f" 2>/dev/null || true
 done
@@ -54,6 +54,7 @@ echo "== drivers =="
 run cp "$SRC/lib/eink_gdeq031t10.py" :lib/eink_gdeq031t10.py
 run cp "$SRC/lib/eink_shim.py"       :lib/eink_shim.py
 run cp "$SRC/lib/tca8418.py"         :lib/tca8418.py
+run cp "$SRC/lib/bq27220.py"         :lib/bq27220.py
 run cp "$SRC/lib/spleen_8x16.py"     :lib/spleen_8x16.py
 for f in "$SRC"/lib/shell_*.py; do run cp "$f" ":lib/$(basename "$f")"; done
 # ui.py imports adc_reader by bare name; it self-disables on a board that

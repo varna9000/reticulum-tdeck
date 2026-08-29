@@ -46,6 +46,11 @@ def _lum(color):
 class EinkShim:
     """Drop-in replacement for the ST7789 object ui.py expects."""
 
+    # 1-bit panel: there is ink or there is paper, and nothing between. ui.py
+    # reads this to avoid drawing "off" states in a dim colour, which on this
+    # threshold comes out identical to the lit one.
+    mono = True
+
     def __init__(self, panel):
         self._p = panel
         self.fb = panel.fb

@@ -22,6 +22,7 @@ HAS_TRACKBALL   = True    # ui.py claims GPIO 0/1/2/3/15 for the trackball ISRs
 HAS_AUDIO       = True    # MAX98357A I2S speaker
 HAS_MIC         = True    # ES7210 I2S ADC, and therefore Codec2 voice
 HAS_JPEG_SPLASH = True    # blit_buffer is a fast C path on a real TFT
+MONO_DISPLAY    = False   # colour TFT: dimmed elements read as dimmed
 
 # --- Peripheral power ON ---
 pwr = Pin(KBD_PWR, Pin.OUT)
@@ -130,6 +131,24 @@ def attach_ui(gui):
     The Pro has no pointing device and routes its arrow keys into gui.nav_event
     instead, which is why this hook exists at all.
     """
+
+
+# --- battery -----------------------------------------------------------
+
+
+def battery_voltage():
+    """Pack voltage in volts, or None. Reads the ADC divider this board has,
+    through the same peripheral module tdeck_node initialises at boot."""
+    try:
+        import adc_reader
+        return adc_reader.battery_voltage()
+    except Exception:
+        return None
+
+
+def battery_percent():
+    """No fuel gauge here; the UI infers a level from voltage instead."""
+    return None
 
 
 def set_kbd_backlight(on):

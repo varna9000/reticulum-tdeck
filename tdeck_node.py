@@ -185,6 +185,9 @@ gui.set_backlight(board.bl)
 # Boards with no pointing device route their arrow keys into gui.nav_event().
 # Without this the Pro's arrows go nowhere.
 board.attach_ui(gui)
+# The board owns battery sensing: an ADC divider on the v1, a BQ27220 gauge on
+# the Pro, which adc_reader cannot read at all.
+gui.on_battery = board.battery_voltage
 gc.collect()
 
 # --- Setup interfaces (LoRa comes online) ---

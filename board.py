@@ -42,6 +42,9 @@ HAS_TRACKBALL = _impl.HAS_TRACKBALL
 HAS_AUDIO = _impl.HAS_AUDIO
 HAS_MIC = _impl.HAS_MIC
 HAS_JPEG_SPLASH = _impl.HAS_JPEG_SPLASH
+# True where the panel is 1-bit. "Dimmed" is not a shade there, so anything
+# drawn dim to mean "off" has to be drawn as background instead.
+MONO_DISPLAY = _impl.MONO_DISPLAY
 
 # Shared SPI bus, and the arbitration that lets the display and the radio take
 # turns on it. Both boards share one pin set and switch only the clock rate.
@@ -61,6 +64,11 @@ bl = _impl.bl
 # Keyboard. get_key() returns one byte, or b'\x00' when nothing is pending.
 get_key = _impl.get_key
 set_kbd_backlight = _impl.set_kbd_backlight
+
+# Battery. Volts and percent, or None where the board cannot tell. The v1
+# reads an ADC divider; the Pro has no divider and a BQ27220 gauge instead.
+battery_voltage = _impl.battery_voltage
+battery_percent = _impl.battery_percent
 
 # Called once with the UI instance, after it is constructed. Boards without a
 # pointing device use it to route their arrow keys into gui.nav_event().

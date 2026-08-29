@@ -35,10 +35,12 @@ def check(name, cond, detail=""):
 CONTRACT = (
     "config",
     "HAS_TRACKBALL", "HAS_AUDIO", "HAS_MIC", "HAS_JPEG_SPLASH",
+    "MONO_DISPLAY",
     "spi", "spi_acquire_display", "spi_release_display",
     "spi_acquire_lora", "spi_release_lora",
     "tft", "flush", "bl",
     "get_key", "set_kbd_backlight", "attach_ui",
+    "battery_voltage", "battery_percent",
 )
 
 
