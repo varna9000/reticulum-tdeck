@@ -131,6 +131,17 @@ panel with ink: slow, heavy ghosting, and ugly. The shim thresholds on
 luminance and inverts, so a dark background becomes paper and light text
 becomes ink.
 
+**e and x move the selection where nothing is being typed.** Navigation is on
+the alt layer behind a sticky modifier, which makes moving one row down a list
+two keystrokes on a device whose main screen is a list. On a screen with no
+text field there is nothing for a bare letter to collide with: the node list
+binds a, s, b, m, d and p, the browser r, n, p, b, g and G, and neither takes
+e or x. So `UI.handle_key()` maps them to `nav_event()` unless
+`_accepting_text()` says otherwise -- chat, the shell, and the four settings
+sub-pages that are text fields. Alt+E and alt+X keep working everywhere, so
+nothing is taken away. Chat is the honest edge: it navigates message history
+*and* types, so it is the one screen that wants this and cannot have it.
+
 **There are no arrow keys.** Navigation is on the alt layer: E, X, S, F are
 up, down, left, right. `board_tdeck_pro.get_key()` consumes those and calls
 `UI.nav_event()` instead of passing them through, so every navigation path in

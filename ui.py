@@ -1425,6 +1425,41 @@ class UI:
 
     # --- Input handling ---
 
+    # Screens that consume typed characters. Everywhere else, e and x are
+    # free -- the node list binds a, s, b, m, d and p, the browser r, n, p, b,
+    # g and G, and neither takes e or x -- so they can move the selection
+    # without the alt layer. See _bare_nav_key().
+    _TEXT_ENTRY_PAGES = (_SET_WIFI_PASS, _SET_TCP_HOST, _SET_NODE_NAME,
+                         _SET_LORA_FREQ)
+
+    def _accepting_text(self):
+        """True where a letter key has to mean the letter."""
+        if self.state == STATE_CHAT or self.state == STATE_SHELL:
+            return True
+        if self.state == STATE_RECORDING:
+            return True
+        if self.state == STATE_SETTINGS:
+            return self._settings_page in self._TEXT_ENTRY_PAGES
+        return False
+
+    def _bare_nav_key(self, key):
+        """Map e/x to up/down on screens that are not accepting text.
+
+        Navigation is on the alt layer -- alt+E and alt+X -- with a sticky
+        modifier, so moving one row down a list is two keystrokes on a device
+        whose main screen is a list. On a screen with no text field there is
+        nothing for a bare e or x to collide with, so they move the selection
+        there. Alt+E and alt+X keep working everywhere, including in chat and
+        the shell, where a bare letter has to stay a letter.
+        """
+        if self._accepting_text():
+            return None
+        if key == b'e' or key == b'E':
+            return "up"
+        if key == b'x' or key == b'X':
+            return "down"
+        return None
+
     def handle_key(self, key):
         """Handle a keyboard key press. Returns True if UI needs redraw."""
         ch = key[0]
@@ -1433,7 +1468,13 @@ class UI:
             return False
 
         if self.state == STATE_IMAGE:
+            # Any key closes the image, e and x included.
             self._exit_image_view()
+            return True
+
+        nav = self._bare_nav_key(key)
+        if nav is not None:
+            self.nav_event(nav)
             return True
         elif self.state == STATE_RECORDING:
             return self._handle_key_recording(ch, key)

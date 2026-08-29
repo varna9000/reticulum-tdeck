@@ -4,6 +4,9 @@
 # display and keyboard are involved at all.
 #
 #   ./tools/deploy_pro_headless.sh [/dev/cu.usbmodemXXX]
+#
+# Files go through tools/push_file.py, not `mpremote cp` -- see the note at the
+# top of deploy_pro.sh for why cp is not safe on this board.
 set -euo pipefail
 
 PORT="${1:-/dev/cu.usbmodem101}"
@@ -11,36 +14,31 @@ MPR="$HOME/.local/bin/mpremote"
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 FW="$SRC/vendor/uP-reticulum/firmware"
 
-run() { "$MPR" connect "$PORT" "$@"; }
+PAIRS=()
+add() { PAIRS+=("$1" "$2"); }
 
-echo "== creating directories =="
-for d in urns urns/crypto urns/interfaces lib lora peripherals; do
-    run fs mkdir ":$d" 2>/dev/null || true
-done
+echo "== building the file list =="
+for f in "$FW"/urns/*.py;            do add "$f" "urns/$(basename "$f")"; done
+for f in "$FW"/urns/crypto/*.py;     do add "$f" "urns/crypto/$(basename "$f")"; done
+for f in "$FW"/urns/interfaces/*.py; do add "$f" "urns/interfaces/$(basename "$f")"; done
 
-echo "== uReticulum stack =="
-for f in "$FW"/urns/*.py;            do run cp "$f" ":urns/$(basename "$f")"; done
-for f in "$FW"/urns/crypto/*.py;     do run cp "$f" ":urns/crypto/$(basename "$f")"; done
-for f in "$FW"/urns/interfaces/*.py; do run cp "$f" ":urns/interfaces/$(basename "$f")"; done
-
-echo "== native modules (xtensawin only) =="
+# Native modules, xtensawin only.
 for f in "$FW"/lib/*xtensawin.mpy "$FW"/lib/ed25519_iram.mpy; do
-    [ -e "$f" ] && run cp "$f" ":lib/$(basename "$f")"
+    [ -e "$f" ] && add "$f" "lib/$(basename "$f")"
 done
 
-echo "== SX126x radio driver =="
-# Without this the LoRa interface still registers and the node looks healthy,
-# but it is offline forever ("no module named 'lora'") and every announce is
-# silently dropped. txb stays 0.
-for f in "$SRC"/lib/lora/*.py; do run cp "$f" ":lora/$(basename "$f")"; done
+# The SX126x driver. Without it the LoRa interface still registers and the node
+# looks healthy, but it is offline forever ("no module named 'lora'") and every
+# announce is silently dropped. txb stays 0.
+for f in "$SRC"/lib/lora/*.py; do add "$f" "lora/$(basename "$f")"; done
 
-echo "== board config =="
-run cp "$FW/lora_boards.py" :lora_boards.py
-run cp "$SRC/tdeck_pro_config.py" :tdeck_pro_config.py
+add "$FW/lora_boards.py"                  "lora_boards.py"
+add "$SRC/tdeck_pro_config.py"            "tdeck_pro_config.py"
+add "$SRC/tools/tdeck_pro_headless.py"    "tdeck_pro_headless.py"
 
-echo "== headless node =="
-run cp "$SRC/tools/tdeck_pro_headless.py" :tdeck_pro_headless.py
+echo "== pushing $(( ${#PAIRS[@]} / 2 )) files (unchanged ones are verified and skipped) =="
+python3 "$SRC/tools/push_file.py" "$PORT" "${PAIRS[@]}"
 
 echo
-echo "Deployed. Run it with:"
+echo "Deployed and verified. Run it with:"
 echo "  $MPR connect $PORT run $SRC/tools/tdeck_pro_headless.py"

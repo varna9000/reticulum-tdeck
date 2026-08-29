@@ -1,19 +1,26 @@
 #!/usr/bin/env python3
-"""Copy a file to a MicroPython device in verified chunks.
+"""Copy files to a MicroPython device safely, and verify what is already there.
 
 `mpremote cp` sends a file as one long transfer. On the T-Deck Pro's USB-JTAG
 bridge a long transfer fails often, and it fails destructively: the remote file
 is opened for writing before the transfer dies, so a failed copy leaves a
 truncated file behind. Retrying makes it worse, not better -- a loop of failed
 `cp` calls will happily shorten ui.py to 5KB and leave the device unable to
-boot the app.
+boot the app. This is the whole reason tools/deploy_pro.sh does not use `cp`.
 
-This writes to a temporary name in small base64 chunks, retries each chunk on
-its own, verifies the SHA-256 on the device, and only then renames over the
-target. A failure at any point leaves the original file untouched.
+What this does instead, per file:
 
-    tools/push_file.py /dev/cu.usbmodem101 ui.py ui.py
-    tools/push_file.py /dev/cu.usbmodem101 lib/eink_shim.py lib/eink_shim.py
+  1. Hash the device's copy. If it already matches, do nothing -- so a redeploy
+     that changed one file costs one file, and a redeploy that changed nothing
+     is a verification pass.
+  2. Otherwise write to a temporary name in small chunks, retrying each chunk
+     on its own, and verify the SHA-256 on the device.
+  3. Swap it in by renaming the old file aside first, so there is never an
+     instant with no copy of it on the device. A run interrupted mid-swap is
+     recovered on the next run.
+
+    tools/push_file.py PORT SRC DST [SRC DST ...]
+    tools/push_file.py --check PORT SRC DST [...]   # verify only, write nothing
 """
 
 import base64
@@ -23,11 +30,27 @@ import subprocess
 import sys
 
 MPREMOTE = os.path.expanduser("~/.local/bin/mpremote")
-CHUNK = 1024          # raw bytes per chunk; ~1.4KB once base64'd
+CHUNK = 4096          # raw bytes per chunk; ~5.5KB once base64'd
 ATTEMPTS = 6
 
+_SHA_ON_DEVICE = """
+import hashlib, binascii
+try:
+    h = hashlib.sha256()
+    f = open(%r, 'rb')
+    while True:
+        b = f.read(512)
+        if not b:
+            break
+        h.update(b)
+    f.close()
+    print('SHA', binascii.hexlify(h.digest()).decode())
+except OSError:
+    print('SHA missing')
+"""
 
-def run(port, code, timeout=60):
+
+def run(port, code, timeout=120):
     """One mpremote exec. Returns (ok, output)."""
     try:
         p = subprocess.run([MPREMOTE, "connect", port, "exec", code],
@@ -37,7 +60,7 @@ def run(port, code, timeout=60):
     return p.returncode == 0, (p.stdout + p.stderr).strip()
 
 
-def retry(port, code, what, timeout=60):
+def retry(port, code, what, timeout=120):
     for attempt in range(1, ATTEMPTS + 1):
         ok, out = run(port, code, timeout)
         if ok:
@@ -48,14 +71,79 @@ def retry(port, code, what, timeout=60):
     return None
 
 
-def push(port, src, dst):
+def device_sha(port, path):
+    """The device's SHA-256 of path, 'missing', or None if the read failed."""
+    out = retry(port, _SHA_ON_DEVICE % path, "hash of %s" % path)
+    if out is None:
+        return None
+    for line in out.splitlines():
+        if line.startswith("SHA "):
+            return line.split()[1]
+    return None
+
+
+def ensure_dir(port, path):
+    """mkdir -p for the parent of a device path."""
+    parts = path.strip("/").split("/")[:-1]
+    if not parts:
+        return True
+    grown = ""
+    for part in parts:
+        grown += "/" + part
+        if retry(port, "import os\ntry:\n    os.mkdir(%r)\nexcept OSError:\n    pass"
+                       % grown, "mkdir %s" % grown) is None:
+            return False
+    return True
+
+
+def recover(port, target):
+    """Undo an interrupted swap: target gone but its .bak still there.
+
+    The swap renames the old file aside before renaming the new one into
+    place, so this is the one window where target does not exist -- and the
+    old contents are always still on the device under .bak.
+    """
+    return retry(port,
+                 "import os\n"
+                 "try:\n"
+                 "    os.stat(%r)\n"
+                 "except OSError:\n"
+                 "    try:\n"
+                 "        os.rename(%r, %r)\n"
+                 "        print('RECOVERED')\n"
+                 "    except OSError:\n"
+                 "        pass\n" % (target, target + ".bak", target),
+                 "recover %s" % target)
+
+
+def push(port, src, dst, check_only=False):
     data = open(src, "rb").read()
     want = hashlib.sha256(data).hexdigest()
-    tmp = "/" + os.path.basename(dst) + ".part"
     target = "/" + dst.lstrip("/")
+    tmp = target + ".part"
 
-    print("  %s -> %s (%d bytes, %d chunks)"
-          % (src, target, len(data), (len(data) + CHUNK - 1) // CHUNK))
+    out = recover(port, target)
+    if out and "RECOVERED" in out:
+        print("  %s: restored from an interrupted earlier run" % target)
+
+    have = device_sha(port, target)
+    if have is None:
+        print("  %s: could not read the device" % target)
+        return False
+    if have == want:
+        print("  %s up to date (%d bytes)" % (target, len(data)))
+        return True
+    if check_only:
+        print("  %s MISMATCH: device %s, host %s"
+              % (target, "missing" if have == "missing" else have[:16], want[:16]))
+        return False
+
+    print("  %s -> %s (%d bytes, %d chunks)%s"
+          % (src, target, len(data), (len(data) + CHUNK - 1) // CHUNK,
+             "" if have != "missing" else "  [new]"))
+
+    if not ensure_dir(port, target):
+        return False
 
     # Start clean. The temporary name means the real file is never in a
     # half-written state, however badly this goes.
@@ -76,47 +164,64 @@ def push(port, src, dst):
         sys.stdout.flush()
     print()
 
-    out = retry(port, "import hashlib, binascii\n"
-                      "h=hashlib.sha256()\n"
-                      "f=open(%r,'rb')\n"
-                      "while True:\n"
-                      "    b=f.read(512)\n"
-                      "    if not b: break\n"
-                      "    h.update(b)\n"
-                      "f.close()\n"
-                      "print('SHA', binascii.hexlify(h.digest()).decode())" % tmp,
-                "verify", timeout=120)
-    if out is None:
-        return False
-    got = ""
-    for line in out.splitlines():
-        if line.startswith("SHA "):
-            got = line.split()[1]
+    got = device_sha(port, tmp)
     if got != want:
-        print("    checksum mismatch: device %s, host %s" % (got[:16], want[:16]))
+        print("    checksum mismatch: device %s, host %s"
+              % ((got or "?")[:16], want[:16]))
         return False
 
-    if retry(port, "import os\ntry:\n    os.remove(%r)\nexcept OSError:\n    pass\n"
-                   "os.rename(%r, %r)" % (target, tmp, target), "rename") is None:
+    # Swap. The old file is renamed aside rather than deleted, so at no point
+    # is there no copy of it on the device -- an interrupted swap leaves the
+    # old contents under .bak and recover() puts them back on the next run.
+    if retry(port,
+             "import os\n"
+             "try:\n"
+             "    os.remove(%r)\n"          # a stale .bak from an older run
+             "except OSError:\n"
+             "    pass\n"
+             "try:\n"
+             "    os.rename(%r, %r)\n"      # target -> target.bak
+             "except OSError:\n"
+             "    pass\n"
+             "os.rename(%r, %r)\n"          # tmp -> target
+             "try:\n"
+             "    os.remove(%r)\n"          # drop the backup
+             "except OSError:\n"
+             "    pass\n"
+             % (target + ".bak", target, target + ".bak", tmp, target,
+                target + ".bak"),
+             "swap") is None:
         return False
-    print("    ok, sha256 %s" % got[:16])
+    print("    ok, sha256 %s" % want[:16])
     return True
 
 
 def main():
-    if len(sys.argv) < 4 or len(sys.argv) % 2 != 0:
+    argv = sys.argv[1:]
+    check_only = False
+    if argv and argv[0] == "--check":
+        check_only = True
+        argv = argv[1:]
+    if len(argv) < 3 or len(argv) % 2 == 0:
         print(__doc__)
         return 2
-    port = sys.argv[1]
-    pairs = list(zip(sys.argv[2::2], sys.argv[3::2]))
+    port = argv[0]
+    pairs = list(zip(argv[1::2], argv[2::2]))
+
     failed = []
     for src, dst in pairs:
-        if not push(port, src, dst):
-            failed.append(src)
+        if not push(port, src, dst, check_only):
+            failed.append(dst)
+    print()
     if failed:
-        print("FAILED: %s" % ", ".join(failed))
+        print("%s: %d of %d file(s) %s"
+              % ("CHECK FAILED" if check_only else "FAILED", len(failed),
+                 len(pairs), "do not match" if check_only else "did not push"))
+        for f in failed:
+            print("  %s" % f)
         return 1
-    print("all files pushed and verified")
+    print("%d file(s) %s" % (len(pairs),
+                             "verified" if check_only else "pushed and verified"))
     return 0
 
 
