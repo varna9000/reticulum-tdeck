@@ -1264,7 +1264,7 @@ class UI:
             # probes, so ping times out on Sideband/MeshChat peers.
             sw = self.SW
             x = 0
-            for k, rest in (("a", "nnc"), ("s", "etup"), ("f", "av"), ("m", "hash")):
+            for k, rest in (("A", "nnc"), ("S", "etup"), ("F", "av"), ("M", "hash")):
                 self._stext("(", x, INPUT_Y, self.DIM_CYAN)
                 self._stext(k, x + sw, INPUT_Y, self.NEON_GREEN)
                 self._stext(")" + rest, x + 2 * sw, INPUT_Y, self.DIM_CYAN)

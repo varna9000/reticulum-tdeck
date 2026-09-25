@@ -962,6 +962,7 @@ def tcp_toggle(enabled, host=None, port=None):
             _save_settings(settings)
             if DEBUG >= 1:
                 print("[TCP] Interface started ->", host + ":" + str(port))
+            asyncio.create_task(_ntp_sync())
             return True
         if DEBUG >= 1:
             print("[TCP] Interface failed to start")
@@ -992,6 +993,32 @@ def tcp_toggle(enabled, host=None, port=None):
         # Restart LoRa
         _start_lora()
         return True
+
+
+async def _ntp_sync():
+    """We have internet: take the clock from NTP instead of waiting for mesh
+    time sync, whose votes come from announce timestamps -- on a TCP backbone
+    many of those are cached path responses minutes or hours old, so the
+    peers rarely agree and the clock can stay unset for a long time. The
+    time goes through urns' own _apply_clock, so path-table stamps are
+    re-based and we re-announce with a real emission time. No-op once the
+    clock is valid; a few retries in case DNS/WiFi is still settling."""
+    import uasyncio as asyncio
+    from urns.transport import Transport, _EPOCH_OFFSET, _TIME_FLOOR
+    for _ in range(5):
+        if time.time() + _EPOCH_OFFSET >= _TIME_FLOOR:
+            return
+        try:
+            import ntptime
+            Transport._apply_clock(ntptime.time() + _EPOCH_OFFSET, "NTP")
+            gui.dirty = True
+            if DEBUG >= 1:
+                print("[NTP] clock set")
+            return
+        except Exception as e:
+            if DEBUG >= 1:
+                print("[NTP] failed:", e)
+        await asyncio.sleep(10)
 
 
 def tcp_connect_async(host, port):
