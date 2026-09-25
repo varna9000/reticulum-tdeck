@@ -51,15 +51,31 @@ shutil.copyfile(_root + "/tdeck_node.py", _stage + "/main.py")
 freeze(_stage, "main.py")
 
 # --- Splash logo ---
-# logo.jpg is also frozen, as bytes in splash_logo.LOGO: a Launcher install
-# (or any app-only flash) never touches the filesystem, so a logo changed in
-# the repo would otherwise never reach a device that already has a VFS. The
-# splash falls back to /logo.jpg if this module is missing.
-with open(_root + "/logo.jpg", "rb") as _f:
-    _logo = _f.read()
+# splash_logo.pbm is a 1-bit (P4) bitmap of the logo, cropped to its ink.
+# P4 rows are packed MSB-first and byte-padded -- exactly framebuf's
+# MONO_HLSB -- so the bytes are frozen as-is (splash_logo.W/H/BITS) and the
+# splash blits them teal-on-black. No image library needed at build time,
+# and app-only installs (Launcher, JTAG slot flashes) carry the logo.
+with open(_root + "/splash_logo.pbm", "rb") as _f:
+    _pbm = _f.read()
+_tok, _i = [], 0
+while len(_tok) < 3:                 # magic, width, height; skip # comments
+    while _pbm[_i:_i + 1].isspace():
+        _i += 1
+    if _pbm[_i:_i + 1] == b"#":
+        _i = _pbm.index(b"\n", _i)
+        continue
+    _j = _i
+    while not _pbm[_j:_j + 1].isspace():
+        _j += 1
+    _tok.append(_pbm[_i:_j])
+    _i = _j
+assert _tok[0] == b"P4", "splash_logo.pbm must be a binary PBM (P4)"
+_w, _h = int(_tok[1]), int(_tok[2])
+_bits = _pbm[_i + 1:_i + 1 + ((_w + 7) // 8) * _h]
 with open(_stage + "/splash_logo.py", "w") as _f:
-    _f.write("# Generated at build time from logo.jpg by tdeck_manifest.py\n")
-    _f.write("LOGO = " + repr(_logo) + "\n")
+    _f.write("# Generated at build time from splash_logo.pbm by tdeck_manifest.py\n")
+    _f.write("W = %d\nH = %d\nBITS = %r\n" % (_w, _h, _bits))
 freeze(_stage, "splash_logo.py")
 
 # --- App modules (top-level) ---

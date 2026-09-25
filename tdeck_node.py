@@ -76,27 +76,32 @@ spi_acquire_display()
 tft.fill(0x0821)  # BG_DARK
 
 if board.HAS_JPEG_SPLASH:
-    # Render JPEG logo centered, then "Loading..." below.
+    # 1-bit logo (splash_logo, frozen from splash_logo.pbm) drawn teal on
+    # black through framebuf, 16 rows per blit -- crisp, no JPEG artifacts,
+    # ~5.6 KB. Then "Loading..." below, also teal.
     try:
-        import tjpgd_fast_xtensawin as tjpgd
-        try:
-            from splash_logo import LOGO as _jpeg_data   # frozen; see manifest
-        except ImportError:
-            with open("logo.jpg", "rb") as f:
-                _jpeg_data = f.read()
-        _w, _h, _rgb565 = tjpgd.decode(_jpeg_data, 320, 220)
-        del _jpeg_data
+        import framebuf
+        from splash_logo import W as _w, H as _h, BITS as _bits
+        _bits = bytearray(_bits)          # framebuf wants a writable buffer
+        _stride = (_w + 7) // 8
+        _pal = framebuf.FrameBuffer(bytearray(4), 2, 1, framebuf.RGB565)
+        _pal.pixel(0, 0, 0x2108)          # BG_DARK 0x0821, byte-swapped
+        _pal.pixel(1, 0, 0x1405)          # DIM_CYAN 0x0514, byte-swapped
+        _buf = bytearray(_w * 16 * 2)
         _logo_x = (320 - _w) // 2
         _logo_y = (220 - _h) // 2
-        tft.blit_buffer(_rgb565, _logo_x, _logo_y, _w, _h)
-        del _rgb565
+        for _r in range(0, _h, 16):
+            _n = min(16, _h - _r)
+            _src = framebuf.FrameBuffer(memoryview(_bits)[_r * _stride:(_r + _n) * _stride],
+                                        _w, _n, framebuf.MONO_HLSB)
+            _dst = framebuf.FrameBuffer(_buf, _w, _n, framebuf.RGB565)
+            _dst.blit(_src, 0, 0, -1, _pal)
+            tft.blit_buffer(memoryview(_buf)[:_w * _n * 2], _logo_x, _logo_y + _r, _w, _n)
+        del _bits, _buf, _src, _dst, _pal
         gc.collect()
         _txt = "Loading..."
         _tx = (320 - len(_txt) * 8) // 2
         tft.text(font, _txt, _tx, 224, 0x0514, 0x0821)  # DIM_CYAN teal, like the logo
-    except ImportError:
-        # No JPEG decoder -- fall back to simple text splash
-        tft.text(font, "Starting...", 100, 112, 0x0514, 0x0821)
     except Exception as e:
         tft.text(font, "Starting...", 100, 112, 0x0514, 0x0821)
         if DEBUG >= 1:
@@ -111,7 +116,7 @@ else:
 board.flush()
 spi_release_display()
 # Clean up splash temporaries
-for _v in ('_jpeg_data', '_rgb565', '_w', '_h', '_logo_x', '_logo_y', '_txt', '_tx'):
+for _v in ('_w', '_h', '_stride', '_r', '_n', '_logo_x', '_logo_y', '_txt', '_tx'):
     try:
         del globals()[_v]
     except KeyError:
