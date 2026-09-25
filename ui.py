@@ -460,10 +460,9 @@ class UI:
         # Manual hex-entry sub-mode, shared by the SSH and RRC tabs: same
         # 32-hex-char destination, same screen, same key handler; the tab in
         # force decides what Enter opens.
-        self._manual_hex = False
-        self._shell_hex = bytearray()
-        # Find contact sub-mode of the MSG tab: typeahead over every heard
-        # LXMF address (snapshot taken on open), filtered into _find_res.
+        # Find sub-mode, (m) on any tab: typeahead over every heard address of
+        # the tab's kind (snapshot taken on open), filtered into _find_res; a
+        # full 32-hex hash with no match is added as-is.
         self._find = False
         self._find_q = ""
         self._find_snap = []
@@ -645,8 +644,8 @@ class UI:
         self.on_send = None       # on_send(dest_hash_bytes, text)
         self.on_announce = None   # on_announce()
         self.on_ping = None       # on_ping(dest_hash_bytes)
-        self.on_contact_snapshot = None  # () -> [(dest_hash, name, ts)], newest first
-        self.on_add_contact = None       # (dest_hash) -> None — new peer from Find; seek a path
+        self.on_contact_snapshot = None  # (tab) -> [(dest_hash, name, ts)], newest first
+        self.on_add_contact = None       # (dest_hash) -> None — added by Find; seek a path
         self.on_wifi_scan = None      # () -> [(ssid, rssi), ...]
         self.on_wifi_connect = None   # (ssid, password) -> None — async; calls set_wifi_result
         self.on_tcp_toggle = None     # (enabled, host, port) -> bool — sync OFF path
@@ -1107,11 +1106,7 @@ class UI:
     def draw_node_list(self):
         self._draw_tab_bar()
         _rows = BODY_ROWS - 1
-        # SSH/RRC tab in manual-entry mode: a hex-address input, not the list.
-        if self._manual_hex:
-            self._draw_manual_hex()
-            return
-        if self._find and self.node_tab == TAB_MSG:
+        if self._find:
             self._draw_find()
             return
         if self.node_tab == TAB_MSG:
@@ -1129,13 +1124,13 @@ class UI:
         elif self.node_tab == TAB_RRC:
             self._draw_list_rows(self._rrc_keys, self.rrc_hubs, self._rrc_scroll,
                                  self._rrc_idx, False,
-                                 ("No RRC hubs.", "(m) to enter a hash"))
+                                 ("No RRC hubs.", "(m) to find or add one"))
             _total = len(self._rrc_keys)
             _scroll = self._rrc_scroll
         else:  # TAB_SSH
             self._draw_list_rows(self._shell_keys, self.shell_nodes, self.ssh_scroll,
                                  self.ssh_idx, False,
-                                 ("No rnsh nodes.", "(m) to enter a hash"))
+                                 ("No rnsh nodes.", "(m) to find or add one"))
             _total = len(self._shell_keys)
             _scroll = self.ssh_scroll
 
@@ -1930,12 +1925,11 @@ class UI:
             # (#mesh, #mesh-extra), so the prompt could not be typed at all.
             return self._rrc_prompt
         if self.state == STATE_NODES:
-            # The node list is pure navigation -- except in manual hex
-            # entry, where 'e' is a hex DIGIT. Roughly seven in eight
-            # 16-byte hashes contain one, and a bare e was being eaten as a
-            # scroll event before _handle_manual_hex_key() ever saw it.
-            # Find contact is a text field too (names, hash prefixes).
-            return self._manual_hex or self._find
+            # The node list is pure navigation -- except in Find, a text
+            # field for names and hashes, where 'e' is a hex DIGIT. Roughly
+            # seven in eight 16-byte hashes contain one, and a bare e used to
+            # be eaten as a scroll event before the entry ever saw it.
+            return self._find
         if self.state == STATE_SETTINGS:
             return self._settings_page in self._TEXT_ENTRY_PAGES
         return False
@@ -2004,10 +1998,8 @@ class UI:
             self.dirty = True
 
     def _handle_key_nodes(self, ch, key):
-        # Manual hex-entry sub-mode captures all keys.
-        if self._manual_hex:
-            return self._handle_manual_hex_key(ch, key)
-        if self._find and self.node_tab == TAB_MSG:
+        # Find sub-mode captures all keys.
+        if self._find:
             return self._handle_find_key(ch)
         if key == b'a' or key == b'A':
             if self.on_announce:
@@ -2026,13 +2018,7 @@ class UI:
             # keyboard fallback for trackball left/right tab switch
             self._switch_tab((self.node_tab + 1) % N_TABS)
             return True
-        elif (key == b'm' or key == b'M') and self.node_tab != TAB_MSG:
-            self._manual_hex = True
-            self._shell_hex = bytearray()
-            self._cache = [''] * CACHE_ROWS
-            self.dirty = True
-            return True
-        elif (key == b'm' or key == b'M') and self.node_tab == TAB_MSG:
+        elif key == b'm' or key == b'M':
             self._find_open()
             return True
         elif key == b'd' or key == b'D':
@@ -2076,7 +2062,6 @@ class UI:
         if tab == self.node_tab:
             return
         self.node_tab = tab
-        self._manual_hex = False
         self._find = False
         if tab == TAB_NET and self.on_net_seed:
             try:
@@ -2174,105 +2159,34 @@ class UI:
         if self.on_shell_connect:
             self.on_shell_connect(dest_hash, cols, rows)
 
-    def _draw_manual_hex(self):
-        """Manual hex-entry screen, for whichever of SSH/RRC is in force.
+    # --- Find: search heard addresses, or add one by hash (m, any tab) ---
 
-        A destination hash is a destination hash: 16 bytes either way, and
-        the RRC tab's empty state has advertised "(m) to enter a hash"
-        since it landed. Only the label and the identity hint differ.
-        """
+    def _tab_list(self):
+        """(keys, table) behind the current tab's list."""
         if self.node_tab == TAB_MSG:
-            tab_text = "Peer hash:"
-        elif self.node_tab == TAB_NET:
-            tab_text = "Nomad hash:"
-        elif self.node_tab == TAB_RRC:
-            tab_text = "RRC hub hash:"
-        elif self.node_tab == TAB_SSH:
-            tab_text = "RNSH listener hash:"
-        else:
-            return # Unknown error
-        self._draw_row_cached(2, tab_text, BODY_Y + CHAR_H, self.NEON_CYAN)
-        self._draw_row_cached(3, "(32 hex chars)", BODY_Y + 2 * CHAR_H, self.DIM_CYAN)
-        for i in range(3, BODY_ROWS - 2):
-            self._draw_row_cached(i + 1, "", BODY_Y + i * CHAR_H, self.NEON_CYAN)
-        # Show our identity hash — a listener authorizes it via -a /
-        # allowed_identities, and an rrcd operator registers or bans by it.
-        if self.node_tab in [TAB_RRC, TAB_SSH]:
-            self._draw_row_cached(BODY_ROWS - 1,
-                                "your id:" if self.node_tab == TAB_RRC else "your id (for listener -a):",
-                                BODY_Y + (BODY_ROWS - 2) * CHAR_H, self.DIM_CYAN)
-            self._draw_row_cached(BODY_ROWS, self.my_identity_hash or "?",
-                                BODY_Y + (BODY_ROWS - 1) * CHAR_H, self.NEON_GREEN)
-        else:
-            self._draw_row_cached(BODY_ROWS - 1, '', BODY_Y + (BODY_ROWS - 2) * CHAR_H, self.NEON_CYAN)
-            self._draw_row_cached(BODY_ROWS, '', BODY_Y + (BODY_ROWS - 1) * CHAR_H, self.NEON_CYAN)
-        self._draw_input_line(self._shell_hex.decode())
-        foot = "Enter=connect  Esc=cancel"
-        if self._cache[FOOT_SLOT] != foot:
-            self._cache[FOOT_SLOT] = foot
-            self.tft.text(self.font, self._tb(_pad(foot)), 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-
-    def _handle_manual_hex_key(self, ch, key):
-        if ch == 0x1B:   # Esc — cancel
-            self._manual_hex = False
-            self._cache = [''] * CACHE_ROWS
-            self.dirty = True
-            return True
-        if ch == 0x08:   # Backspace
-            if self._shell_hex:
-                self._shell_hex = self._shell_hex[:-1]
-                self._input_dirty = True
-            return True
-        if ch == 0x0D:   # Enter — parse + connect
-            s = self._shell_hex.decode().strip().lower()
-            try:
-                from binascii import unhexlify
-                dest = unhexlify(s)
-                if len(dest) != 16:
-                    raise ValueError
-            except Exception:
-                if self.node_tab == TAB_RRC:
-                    self._rrc_status = "bad hash (need 32 hex)"
-                elif self.node_tab == TAB_SSH:
-                    self._shell_status = "bad hash (need 32 hex)"
-                self.dirty = True
-                return True
-            self._manual_hex = False
-            if self.node_tab == TAB_MSG:
-                self.add_peer(dest, "?")
-            elif self.node_tab == TAB_NET:
-                self.add_nomad_node(dest, "?")
-            elif self.node_tab == TAB_RRC:
-                self.add_rrc_hub(dest)
-            elif self.node_tab == TAB_SSH:
-                self.add_shell_node(dest)
-            else:
-                return False # Unknown error
-            return True
-        if 0x20 <= ch < 0x7F and len(self._shell_hex) < 32:
-            c = chr(ch).lower()
-            if c in "0123456789abcdef":
-                self._shell_hex += bytes([ord(c)])
-                self._input_dirty = True
-            return True
-        return True
-
-    # --- Find contact (MSG tab typeahead) ---
+            return self._peer_keys, self.peers
+        if self.node_tab == TAB_NET:
+            return self._node_keys, self.nomad_nodes
+        if self.node_tab == TAB_RRC:
+            return self._rrc_keys, self.rrc_hubs
+        return self._shell_keys, self.shell_nodes
 
     def _find_open(self):
-        """Snapshot every heard LXMF address, plus any listed peer the
-        snapshot lacks (a "?" peer still waiting on its announce)."""
+        """Snapshot every heard address of this tab's kind, plus any listed
+        entry the snapshot lacks (e.g. one added by hash, still waiting on
+        its announce)."""
         snap = None
         if self.on_contact_snapshot:
             try:
-                snap = self.on_contact_snapshot()
+                snap = self.on_contact_snapshot(self.node_tab)
             except Exception:
                 pass
         snap = list(snap or ())
         have = set(e[0] for e in snap)
-        for k in self._peer_keys:
+        keys, table = self._tab_list()
+        for k in keys:
             if k not in have:
-                p = self.peers[k]
+                p = table[k]
                 snap.append((k, p.get("name") or "?", p.get("seen", 0)))
         self._find_snap = snap
         self._find = True
@@ -2293,12 +2207,17 @@ class UI:
         self._cache = [''] * CACHE_ROWS
         self.dirty = True
 
+    def _find_rows(self):
+        # RRC/RNSH give two rows to our identity hash, which a hub operator
+        # or an rnsh listener (-a) needs in order to let us in.
+        return BODY_ROWS - (5 if self.node_tab in (TAB_RRC, TAB_SSH) else 3)
+
     def _find_move(self, d):
         n = len(self._find_res)
         if not n:
             return
         self._find_sel = max(0, min(n - 1, self._find_sel + d))
-        rows = BODY_ROWS - 3
+        rows = self._find_rows()
         if self._find_sel < self._find_scroll:
             self._find_scroll = self._find_sel
         elif self._find_sel >= self._find_scroll + rows:
@@ -2320,8 +2239,9 @@ class UI:
         return True
 
     def _find_pick(self):
-        """Open the chat for the highlighted result -- or, with no result,
-        for a full 32-hex hash nobody has announced yet."""
+        """Add the highlighted result -- or, with no result, a full 32-hex
+        hash nobody has announced yet -- to this tab's list and select it.
+        Opening it is the usual click away; nothing connects by surprise."""
         if self._find_res:
             dest, name = self._find_res[self._find_sel][:2]
         else:
@@ -2329,32 +2249,50 @@ class UI:
             if len(q) != 32 or not all(c in _HEX for c in q):
                 return
             dest, name = bytes.fromhex(q), None
-        new = dest not in self.peers
+        keys, table = self._tab_list()
+        new = dest not in table
         if new:
-            self.add_peer(dest, name)
+            if self.node_tab == TAB_MSG:
+                self.add_peer(dest, name)
+            elif self.node_tab == TAB_NET:
+                self.add_nomad_node(dest, name)
+            elif self.node_tab == TAB_RRC:
+                self.add_rrc_hub(dest, name=name)
+            else:
+                self.add_shell_node(dest, name=name)
         self._find_close()
-        self.selected_idx = self._peer_keys.index(dest)
+        i = keys.index(dest)
         rows = BODY_ROWS - 1
-        if self.selected_idx < self.node_scroll:
-            self.node_scroll = self.selected_idx
-        elif self.selected_idx >= self.node_scroll + rows:
-            self.node_scroll = self.selected_idx - rows + 1
+        if self.node_tab == TAB_MSG:
+            self.selected_idx = i
+            self.node_scroll = max(0, i - rows + 1) if i >= self.node_scroll + rows else min(self.node_scroll, i)
+        elif self.node_tab == TAB_NET:
+            self.net_idx = i
+            self.net_scroll = max(0, i - rows + 1) if i >= self.net_scroll + rows else min(self.net_scroll, i)
+        elif self.node_tab == TAB_RRC:
+            self._rrc_idx = i
+            self._rrc_scroll = max(0, i - rows + 1) if i >= self._rrc_scroll + rows else min(self._rrc_scroll, i)
+        else:
+            self.ssh_idx = i
+            self.ssh_scroll = max(0, i - rows + 1) if i >= self.ssh_scroll + rows else min(self.ssh_scroll, i)
+        self._route_cache = ''
         if new and self.on_add_contact:
             try:
                 self.on_add_contact(dest)
             except Exception:
                 pass
-        self._enter_chat()
 
     def _draw_find(self):
-        """Find screen: title row, results (name, hash prefix, age), a
-        count/keys row, and the query on the input line."""
+        """Find screen: title row, results (name, hash prefix, age), our
+        identity on RRC/RNSH, a count/keys row, and the query on the input
+        line."""
         q = self._find_q
         ql = q.lower()
         y = BODY_Y + CHAR_H
-        if self._draw_row_cached(2, "Find  name or hash prefix", y, self.DIM_CYAN):
+        title = "Find  hash prefix" if self.node_tab == TAB_SSH else "Find  name or hash prefix"
+        if self._draw_row_cached(2, title, y, self.DIM_CYAN):
             self.tft.text(self.font, "Find", 0, y, self.NEON_GREEN, self.BG_DARK)
-        rows = BODY_ROWS - 3
+        rows = self._find_rows()
         hc = COLS - 14                  # hash column; age ends one short of the edge
         res = self._find_res
         if not res:
@@ -2398,10 +2336,15 @@ class UI:
                     self.tft.text(self.font, ql[:8], hc * CHAR_W, y, self.NEON_GREEN, bg)
             if sel:
                 self.tft.fill_rect(0, y, 3, CHAR_H, self.NEON_MAG)
+        if rows < BODY_ROWS - 3:
+            y = BODY_Y + (rows + 2) * CHAR_H
+            self._draw_row_cached(rows + 3, "your id (hub / listener -a):", y, self.DIM_CYAN)
+            self._draw_row_cached(rows + 4, self.my_identity_hash or "?", y + CHAR_H,
+                                  self.NEON_GREEN)
         n = str(len(self._find_snap)) + " heard"
         if q:
             n = str(len(res)) + "/" + n
-        keys = "Ent=open Esc=back"
+        keys = "Ent=add Esc=back"
         self._draw_row_cached(BODY_ROWS, " " + n + " " * (COLS - 2 - len(n) - len(keys)) + keys,
                               BODY_Y + (BODY_ROWS - 1) * CHAR_H, self.DIM_CYAN)
         if self._cache[INPUT_SLOT] != "F" + q:
@@ -3980,16 +3923,16 @@ class UI:
             if self.state == STATE_IMAGE:
                 self._exit_image_view()
             elif self.state == STATE_NODES:
-                if self.node_tab == TAB_MSG and self._find:
+                if self._find:
                     self._find_pick()
                 elif self.node_tab == TAB_MSG:
                     self._enter_chat()
                 elif self.node_tab == TAB_NET:
                     self._open_selected_node()
-                elif self.node_tab == TAB_RRC and not self._manual_hex:
+                elif self.node_tab == TAB_RRC:
                     import rrc_ui
                     rrc_ui.open_selected_hub(self)
-                elif self.node_tab == TAB_SSH and not self._manual_hex:
+                elif self.node_tab == TAB_SSH:
                     self._open_selected_shell()
             elif self.state == STATE_BROWSER:
                 self._browser_follow_cursor()
@@ -4037,7 +3980,7 @@ class UI:
         if self.state == STATE_IMAGE:
             return
         elif self.state == STATE_NODES:
-            if self.node_tab == TAB_MSG and self._find:
+            if self._find:
                 self._find_move(-1)
             elif self.node_tab == TAB_MSG:
                 if self.selected_idx > 0:
@@ -4113,7 +4056,7 @@ class UI:
             return
         elif self.state == STATE_NODES:
             _rows = BODY_ROWS - 1  # tab bar takes the first body row
-            if self.node_tab == TAB_MSG and self._find:
+            if self._find:
                 self._find_move(1)
             elif self.node_tab == TAB_MSG:
                 if self.selected_idx < len(self._peer_keys) - 1:

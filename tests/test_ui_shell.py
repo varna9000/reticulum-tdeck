@@ -106,29 +106,33 @@ def test_ssh_tab_lists_nodes():
     assert g._shell_keys == [b"\xa3" * 16]
 
 
-def test_manual_hash_entry_connects():
+def test_manual_hash_entry_adds_the_listener():
+    # (m) opens Find; a full hash nobody announced is added to the list and
+    # selected -- it no longer connects on the spot (PR #15).
     g = _mkui()
     g._switch_tab(ui.TAB_SSH)
     g.handle_key(b"m")
-    assert g._manual_hex
+    assert g._find
     _type(g, "aa" * 16)               # 32 hex chars
     g.handle_key(b"\r")
+    assert g._shell_keys == [bytes([0xAA] * 16)]
+    assert g._shell_keys[g.ssh_idx] == bytes([0xAA] * 16)
+    assert not g.connects
+    assert g.state == ui.STATE_NODES
+    g.handle_key(b"\r")              # the usual Enter now connects
     assert g.connects and g.connects[-1][0] == bytes([0xAA] * 16)
     assert g.state == ui.STATE_SHELL
-    assert g._terminal is not None
 
 
-def test_manual_bad_hash_rejected():
+def test_manual_short_hash_is_not_added():
     g = _mkui()
     g._switch_tab(ui.TAB_SSH)
     g.handle_key(b"m")
-    _type(g, "xyz")                   # non-hex ignored by the input filter
-    assert len(g._shell_hex) == 0
-    _type(g, "ab")                    # too short
+    _type(g, "ab")                    # too short, and matches nothing heard
     g.handle_key(b"\r")
     assert not g.connects
-    assert g._manual_hex            # stays in entry mode
-    assert "bad hash" in (g._shell_status or "")
+    assert g._shell_keys == []
+    assert g._find                    # stays in entry mode
 
 
 def test_line_mode_sends_line():

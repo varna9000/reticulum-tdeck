@@ -82,6 +82,21 @@ def _node_hops(dest_hash):
     return None
 
 
+def hub_name(app_data):
+    """The hub's display name from its announce app_data (CBOR
+    {"proto":"rrc","v":1,"hub":<name>}), or None if absent or unreadable."""
+    if app_data:
+        try:
+            info = cbor.loads(app_data)
+            if isinstance(info, dict) and info.get("proto") == "rrc":
+                got = info.get("hub")
+                if isinstance(got, str):
+                    return got
+        except Exception:
+            pass
+    return None
+
+
 def _on_announce(dest_hash, app_data, packet):
     """Transport announce observer -- collect "rrc.hub" announces.
 
@@ -90,18 +105,8 @@ def _on_announce(dest_hash, app_data, packet):
     and still gets listed, just without a display name."""
     if _hub_hash(dest_hash) != dest_hash:
         return
-    name = None
-    if app_data:
-        try:
-            info = cbor.loads(app_data)
-            if isinstance(info, dict) and info.get("proto") == "rrc":
-                got = info.get("hub")
-                if isinstance(got, str):
-                    name = got
-        except Exception:
-            pass
     if _gui is not None:
-        _gui.add_rrc_hub(dest_hash, name=name, hops=_node_hops(dest_hash))
+        _gui.add_rrc_hub(dest_hash, name=hub_name(app_data), hops=_node_hops(dest_hash))
         if _gui._wake_mode == 1:      # announces wake only under Wake: all
             _gui.wake_screen()
 

@@ -2048,39 +2048,41 @@ def test_the_panel_nick_column_clears_the_hash_column_on_both_boards():
 
 
 # --- Minor 3: (m) on the RRC tab has to do what the hint says --------------
+# Since PR #15 + Find, (m) is "search, or add by hash" on every tab, and a
+# manual add lands in the list selected rather than connecting on the spot.
 
 
-def test_m_on_the_rrc_tab_opens_manual_hash_entry_and_connects():
-    # The empty state says "(m) to enter a hash" but m was gated to TAB_SSH,
-    # so the key did nothing at all.
+def test_m_on_the_rrc_tab_opens_find_and_adds_the_hub():
+    # The empty state says "(m) to find or add one"; the key must do that.
     g = make_ui()
     g.state = U.STATE_NODES
     g.node_tab = U.TAB_RRC
     connected = []
     g.on_rrc_connect = lambda dest: connected.append(dest)
     g.handle_key(b"m")
-    assert g._manual_hex is True, "the (m) hint still does nothing"
+    assert g._find is True, "the (m) hint still does nothing"
     for c in "bb" * 16:
         g.handle_key(c.encode())
     g.draw_node_list()                     # the entry screen must render
     g.handle_key(b"\r")
-    assert connected == [bytes([0xBB]) * 16], connected
-    assert g.state == U.STATE_RRC_ROOMS, g.state
-    assert g._manual_hex is False
-    print("ok test_m_on_the_rrc_tab_opens_manual_hash_entry_and_connects")
+    assert g._rrc_keys == [bytes([0xBB]) * 16], g._rrc_keys
+    assert g._rrc_keys[g._rrc_idx] == bytes([0xBB]) * 16
+    assert connected == [], connected      # added, not connected
+    assert g.state == U.STATE_NODES, g.state
+    assert g._find is False
+    print("ok test_m_on_the_rrc_tab_opens_find_and_adds_the_hub")
 
 
 def test_manual_entry_on_the_rrc_tab_never_starts_a_shell():
     g = make_ui()
     g.state = U.STATE_NODES
     g.node_tab = U.TAB_RRC
-    connected = []
-    g.on_rrc_connect = lambda dest: connected.append(dest)
     g.handle_key(b"m")
     for c in "cc" * 16:
         g.handle_key(c.encode())
     g.handle_key(b"\r")
-    assert connected == [bytes([0xCC]) * 16], connected
+    assert g._rrc_keys == [bytes([0xCC]) * 16], g._rrc_keys
+    assert g._shell_keys == [], g._shell_keys
     assert g.connects == [], g.connects       # on_shell_connect must not fire
     assert g._terminal is None
     print("ok test_manual_entry_on_the_rrc_tab_never_starts_a_shell")
@@ -2089,39 +2091,35 @@ def test_manual_entry_on_the_rrc_tab_never_starts_a_shell():
 def test_manual_entry_accepts_the_hex_digits_e_and_x_is_not_one():
     # 'e' IS a hex digit, and UI.handle_key runs _bare_nav_key() before
     # state dispatch: on a screen not "accepting text" a bare e is eaten as
-    # a scroll event and never reaches the hex buffer. Roughly seven in
-    # eight 16-byte hashes contain an 'e', so without this the manual entry
-    # is unusable -- on the RRC tab now and on the SSH tab all along.
-    for tab, expect in ((U.TAB_RRC, "rrc"), (U.TAB_SSH, "ssh")):
+    # a scroll event and never reaches the entry. Roughly seven in eight
+    # 16-byte hashes contain an 'e', so without this adding by hash is
+    # unusable.
+    for tab, keys in ((U.TAB_RRC, "_rrc_keys"), (U.TAB_SSH, "_shell_keys")):
         g = make_ui()
         g.state = U.STATE_NODES
         g._switch_tab(tab)
-        connected = []
-        g.on_rrc_connect = lambda dest: connected.append(dest)
         g.handle_key(b"m")
         for c in "ee" * 16:
             g.handle_key(c.encode())
-        assert g._shell_hex.decode() == "ee" * 16, (expect, g._shell_hex)
-        assert (g._irq_up, g._irq_down) == (0, 0), (expect, g._irq_up, g._irq_down)
+        assert g._find_q == "ee" * 16, (keys, g._find_q)
+        assert (g._irq_up, g._irq_down) == (0, 0), (keys, g._irq_up, g._irq_down)
         g.handle_key(b"\r")
-        if expect == "rrc":
-            assert connected == [bytes([0xEE]) * 16], connected
-        else:
-            assert g.connects[-1][0] == bytes([0xEE]) * 16, g.connects
+        assert getattr(g, keys) == [bytes([0xEE]) * 16], (keys, getattr(g, keys))
     print("ok test_manual_entry_accepts_the_hex_digits_e_and_x_is_not_one")
 
 
 def test_manual_entry_still_works_on_the_ssh_tab():
-    # The SSH tab's own manual entry must survive being generalised.
+    # The SSH tab's own add-by-hash must survive being generalised.
     g = make_ui()
     g._switch_tab(U.TAB_SSH)
     g.handle_key(b"m")
-    assert g._manual_hex is True
+    assert g._find is True
     for c in "aa" * 16:
         g.handle_key(c.encode())
     g.handle_key(b"\r")
-    assert g.connects and g.connects[-1][0] == bytes([0xAA] * 16)
-    assert g.state == U.STATE_SHELL
+    assert g._shell_keys == [bytes([0xAA] * 16)]
+    assert g.connects == []
+    assert g.state == U.STATE_NODES
     print("ok test_manual_entry_still_works_on_the_ssh_tab")
 
 

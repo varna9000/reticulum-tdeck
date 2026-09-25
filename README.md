@@ -237,8 +237,7 @@ The device starts on the node list screen with four tabs: **MSG** (LXMF chat pee
 | Select peer/node | Trackball up/down (or `e`/`x`) |
 | Open chat / node page / shell | Trackball click (or Enter) |
 | Favorite/Unfavorite selected peer/node | Press `f` |
-| Find / add a contact (MSG) | Press `m` |
-| Enter rnsh / hub hash manually (RNSH/RRC) | Press `m` |
+| Find, or add by hash, a peer / node / hub / listener | Press `m` |
 | Send announce | Press `a` |
 | Open setup | Press `s` |
 | Ping selected peer (MSG, not shown in the footer) | Press `p` |
@@ -253,7 +252,7 @@ re-appears on the next announce. When the peer list fills up (16 entries) the
 **least-recently-seen** peer that is not favorited is evicted — never the one you're actively
 chatting with.
 
-**Find contact** (`m` on MSG) searches every LXMF address the node has heard — not just the 16 in the peer list, but the whole announce cache (up to 768 identities). Type part of a display name (`deej`) or the start of an address (`b90d`); matches list newest first with their hash prefix and age, so two people with similar names can be told apart. Move with the trackball, and click or press Enter to add the contact and open its chat. To add someone whose announce hasn't reached you — say an address posted as a QR code online — type all 32 hex characters: the contact is added as `?`, a path request goes out, and the name fills in when the answer arrives. Messages typed before then are queued and sent once a path is known.
+**Find** (`m`, on any tab) searches every address of that tab's kind the node has heard — LXMF peers on MSG, NomadNet nodes on NET, hubs on RRC, listeners on RNSH — not just the 16 in the list, but the whole announce cache (up to 768 identities). Type part of a display name (`deej`) or the start of an address (`b90d`); matches list newest first with their hash prefix and age, so two with similar names can be told apart. Move with the trackball, and click or press Enter to add the pick to the tab's list and select it; opening it (chat, page, hub, shell) is the usual click away, so nothing connects by surprise. To add something whose announce hasn't reached you — say an address posted as a QR code online — type all 32 hex characters: it is added as `?`, a path request goes out, and the name fills in when the answer arrives instead of hours later at its next announce. Messages typed to a `?` peer are queued and sent once a path is known. On RRC and RNSH the screen also shows your identity hash, for a hub operator or a listener's `-a`.
 
 The footer's right side shows a compact status for the **selected entry** — hop count, last RSSI, and last-seen age (`2h -87dB 5m`), learned from announces. Pinging sends a probe to the peer's `urns.probe` destination and shows the round-trip time (`ping: 2.4s`); peers must run uP-reticulum with the probe responder enabled to answer.
 
@@ -283,7 +282,7 @@ v1 limitations: read-only (form fields render as placeholders), pages are capped
 
 ### rnsh Shell (RNSH tab)
 
-The RNSH tab lists [rnsh](https://github.com/acehoss/rnsh) listeners heard via announces; press `m` to type a listener's 32-hex destination hash directly. Clicking one establishes an encrypted link, identifies your node, exchanges protocol versions, and starts the remote default shell on a pty. Output renders as a **scrolling text log** on a **53×16 grid** (see the font note below) — line-oriented commands (`ls -l`, `ps`, `git log`, `cat`) keep their column layout instead of wrapping; full-screen TUIs (`vim`, `htop`) won't render correctly (ANSI cursor addressing is stripped in this MVP). The listener must authorize your **identity hash** (shown at boot and on the RNSH manual-entry screen) via its `-a` flag or `~/.config/rnsh/allowed_identities`, unless it runs `--no-auth`.
+The RNSH tab lists [rnsh](https://github.com/acehoss/rnsh) listeners heard via announces; press `m` to find one or add it by its 32-hex destination hash. Clicking one establishes an encrypted link, identifies your node, exchanges protocol versions, and starts the remote default shell on a pty. Output renders as a **scrolling text log** on a **53×16 grid** (see the font note below) — line-oriented commands (`ls -l`, `ps`, `git log`, `cat`) keep their column layout instead of wrapping; full-screen TUIs (`vim`, `htop`) won't render correctly (ANSI cursor addressing is stripped in this MVP). The listener must authorize your **identity hash** (shown at boot and on the RNSH Find screen) via its `-a` flag or `~/.config/rnsh/allowed_identities`, unless it runs `--no-auth`.
 
 | Action | Input |
 |---|---|

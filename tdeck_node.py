@@ -1199,14 +1199,20 @@ def forget_peer(key):
         _lxmf_to_peer.pop(h, None)
 
 
-def contact_snapshot():
-    """GUI Find: every LXMF address in urns' identity cache, newest first, as
-    (dest_hash, name, ts). The cache holds every aspect (nomad nodes, rnsh,
-    probes), so keep only entries whose hash is that identity's
-    lxmf.delivery hash -- the same test as _compute_lxmf_hash, with the
-    name hash taken once instead of per entry."""
+def contact_snapshot(tab):
+    """GUI Find: every address in urns' identity cache of the given tab's
+    kind, newest first, as (dest_hash, name, ts). The cache holds every
+    aspect, so an entry qualifies when its hash is its identity's hash for
+    the tab's destination name -- the test each tab's announce handler
+    applies, with the name hash taken once instead of per entry."""
     from urns.identity import Identity
-    nh = Identity.full_hash(b"lxmf.delivery")[:Identity.NAME_HASH_LENGTH // 8]
+    import ui as _ui
+    name, parse = {
+        _ui.TAB_MSG: (b"lxmf.delivery", LXMRouter.display_name_from_app_data),
+        _ui.TAB_NET: (b"nomadnetwork.node", nomad_browser._decode_name),
+        _ui.TAB_RRC: (b"rrc.hub", rrc_client.hub_name),
+    }.get(tab, (b"rnsh", None))
+    nh = Identity.full_hash(name)[:Identity.NAME_HASH_LENGTH // 8]
     tl = Identity.TRUNCATED_HASHLENGTH // 8
     out = []
     for dh, v in Identity.known_destinations.items():
@@ -1215,15 +1221,16 @@ def contact_snapshot():
             continue
         if Identity.full_hash(nh + Identity.truncated_hash(pub))[:tl] != dh:
             continue
-        out.append((dh, LXMRouter.display_name_from_app_data(v[3]) or "?", v[0]))
+        out.append((dh, (parse(v[3]) if parse else None) or "?", v[0]))
     out.sort(key=lambda e: e[2], reverse=True)
     gc.collect()
     return out
 
 
 def add_contact(dest_hash):
-    """GUI Find added a peer: go find a path now, so its announce (and with
-    it the name of a "?" peer) arrives before the first message is typed."""
+    """GUI Find added an entry to a tab: go find a path now, so its announce
+    (and with it the name of a "?" entry) arrives in seconds instead of
+    whenever it next announces on its own."""
     from urns.transport import Transport
     if not Transport.has_path(dest_hash):
         Transport.request_path(dest_hash)

@@ -109,7 +109,7 @@ def test_layout_fits_panel():
               "only %d" % ui.BODY_ROWS)
         # The row cache is indexed by slot, and the highest body slot a list
         # page writes is BODY_ROWS + 1 (`ci = i + 2` over BODY_ROWS - 1 rows,
-        # plus the identity row _draw_manual_hex puts at BODY_ROWS). Sizing
+        # plus the count row _draw_find puts at BODY_ROWS). Sizing
         # it by hand is how a taller panel walks off the end of the list.
         check("%s: footer slot clears the body rows" % label,
               ui.FOOT_SLOT > ui.BODY_ROWS,

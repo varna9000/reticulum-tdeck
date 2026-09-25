@@ -1,9 +1,9 @@
-# Host-side test for the MSG tab's Find contact typeahead: (m) opens a search
-# over every LXMF address the node has heard (urns' known_destinations, handed
-# over by tdeck_node as a snapshot), filtered as you type by display-name
-# substring or hash prefix. Enter adds the pick to the peer list and opens the
-# chat; a full 32-hex hash nobody has announced is added anyway, as "?", and
-# the node is asked to go find a path to it.
+# Host-side test for Find, (m) on any node-list tab: a search over every
+# address of the tab's kind the node has heard (urns' known_destinations,
+# handed over by tdeck_node as a per-tab snapshot), filtered as you type by
+# display-name substring or hash prefix. Enter adds the pick to the tab's list
+# and selects it -- it does not open or connect; a full 32-hex hash nobody has
+# announced is added anyway, as "?", and the node is asked to find a path.
 #
 # Run:  python3 tests/test_ui_find.py
 
@@ -90,7 +90,12 @@ def _mkui(snap=_snap):
     g = ui.UI(FakeTFT(), object(), lambda: b"\x00", node_name="t")
     g._screen_on = True
     g.node_tab = ui.TAB_MSG
-    g.on_contact_snapshot = snap
+    g.snap_tabs = []
+
+    def _snap_for(tab):
+        g.snap_tabs.append(tab)
+        return snap() if snap else None
+    g.on_contact_snapshot = _snap_for
     g.added = []
     g.on_add_contact = lambda h: g.added.append(h)
     return g
@@ -146,11 +151,13 @@ def test_m_opens_find_on_the_msg_tab():
     assert _names(g._find_res) == ["Ratspeak", "nomad-alice", "Dr Deej home", "deejay-rpi"]
 
 
-def test_find_is_msg_tab_only():
-    g = _mkui()
-    g.node_tab = ui.TAB_NET
-    g.handle_key(b"m")
-    assert not g._find
+def test_m_opens_find_on_every_tab_with_that_tabs_snapshot():
+    for tab in (ui.TAB_MSG, ui.TAB_NET, ui.TAB_RRC, ui.TAB_SSH):
+        g = _mkui()
+        g._switch_tab(tab)
+        g.handle_key(b"m")
+        assert g._find, tab
+        assert g.snap_tabs == [tab], (tab, g.snap_tabs)
 
 
 def test_find_accepts_text_so_e_and_x_are_letters():
@@ -240,28 +247,49 @@ def test_typing_resets_selection():
     assert g._find_sel == 0
 
 
-def test_enter_adds_the_pick_and_opens_its_chat():
+def test_enter_adds_the_pick_and_selects_it_without_opening():
     g = _mkui()
+    g.add_peer(ALICE, "nomad-alice")
     g.handle_key(b"m")
     _type(g, "deej")
     g.nav_event("down")
     g.handle_trackball()
     g.handle_key(b"\r")
-    assert g.state == ui.STATE_CHAT
-    assert g.selected_peer == RPI
+    assert g.state == ui.STATE_NODES
+    assert g._peer_keys[g.selected_idx] == RPI
     assert g.peers[RPI]["name"] == "deejay-rpi"
     assert g.added == [RPI]
     assert not g._find
+    g.handle_key(b"\r")                  # the usual Enter now opens it
+    assert g.state == ui.STATE_CHAT and g.selected_peer == RPI
 
 
-def test_click_opens_like_enter():
+def test_click_adds_like_enter():
     g = _mkui()
     g.handle_key(b"m")
     _type(g, "rats")
     g.nav_event("click")
     g.handle_trackball()
-    assert g.state == ui.STATE_CHAT
-    assert g.selected_peer == RATS
+    assert g.state == ui.STATE_NODES
+    assert g._peer_keys[g.selected_idx] == RATS
+
+
+def test_each_tab_adds_to_its_own_list():
+    h = bytes.fromhex(UNKNOWN)
+    for tab, keys in ((ui.TAB_NET, "_node_keys"), (ui.TAB_RRC, "_rrc_keys"),
+                      (ui.TAB_SSH, "_shell_keys")):
+        g = _mkui(snap=None)
+        g._switch_tab(tab)
+        fired = []
+        g.on_rrc_connect = lambda d: fired.append(d)
+        g.handle_key(b"m")
+        _type(g, UNKNOWN)
+        g.handle_key(b"\r")
+        assert getattr(g, keys) == [h], (tab, getattr(g, keys))
+        assert g._peer_keys == [], tab
+        assert g.added == [h], tab
+        assert g.state == ui.STATE_NODES, tab
+        assert fired == [] and g._terminal is None, tab   # nothing connects
 
 
 def test_enter_on_a_known_peer_does_not_duplicate_it():
@@ -271,7 +299,7 @@ def test_enter_on_a_known_peer_does_not_duplicate_it():
     _type(g, "rats")
     g.handle_key(b"\r")
     assert g._peer_keys.count(RATS) == 1
-    assert g.selected_peer == RATS
+    assert g._peer_keys[g.selected_idx] == RATS
     assert g.peers[RATS]["rssi"] == -80   # announce data kept, not overwritten
     assert g.added == []
 
@@ -283,8 +311,8 @@ def test_unknown_full_hash_is_added_as_unknown_and_path_requested():
     assert g._find_res == []
     g.handle_key(b"\r")
     dest = bytes.fromhex(UNKNOWN)
-    assert g.state == ui.STATE_CHAT
-    assert g.selected_peer == dest
+    assert g.state == ui.STATE_NODES
+    assert g._peer_keys[g.selected_idx] == dest
     assert g.peers[dest]["name"] == "?"
     assert g.added == [dest]
 
@@ -333,6 +361,25 @@ def test_find_screen_draws_with_long_names_and_no_results():
     _draw(g)
     _type(g, "qqq")
     assert "No match" in _draw(g).drawn()
+
+
+def test_rrc_and_ssh_find_show_our_identity():
+    for tab in (ui.TAB_RRC, ui.TAB_SSH):
+        g = _mkui()
+        g.my_identity_hash = "ab" * 16
+        g._switch_tab(tab)
+        g.handle_key(b"m")
+        out = _draw(g).drawn()
+        assert "ab" * 16 in out, tab
+        assert "Ratspeak" in out, tab     # results still listed above it
+
+
+def test_other_tab_footers_read_fav_hash():
+    g = _mkui()
+    g._switch_tab(ui.TAB_NET)
+    foot = _draw(g).at_y(ui.INPUT_Y)
+    for word in ("nnc", "etup", "av", "hash"):
+        assert word in foot, foot
 
 
 def test_msg_footer_reads_setup_hash_del():
