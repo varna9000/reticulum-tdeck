@@ -1148,13 +1148,10 @@ class UI:
         if self._cache[FOOT_SLOT] != _nf_key:
             self._cache[FOOT_SLOT] = _nf_key
             self.tft.text(self.font, _pad(""), 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-            # (p)ing still works but goes unadvertised: only urns nodes
-            # answer probes, so it times out on Sideband/MeshChat peers.
-            hints = [("a", "nnc"), ("s", "etup")]
-            if self.node_tab == TAB_MSG:
-                hints += [("m", "hash"), ("d", "el")]
-            else:
-                hints += [("f", "av"), ("m", "hash")]
+            # One footer for every tab. (p)ing and (d)el still work on MSG
+            # but go unadvertised: only urns nodes answer probes, so ping
+            # times out on Sideband/MeshChat peers.
+            hints = (("a", "nnc"), ("s", "etup"), ("f", "av"), ("m", "hash"))
             x = 0
             for k, rest in hints:
                 if k:
@@ -1167,7 +1164,7 @@ class UI:
             self._route_cache = ''
 
         # Dynamic footer info, right-aligned in the last 12 cols (28-39),
-        # clear of the hints, which end at col 27 ("(d)el"): transient
+        # clear of the hints, which end at col 27 ("(m)hash"): transient
         # ping result, else the selected peer's hops + RSSI + last-seen,
         # e.g. "2h -87dB 5m". (Next-hop relay detail lives in the path
         # table; too wide for this line.)

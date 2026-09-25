@@ -382,12 +382,19 @@ def test_other_tab_footers_read_fav_hash():
         assert word in foot, foot
 
 
-def test_msg_footer_reads_setup_hash_del():
+def test_msg_footer_matches_the_other_tabs():
     g = _mkui()
     foot = _draw(g).at_y(ui.INPUT_Y)
-    for word in ("nnc", "etup", "hash", "el"):
+    for word in ("nnc", "etup", "av", "hash"):
         assert word in foot, foot
-    assert "ing" not in foot, foot       # ping still works, just not advertised
+    assert "ing" not in foot and ")el" not in foot, foot   # both keys still work
+
+
+def test_d_still_deletes_on_msg():
+    g = _mkui()
+    g.add_peer(ALICE, "nomad-alice")
+    g.handle_key(b"d")
+    assert g._peer_keys == []
 
 
 def test_p_still_pings():

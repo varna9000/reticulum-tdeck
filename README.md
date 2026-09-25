@@ -241,7 +241,7 @@ The device starts on the node list screen with four tabs: **MSG** (LXMF chat pee
 | Send announce | Press `a` |
 | Open setup | Press `s` |
 | Ping selected peer (MSG, not shown in the footer) | Press `p` |
-| Delete selected peer/node | Press `d` |
+| Delete selected peer/node (not shown in the footer) | Press `d` |
 | Lock the device | Hold trackball click (0.7 s), anywhere |
 | Unlock the device | Any trackball click |
 
