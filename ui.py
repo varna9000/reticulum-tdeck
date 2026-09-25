@@ -1274,22 +1274,22 @@ class UI:
         if self._cache[FOOT_SLOT] != _nf_key:
             self._cache[FOOT_SLOT] = _nf_key
             self.tft.fill_rect(0, INPUT_Y, SCREEN_W, CHAR_H, self.BG_DARK)
-            # One footer for every tab, in the small font. (p)ing and (d)el
-            # still work on MSG but go unadvertised: only urns nodes answer
-            # probes, so ping times out on Sideband/MeshChat peers.
-            sw = self.SW
+            # One footer for every tab; hotkeys in the main font, capitals.
+            # (P)ing and (D)el still work on MSG but go unadvertised: only
+            # urns nodes answer probes, so ping times out on Sideband/MeshChat.
             x = 0
             for k, rest in (("A", "nnc"), ("S", "etup"), ("F", "av"), ("M", "hash")):
-                self._stext("(", x, INPUT_Y, self.DIM_CYAN)
-                self._stext(k, x + sw, INPUT_Y, self.NEON_GREEN)
-                self._stext(")" + rest, x + 2 * sw, INPUT_Y, self.DIM_CYAN)
-                x += (len(rest) + 4) * sw
-            self._foot_x = x
+                self.tft.text(self.font, "(", x, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+                self.tft.text(self.font, k, x + CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
+                self.tft.text(self.font, ")" + rest, x + 2 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+                x += (len(rest) + 4) * CHAR_W
+            self._foot_x = x - CHAR_W
             self._route_cache = ''
 
-        # Dynamic footer info, right-aligned with a one-char margin, clear of
-        # the hints: transient ping result, else the selected entry's hops,
-        # RSSI (peers) and last-seen, e.g. "2 hops -87dB 5min".
+        # Dynamic footer info in the small font, right-aligned with a one-char
+        # margin, clear of the hints: transient ping result, else the selected
+        # entry's hops, RSSI (peers) and last-seen, e.g. "2 hops -87dB 5min".
+        # Too long for the room left by the hotkeys: drop "dB", then the RSSI.
         info = ""
         entry = None
         if self.node_tab == TAB_MSG:
@@ -1306,19 +1306,19 @@ class UI:
         else:  # TAB_SSH
             if self._shell_keys and self.ssh_idx < len(self._shell_keys):
                 entry = self.shell_nodes.get(self._shell_keys[self.ssh_idx])
-        if entry:
-            bits = []
-            if entry.get("hops"):
-                bits.append(_hops(entry["hops"]))
-            if entry.get("rssi") is not None:
-                bits.append(str(entry["rssi"]) + "dB")
-            bits.append(_age(entry.get("seen")))
-            info = " ".join(bits)
         sw = self.SW
         x0 = getattr(self, "_foot_x", 0) + sw
         room = (SCREEN_W - sw - x0) // sw
-        if len(info) > room:
-            info = info.replace("dB", "")
+        if entry:
+            hops = _hops(entry["hops"]) + " " if entry.get("hops") else ""
+            age = _age(entry.get("seen"))
+            rs = entry.get("rssi")
+            info = hops + age
+            if rs is not None:
+                for cand in (hops + str(rs) + "dB " + age, hops + str(rs) + " " + age):
+                    if len(cand) <= room:
+                        info = cand
+                        break
         info = info[:room]
         if self._route_cache != info:
             self._route_cache = info
@@ -3795,15 +3795,15 @@ class UI:
         self._draw_input_line(self.cmd_buf.decode())
 
     def _draw_settings_bottom_bar(self):
-        """(CLICK)select ... (BKSP)back, in the small font like the node-list
-        footer, keys in capitals, one-char right margin."""
-        sw = self.SW
+        """(CLICK)select ... (BKSP)back: hotkeys in the main font and
+        capitals like the node-list footer, one-char right margin."""
         self.tft.fill_rect(0, INPUT_Y, SCREEN_W, CHAR_H, self.BG_DARK)
-        x = SCREEN_W - sw - len("(BKSP)back") * sw
+        x = SCREEN_W - CHAR_W - len("(BKSP)back") * CHAR_W
         for kx, key, rest in ((0, "CLICK", "select"), (x, "BKSP", "back")):
-            self._stext("(", kx, INPUT_Y, self.DIM_CYAN)
-            self._stext(key, kx + sw, INPUT_Y, self.NEON_GREEN)
-            self._stext(")" + rest, kx + (len(key) + 1) * sw, INPUT_Y, self.DIM_CYAN)
+            self.tft.text(self.font, "(", kx, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+            self.tft.text(self.font, key, kx + CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
+            self.tft.text(self.font, ")" + rest, kx + (len(key) + 1) * CHAR_W, INPUT_Y,
+                          self.DIM_CYAN, self.BG_DARK)
 
     def _draw_wifi_scan(self):
         _hdr = ("WiFi: " + self._wifi_err[:18] + "  (r)escan"

@@ -484,7 +484,12 @@ def test_footer_spells_out_hops_and_minutes():
     g.add_peer(ALICE, "nomad-alice", rssi=-87, hops=2)
     g.peers[ALICE]["seen"] = _time.time() - 300
     foot = _draw(g).at_y(ui.INPUT_Y)
-    assert "2 hops -87dB 5min" in foot, foot
+    # hotkeys in the main font leave ~12 small chars: RSSI goes first
+    assert "2 hops 5min" in foot, foot
+    g.peers[ALICE]["hops"] = None
+    g._route_cache = ''
+    foot = _draw(g).at_y(ui.INPUT_Y)
+    assert "-87dB 5min" in foot, foot          # direct peer: signal fits
 
 
 def test_msg_footer_matches_the_other_tabs():
