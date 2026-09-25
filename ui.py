@@ -1046,10 +1046,6 @@ class UI:
             w = len(label) * CHAR_W
             if i == self.node_tab:
                 self.tft.text(self.font, label, x, y, self.NEON_GREEN, self.TAB_BG)
-                # Round the top corners (3 px): background into the corners.
-                for j, cut in ((0, 3), (1, 1), (2, 1)):
-                    self.tft.fill_rect(x, y + j, cut, 1, bg)
-                    self.tft.fill_rect(x + w - cut, y + j, cut, 1, bg)
             else:
                 self.tft.text(self.font, label, x, y, self.DIM_CYAN, bg)
             x += w

@@ -405,13 +405,11 @@ def test_tab_underline_only_outside_find():
     assert not any(r[1] == line_y and r[2] == ui.SCREEN_W for r in t.rects)
 
 
-def test_selected_tab_is_teal_with_rounded_corners():
+def test_selected_tab_is_teal():
     g = _mkui()
     t = _draw(g)
     tab = [c for c in t.colors if c[2] == ui.BODY_Y and "MSG" in c[0]][0]
     assert tab[3] == g.NEON_GREEN and tab[4] == g.TAB_BG, tab
-    corners = [r for r in t.rects if r[1] == ui.BODY_Y and r[4] == g.BG_DARK and r[2] == 3]
-    assert len(corners) == 2, corners         # top-left and top-right
 
 
 def test_no_match_hints_are_centred():
