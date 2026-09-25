@@ -390,7 +390,7 @@ def test_settings_timeout_and_volume_adjust():
     g._settings_idx = 0
     for _ in range(20):
         g._settings_scroll_down()
-    assert g._settings_idx == 11                  # 12 items now (Wake added)
+    assert g._settings_idx == 12                  # 13 items now (Time zone added)
 
 
 def test_browser_prev_next_and_paging():

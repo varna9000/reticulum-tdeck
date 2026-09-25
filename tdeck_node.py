@@ -1219,6 +1219,13 @@ def set_wake_mode(mode):
     _save_settings(settings)
 
 
+def set_tz_pref(minutes):
+    """GUI: persist the display time zone offset (minutes from UTC)."""
+    settings = _load_settings()
+    settings["tz_min"] = int(minutes)
+    _save_settings(settings)
+
+
 def forget_peer(key):
     """GUI: a peer was deleted — drop its LXMF-hash mappings too so a fresh
     announce re-adds it cleanly."""
@@ -1293,6 +1300,7 @@ gui.on_ping = on_ping
 gui.on_auto_announce = set_auto_announce
 gui.on_screen_timeout = set_screen_timeout
 gui.on_wake_mode = set_wake_mode
+gui.on_tz = set_tz_pref
 gui.on_delete_peer = forget_peer
 gui.get_radio_stats = get_radio_stats
 gui.my_address = dest.hexhash
@@ -1663,6 +1671,9 @@ def _auto_connect_wifi():
     _wm = settings.get("wake_mode")
     if _wm is not None:
         gui._wake_mode = int(_wm)
+    _tz = settings.get("tz_min")
+    if _tz is not None:
+        gui.set_tz(int(_tz))
     # WiFi reconnect is deferred to the event loop (_auto_connect_wifi_async) so a
     # slow or absent AP can never block boot on the loading screen.
 

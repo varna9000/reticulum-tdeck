@@ -262,18 +262,30 @@ def _clock_valid():
     return time.localtime()[0] >= 2024
 
 
+# Display-only time zone offset in seconds (Setup > Time zone). The RTC stays
+# on UTC: urns stamps and checks announce emission times against it.
+_TZ = 0
+
+
 def _fmt_clock():
-    t = time.localtime()
+    t = time.localtime(time.time() + _TZ)
     return "%02d:%02d" % (t[3], t[4])
+
+
+def _tz_label(minutes):
+    if not minutes:
+        return "UTC"
+    a = abs(minutes)
+    return "UTC" + ("-" if minutes < 0 else "+") + str(a // 60) + (":%02d" % (a % 60) if a % 60 else "")
 
 
 def _fmt_time(ts):
     """Message timestamp: HH:MM today, MM-DD HH:MM otherwise. '' if the
     clock wasn't synced when the message was stored."""
-    t = time.localtime(int(ts))
-    if t[0] < 2024:
+    if time.localtime(int(ts))[0] < 2024:
         return ""
-    now = time.localtime()
+    t = time.localtime(int(ts) + _TZ)
+    now = time.localtime(time.time() + _TZ)
     if (t[0], t[1], t[2]) == (now[0], now[1], now[2]):
         return "%02d:%02d" % (t[3], t[4])
     return "%02d-%02d %02d:%02d" % (t[1], t[2], t[3], t[4])
@@ -317,6 +329,7 @@ def _icon(rows):
     return len(rows[0]), len(rows), tuple(runs)
 
 
+_SUBPAGE = _icon(("#...", "##..", "###.", "####", "###.", "##..", "#..."))
 _STAR = _icon(("....#....", "....#....", "...###...", "#########", ".#######.",
                "..#####..", "..##.##..", ".##...##.", ".#.....#."))
 _GLOBE = _icon(("..#####..", ".#.#.#.#.", "#..#.#..#", "#..#.#..#", "#########",
@@ -732,6 +745,8 @@ class UI:
         self.on_send = None       # on_send(dest_hash_bytes, text)
         self.on_announce = None   # on_announce()
         self.on_ping = None       # on_ping(dest_hash_bytes)
+        self.on_tz = None                # (minutes) -> None — persist the time zone
+        self._tz_min = 0
         self.on_contact_snapshot = None  # (tab) -> [(dest_hash, name, ts)], newest first
         self.on_add_contact = None       # (dest_hash) -> None — added by Find; seek a path
         self.on_wifi_scan = None      # () -> [(ssid, rssi), ...]
@@ -3361,7 +3376,12 @@ class UI:
                     self._cache = [''] * CACHE_ROWS
                     self.dirty = True
                     return True
-                # idx 11 (address) is informational — Enter does nothing
+                elif self._settings_idx == 11:  # Time zone
+                    self._step_tz(1)
+                    self._cache = [''] * CACHE_ROWS
+                    self.dirty = True
+                    return True
+                # idx 12 (address) is informational — Enter does nothing
         elif self._settings_page == _SET_RADIO:
             if ch == 0x1B or ch == 0x08:
                 self._settings_page = _SET_MAIN
@@ -3588,6 +3608,27 @@ class UI:
         elif self._settings_page == _SET_LORA_FREQ:
             self._draw_lora_freq()
 
+    def set_tz(self, minutes):
+        """Display time zone offset in minutes (UTC-12..UTC+14, wrapping)."""
+        global _TZ
+        if minutes > 14 * 60:
+            minutes = -12 * 60
+        elif minutes < -12 * 60:
+            minutes = 14 * 60
+        self._tz_min = minutes
+        _TZ = minutes * 60
+        self._cache[0] = ''              # header clock
+        self._invalidate_chat_lines()    # message timestamps
+        self.dirty = True
+
+    def _step_tz(self, delta):
+        self.set_tz(self._tz_min + 30 * delta)
+        if self.on_tz:
+            try:
+                self.on_tz(self._tz_min)
+            except Exception:
+                pass
+
     def _timeout_label(self):
         ms = self._screen_timeout_ms
         return "never" if not ms else str(ms // 1000) + "s"
@@ -3619,22 +3660,39 @@ class UI:
         c = self._lora_cfg
         loracfg_line = ("LoRa cfg: %dk SF%d BW%s"
                         % (c["freq_khz"], c["sf"], c["bw"]))
+        tz_line = "Time zone: " + _tz_label(self._tz_min)
         addr_line = "Addr: " + (self.my_address or "?")
         items = [wifi_line, tcp_line, name_line, lora_line, vol_line,
                  kbbl_line, anc_line, sleep_line, wake_line, radio_line,
-                 loracfg_line, addr_line]
-        for i in range(BODY_ROWS - 1):
+                 loracfg_line, tz_line, addr_line]
+        # Rows whose click opens a sub-page get a small > marker: WiFi (the
+        # scan list, only while disconnected -- connected, a click drops it),
+        # TCP (the host entry, only while off), Name, Radio stats, LoRa cfg.
+        subpage = (not self._wifi_connected,
+                   self._wifi_connected and not self._tcp_enabled,
+                   True, False, False, False, False, False, False, True, True,
+                   False, False)
+        # More rows than the v1 body holds: scroll with the selection.
+        rows = BODY_ROWS - 1
+        top = max(0, self._settings_idx - rows + 1)
+        for i in range(rows):
             y = BODY_Y + (i + 1) * CHAR_H
-            if i < len(items):
-                line = "  " + items[i]
-                if i == self._settings_idx:
-                    cache_key = '\x01' + line
-                    if self._cache[i + 2] != cache_key:
-                        self._cache[i + 2] = cache_key
-                        self.tft.text(self.font, self._tb(_pad(line)), 0, y, self.YELLOW, self.SEL_BG)
-                        self.tft.fill_rect(4, y, 3, CHAR_H, self.NEON_MAG)
+            if top + i < len(items):
+                line = "  " + items[top + i]
+                sub = subpage[top + i]
+                sel = top + i == self._settings_idx
+                cache_key = ('\x01' if sel else '') + ('\x02' if sub else '') + line
+                if self._cache[i + 2] == cache_key:
+                    continue
+                self._cache[i + 2] = cache_key
+                if sel:
+                    self.tft.text(self.font, self._tb(_pad(line)), 0, y, self.YELLOW, self.SEL_BG)
+                    self.tft.fill_rect(4, y, 3, CHAR_H, self.NEON_MAG)
                 else:
-                    self._draw_row_cached(i + 2, line, y, self.NEON_CYAN)
+                    self._row(line, y, self.NEON_CYAN)
+                if sub:
+                    self._bitmap(_SUBPAGE, 9, y + (CHAR_H - _SUBPAGE[1]) // 2,
+                                 self.YELLOW if sel else self.DIM_CYAN)
             else:
                 self._draw_row_cached(i + 2, "", y, self.NEON_CYAN)
 
@@ -4235,9 +4293,9 @@ class UI:
 
     def _settings_scroll_down(self):
         if self._settings_page == _SET_MAIN:
-            # 12 items: WiFi TCP Name LoRa Vol KbBL Announce Sleep Wake Radio
-            #           LoRaCfg Addr
-            if self._settings_idx < 11:
+            # 13 items: WiFi TCP Name LoRa Vol KbBL Announce Sleep Wake Radio
+            #           LoRaCfg TimeZone Addr
+            if self._settings_idx < 12:
                 self._settings_idx += 1
         elif self._settings_page == _SET_WIFI_SCAN:
             if self._settings_idx < len(self._wifi_networks) - 1:
@@ -4347,6 +4405,8 @@ class UI:
             self._cycle_timeout(delta)
         elif self._settings_idx == 8:    # Auto-wake policy
             self._cycle_wake(delta)
+        elif self._settings_idx == 11:   # Time zone
+            self._step_tz(delta)
         else:
             return
         self._cache = [''] * CACHE_ROWS

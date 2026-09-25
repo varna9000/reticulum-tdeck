@@ -521,6 +521,43 @@ def test_settings_header_reads_setup():
     assert "Settings" not in g.tft.drawn()
 
 
+def test_time_zone_setting_shifts_only_the_display():
+    g = _mkui()
+    saved = []
+    g.on_tz = lambda m: saved.append(m)
+    g.state = ui.STATE_SETTINGS
+    g._settings_page = ui._SET_MAIN
+    g._settings_idx = 11
+    for _ in range(6):
+        g._settings_adjust(1)                  # 6 x 30 min
+    assert g._tz_min == 180 and saved[-1] == 180
+    assert ui._tz_label(180) == "UTC+3" and ui._tz_label(-210) == "UTC-3:30"
+    # localtime() is UTC on the device (no zone); compare on the same base
+    want = _time.localtime(_time.time() + 3 * 3600)
+    assert ui._fmt_clock() == "%02d:%02d" % (want[3], want[4])
+    g.set_tz(0)
+
+
+def test_setup_scrolls_to_time_zone_and_addr_and_marks_subpages():
+    g = _mkui()
+    g.state = ui.STATE_SETTINGS
+    g._settings_page = ui._SET_MAIN
+    g._settings_idx = 12                       # Addr, past the 11 visible rows
+    g.tft.texts = []; g.tft.rects = []
+    g._cache = [''] * ui.CACHE_ROWS
+    g.draw_settings()
+    out = g.tft.drawn()
+    assert "Addr:" in out and "Time zone: UTC" in out, out
+    g._settings_idx = 0
+    g.tft.rects = []
+    g._cache = [''] * ui.CACHE_ROWS
+    g.draw_settings()
+    # WiFi (disconnected), Name, Radio stats, LoRa cfg open sub-pages
+    marks = [r for r in g.tft.rects if r[0] == 9 and r[2] == 1]
+    assert len({r[1] // ui.CHAR_H for r in marks}) >= 4, marks
+    g.set_tz(0)
+
+
 def _run():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
