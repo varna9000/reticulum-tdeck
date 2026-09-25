@@ -9,3 +9,11 @@
 
 #define MICROPY_HW_I2C0_SCL                 (9)
 #define MICROPY_HW_I2C0_SDA                 (8)
+
+// Features the T-Deck never uses, cut to keep the app image inside the 2MiB
+// M5Launcher slot: Bluetooth (with sdkconfig.ble dropped from
+// mpconfigboard.cmake), ESP-NOW, and SPI Ethernet (no PHY on this board;
+// see sdkconfig.board).
+#define MICROPY_PY_BLUETOOTH                (0)
+#define MICROPY_PY_ESPNOW                   (0)
+#define MICROPY_PY_NETWORK_LAN              (0)
