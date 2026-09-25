@@ -205,7 +205,7 @@ mpremote cp logo.jpg :
 
 Edit `tdeck_config.py` (on-device or before flashing):
 
-- `NODE_NAME` — default display name broadcast in announces (default: `"T-Deck"`). Can be changed at runtime from Settings.
+- `NODE_NAME` — default display name broadcast in announces (default: `"T-Deck"`). Can be changed at runtime from Setup.
 - `DEBUG` — `0` = silent, `1` = basic, `2` = verbose
 - `LORA_CONFIG` — mesh radio parameters (frequency, SF, BW, TX power, syncword) and listen-before-talk settings. Board wiring (pins, TCXO, DC-DC, battery sense) comes from the `tdeck_v1_sx1262` preset in `lora_boards.py`.
 - `TCP_CONFIG` — default TCP server address and port for WiFi mode
@@ -237,10 +237,11 @@ The device starts on the node list screen with four tabs: **MSG** (LXMF chat pee
 | Select peer/node | Trackball up/down (or `e`/`x`) |
 | Open chat / node page / shell | Trackball click (or Enter) |
 | Favorite/Unfavorite selected peer/node | Press `f` |
-| Enter rnsh hash manually (RNSH) | Press `m` |
+| Find / add a contact (MSG) | Press `m` |
+| Enter rnsh / hub hash manually (RNSH/RRC) | Press `m` |
 | Send announce | Press `a` |
-| Open settings | Press `s` |
-| Ping selected peer (MSG) | Press `p` |
+| Open setup | Press `s` |
+| Ping selected peer (MSG, not shown in the footer) | Press `p` |
 | Delete selected peer/node | Press `d` |
 | Lock the device | Hold trackball click (0.7 s), anywhere |
 | Unlock the device | Any trackball click |
@@ -251,6 +252,8 @@ Deleting a peer forgets its chat history and cached media locally; it
 re-appears on the next announce. When the peer list fills up (16 entries) the
 **least-recently-seen** peer that is not favorited is evicted — never the one you're actively
 chatting with.
+
+**Find contact** (`m` on MSG) searches every LXMF address the node has heard — not just the 16 in the peer list, but the whole announce cache (up to 768 identities). Type part of a display name (`deej`) or the start of an address (`b90d`); matches list newest first with their hash prefix and age, so two people with similar names can be told apart. Move with the trackball, and click or press Enter to add the contact and open its chat. To add someone whose announce hasn't reached you — say an address posted as a QR code online — type all 32 hex characters: the contact is added as `?`, a path request goes out, and the name fills in when the answer arrives. Messages typed before then are queued and sent once a path is known.
 
 The footer's right side shows a compact status for the **selected entry** — hop count, last RSSI, and last-seen age (`2h -87dB 5m`), learned from announces. Pinging sends a probe to the peer's `urns.probe` destination and shows the round-trip time (`ping: 2.4s`); peers must run uP-reticulum with the probe responder enabled to answer.
 
@@ -373,7 +376,7 @@ Message delivery status is shown after each sent message:
 
 Highlighting a message with the trackball shows its timestamp in the bottom bar (once mesh time is synced).
 
-Settings additionally offers a **keyboard backlight** toggle (persisted across boots). It requires keyboard MCU firmware from 2024-12-25 or newer — older shipped keyboards ignore the I2C command (flash [`T-Keyboard_Keyboard_ESP32C3_250620.bin`](https://github.com/Xinyuan-LilyGO/T-Deck/tree/master/firmware) via the internal 6-pin header to enable it); the keyboard-local Alt+B shortcut works regardless. shows the node's own LXMF address, and has a live **Radio / Mesh stats** page (RSSI/SNR, TX/RX counters, CRC errors, listen-before-talk stats, path/identity table sizes).
+Setup additionally offers a **keyboard backlight** toggle (persisted across boots). It requires keyboard MCU firmware from 2024-12-25 or newer — older shipped keyboards ignore the I2C command (flash [`T-Keyboard_Keyboard_ESP32C3_250620.bin`](https://github.com/Xinyuan-LilyGO/T-Deck/tree/master/firmware) via the internal 6-pin header to enable it); the keyboard-local Alt+B shortcut works regardless. shows the node's own LXMF address, and has a live **Radio / Mesh stats** page (RSSI/SNR, TX/RX counters, CRC errors, listen-before-talk stats, path/identity table sizes).
 
 ### Image Viewing
 
@@ -419,9 +422,9 @@ Getting usable audio from the T-Deck's ES7210 ADC for Codec2 encoding required s
 - The 240 KB recording buffer (15 seconds at 8 kHz 16-bit) is **pre-allocated at boot** and never freed, preventing heap fragmentation that would block the 39 KB codec2 native module from loading.
 - IIR DC offset removal is applied per-sample during capture: `dc = (dc * 31 + sample) >> 5`.
 
-### Settings
+### Setup
 
-Press `s` from the node list to open settings. Navigate with trackball, select with trackball click, go back with backspace.
+Press `s` from the node list to open setup. Navigate with trackball, select with trackball click, go back with backspace.
 
 **WiFi** — Scan for networks, select one, enter password. After connecting, the TCP host entry page opens automatically.
 
@@ -443,7 +446,7 @@ All settings (WiFi credentials, TCP host/port, node name, TCP enabled state, vol
 
 ### Screen Power-Off
 
-The screen turns off automatically after a configurable inactivity timeout (10 s default; set to 30 s / 60 s / never under Settings → Sleep) to save battery, and never sleeps while a page transfer or audio playback is in progress. Any keypress or trackball event wakes the screen; whether an incoming message or peer announce also wakes it follows the Settings → Wake policy (messages only by default). The first input after wake is consumed (not processed) to prevent accidental actions. The MCU stays awake to receive LoRa packets — only the backlight is toggled. All SPI display writes are skipped while the screen is off, freeing the bus for LoRa.
+The screen turns off automatically after a configurable inactivity timeout (10 s default; set to 30 s / 60 s / never under Setup → Sleep) to save battery, and never sleeps while a page transfer or audio playback is in progress. Any keypress or trackball event wakes the screen; whether an incoming message or peer announce also wakes it follows the Setup → Wake policy (messages only by default). The first input after wake is consumed (not processed) to prevent accidental actions. The MCU stays awake to receive LoRa packets — only the backlight is toggled. All SPI display writes are skipped while the screen is off, freeing the bus for LoRa.
 
 ### Screen Lock
 
@@ -453,7 +456,7 @@ Holding the trackball click for 0.7 s locks the device from any screen: the scre
 
 Top bar shows: battery voltage (or `USB` when running on external power / charging, since a LiPo never rests above ~4.3 V), active interface (`[LoRa]` or `[TCP]`), RSSI of last received packet, node name, and a `>>>` flash on announce. A neon frame borders the body on every screen for a consistent look.
 
-The **Radio / Mesh** stats page (Settings → Radio stats) additionally reports uptime, total announces sent this session, and battery percentage, and scrolls when the stats exceed one screen.
+The **Radio / Mesh** stats page (Setup → Radio stats) additionally reports uptime, total announces sent this session, and battery percentage, and scrolls when the stats exceed one screen.
 
 ## Networking
 
@@ -506,7 +509,7 @@ native code, DMA-capable for I2S, WiFi driver buffers). Measured costs:
 
 Before the rebuild the fully-booted app left **~8 KB** internal free and
 `network.WLAN()` raised `RuntimeError: Wifi Unknown Error 0x0101`
-(`ESP_ERR_NO_MEM`), surfaced in Settings as "no RAM for WiFi". After the
+(`ESP_ERR_NO_MEM`), surfaced in Setup as "no RAM for WiFi". After the
 rebuild, with the app running **and WiFi connected**, ~115 KB internal
 remains free (135 KB measured at the REPL with the app stopped).
 

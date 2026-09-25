@@ -1199,6 +1199,38 @@ def forget_peer(key):
         _lxmf_to_peer.pop(h, None)
 
 
+def contact_snapshot():
+    """GUI Find: every LXMF address in urns' identity cache, newest first, as
+    (dest_hash, name, ts). The cache holds every aspect (nomad nodes, rnsh,
+    probes), so keep only entries whose hash is that identity's
+    lxmf.delivery hash -- the same test as _compute_lxmf_hash, with the
+    name hash taken once instead of per entry."""
+    from urns.identity import Identity
+    nh = Identity.full_hash(b"lxmf.delivery")[:Identity.NAME_HASH_LENGTH // 8]
+    tl = Identity.TRUNCATED_HASHLENGTH // 8
+    out = []
+    for dh, v in Identity.known_destinations.items():
+        pub = v[2]
+        if dh == dest.hash or not pub:
+            continue
+        if Identity.full_hash(nh + Identity.truncated_hash(pub))[:tl] != dh:
+            continue
+        out.append((dh, LXMRouter.display_name_from_app_data(v[3]) or "?", v[0]))
+    out.sort(key=lambda e: e[2], reverse=True)
+    gc.collect()
+    return out
+
+
+def add_contact(dest_hash):
+    """GUI Find added a peer: go find a path now, so its announce (and with
+    it the name of a "?" peer) arrives before the first message is typed."""
+    from urns.transport import Transport
+    if not Transport.has_path(dest_hash):
+        Transport.request_path(dest_hash)
+
+
+gui.on_contact_snapshot = contact_snapshot
+gui.on_add_contact = add_contact
 gui.on_send = gui_send
 gui.on_announce = gui_announce
 gui.on_wifi_scan = wifi_scan

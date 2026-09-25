@@ -293,6 +293,21 @@ def _age(ts):
     return str(d // 86400) + "d"
 
 
+_HEX = "0123456789abcdef"
+
+
+def match_contacts(snap, q):
+    """Find-contact filter: the (dest_hash, name, ts) entries of snap, in
+    snap's order, whose name contains q (any case) or -- when q is hex --
+    whose hash starts with it. A hex word like "dee" can hit both ways."""
+    q = q.lower()
+    if not q:
+        return list(snap)
+    is_hex = all(c in _HEX for c in q)
+    return [e for e in snap
+            if (is_hex and e[0].hex().startswith(q)) or q in e[1].lower()]
+
+
 def _sw565(c):
     """Byte-swap an RGB565 colour for framebuf.
 
@@ -447,6 +462,14 @@ class UI:
         # force decides what Enter opens.
         self._manual_hex = False
         self._shell_hex = bytearray()
+        # Find contact sub-mode of the MSG tab: typeahead over every heard
+        # LXMF address (snapshot taken on open), filtered into _find_res.
+        self._find = False
+        self._find_q = ""
+        self._find_snap = []
+        self._find_res = []
+        self._find_sel = 0
+        self._find_scroll = 0
 
         # Shell session (STATE_SHELL)
         self._terminal = None        # terminal.Terminal, created on connect
@@ -622,6 +645,8 @@ class UI:
         self.on_send = None       # on_send(dest_hash_bytes, text)
         self.on_announce = None   # on_announce()
         self.on_ping = None       # on_ping(dest_hash_bytes)
+        self.on_contact_snapshot = None  # () -> [(dest_hash, name, ts)], newest first
+        self.on_add_contact = None       # (dest_hash) -> None — new peer from Find; seek a path
         self.on_wifi_scan = None      # () -> [(ssid, rssi), ...]
         self.on_wifi_connect = None   # (ssid, password) -> None — async; calls set_wifi_result
         self.on_tcp_toggle = None     # (enabled, host, port) -> bool — sync OFF path
@@ -1086,6 +1111,9 @@ class UI:
         if self._manual_hex:
             self._draw_manual_hex()
             return
+        if self._find and self.node_tab == TAB_MSG:
+            self._draw_find()
+            return
         if self.node_tab == TAB_MSG:
             self._draw_list_rows(self._peer_keys, self.peers, self.node_scroll,
                                  self.selected_idx, True,
@@ -1125,36 +1153,26 @@ class UI:
         if self._cache[FOOT_SLOT] != _nf_key:
             self._cache[FOOT_SLOT] = _nf_key
             self.tft.text(self.font, _pad(""), 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-            self.tft.text(self.font, "(", 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-            self.tft.text(self.font, "a", CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
-            self.tft.text(self.font, ")nnc", 2 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-            self.tft.text(self.font, "(", 7 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-            self.tft.text(self.font, "s", 8 * CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
-            self.tft.text(self.font, ")et", 9 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+            # (p)ing still works but goes unadvertised: only urns nodes
+            # answer probes, so it times out on Sideband/MeshChat peers.
+            hints = [("a", "nnc"), ("s", "etup")]
             if self.node_tab == TAB_MSG:
-                self.tft.text(self.font, "(", 13 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-                self.tft.text(self.font, "p", 14 * CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
-                self.tft.text(self.font, ")ing", 15 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-                self.tft.text(self.font, "(", 20 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-                self.tft.text(self.font, "d", 21 * CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
-                self.tft.text(self.font, ")el", 22 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-                self.tft.text(self.font, "(", 26 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-                self.tft.text(self.font, "f", 27 * CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
-                self.tft.text(self.font, ")av", 28 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-                self.tft.text(self.font, "(", 32 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-                self.tft.text(self.font, "m", 33 * CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
-                self.tft.text(self.font, ")hash", 34 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+                hints += [("m", "hash"), ("d", "el")]
             else:
-                self.tft.text(self.font, "(", 13 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-                self.tft.text(self.font, "f", 14 * CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
-                self.tft.text(self.font, ")av", 15 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-                self.tft.text(self.font, "(", 19 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-                self.tft.text(self.font, "m", 20 * CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
-                self.tft.text(self.font, ")hash", 21 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+                hints += [("f", "av"), ("m", "hash")]
+            x = 0
+            for k, rest in hints:
+                if k:
+                    self.tft.text(self.font, "(", x, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+                    self.tft.text(self.font, k, x + CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
+                    rest = ")" + rest
+                    x += 2 * CHAR_W
+                self.tft.text(self.font, rest, x, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+                x += (len(rest) + 1) * CHAR_W
             self._route_cache = ''
 
-        # Dynamic footer info, right-aligned in the last 14 cols (26-39),
-        # leaving a clear gap after the "(p)ing" hotkey at col 18: transient
+        # Dynamic footer info, right-aligned in the last 12 cols (28-39),
+        # clear of the hints, which end at col 27 ("(d)el"): transient
         # ping result, else the selected peer's hops + RSSI + last-seen,
         # e.g. "2h -87dB 5m". (Next-hop relay detail lives in the path
         # table; too wide for this line.)
@@ -1204,12 +1222,12 @@ class UI:
                         bits.append(str(hops) + "hp")
                     bits.append(_age(s.get("seen")))
                     info = " ".join(bits)
-        info = info[:14]
+        info = info[:12]
         if self._route_cache != info:
             self._route_cache = info
             # right-align by hand — MicroPython str has no rjust()
-            info = " " * (14 - len(info)) + info
-            self.tft.text(self.font, info, (COLS - 14) * CHAR_W, INPUT_Y,
+            info = " " * (12 - len(info)) + info
+            self.tft.text(self.font, info, (COLS - 12) * CHAR_W, INPUT_Y,
                           self.DIM_CYAN, self.BG_DARK)
 
     # --- Browser page view ---
@@ -1916,7 +1934,8 @@ class UI:
             # entry, where 'e' is a hex DIGIT. Roughly seven in eight
             # 16-byte hashes contain one, and a bare e was being eaten as a
             # scroll event before _handle_manual_hex_key() ever saw it.
-            return self._manual_hex
+            # Find contact is a text field too (names, hash prefixes).
+            return self._manual_hex or self._find
         if self.state == STATE_SETTINGS:
             return self._settings_page in self._TEXT_ENTRY_PAGES
         return False
@@ -1988,6 +2007,8 @@ class UI:
         # Manual hex-entry sub-mode captures all keys.
         if self._manual_hex:
             return self._handle_manual_hex_key(ch, key)
+        if self._find and self.node_tab == TAB_MSG:
+            return self._handle_find_key(ch)
         if key == b'a' or key == b'A':
             if self.on_announce:
                 self.on_announce()
@@ -2005,11 +2026,14 @@ class UI:
             # keyboard fallback for trackball left/right tab switch
             self._switch_tab((self.node_tab + 1) % N_TABS)
             return True
-        elif (key == b'm' or key == b'M'):
+        elif (key == b'm' or key == b'M') and self.node_tab != TAB_MSG:
             self._manual_hex = True
             self._shell_hex = bytearray()
             self._cache = [''] * CACHE_ROWS
             self.dirty = True
+            return True
+        elif (key == b'm' or key == b'M') and self.node_tab == TAB_MSG:
+            self._find_open()
             return True
         elif key == b'd' or key == b'D':
             self.delete_selected()
@@ -2053,6 +2077,7 @@ class UI:
             return
         self.node_tab = tab
         self._manual_hex = False
+        self._find = False
         if tab == TAB_NET and self.on_net_seed:
             try:
                 self.on_net_seed()  # populate from persisted announces (once)
@@ -2231,6 +2256,157 @@ class UI:
                 self._input_dirty = True
             return True
         return True
+
+    # --- Find contact (MSG tab typeahead) ---
+
+    def _find_open(self):
+        """Snapshot every heard LXMF address, plus any listed peer the
+        snapshot lacks (a "?" peer still waiting on its announce)."""
+        snap = None
+        if self.on_contact_snapshot:
+            try:
+                snap = self.on_contact_snapshot()
+            except Exception:
+                pass
+        snap = list(snap or ())
+        have = set(e[0] for e in snap)
+        for k in self._peer_keys:
+            if k not in have:
+                p = self.peers[k]
+                snap.append((k, p.get("name") or "?", p.get("seen", 0)))
+        self._find_snap = snap
+        self._find = True
+        self._find_q = ""
+        self._find_filter()
+        self._cache = [''] * CACHE_ROWS
+
+    def _find_filter(self):
+        self._find_res = match_contacts(self._find_snap, self._find_q)
+        self._find_sel = 0
+        self._find_scroll = 0
+        self.dirty = True
+
+    def _find_close(self):
+        self._find = False
+        self._find_snap = []
+        self._find_res = []
+        self._cache = [''] * CACHE_ROWS
+        self.dirty = True
+
+    def _find_move(self, d):
+        n = len(self._find_res)
+        if not n:
+            return
+        self._find_sel = max(0, min(n - 1, self._find_sel + d))
+        rows = BODY_ROWS - 3
+        if self._find_sel < self._find_scroll:
+            self._find_scroll = self._find_sel
+        elif self._find_sel >= self._find_scroll + rows:
+            self._find_scroll = self._find_sel - rows + 1
+        self.dirty = True
+
+    def _handle_find_key(self, ch):
+        if ch == 0x1B:   # Esc
+            self._find_close()
+        elif ch == 0x08:   # Backspace
+            if self._find_q:
+                self._find_q = self._find_q[:-1]
+                self._find_filter()
+        elif ch == 0x0D:   # Enter
+            self._find_pick()
+        elif 0x20 <= ch < 0x7F and len(self._find_q) < 32:
+            self._find_q += chr(ch)
+            self._find_filter()
+        return True
+
+    def _find_pick(self):
+        """Open the chat for the highlighted result -- or, with no result,
+        for a full 32-hex hash nobody has announced yet."""
+        if self._find_res:
+            dest, name = self._find_res[self._find_sel][:2]
+        else:
+            q = self._find_q.lower()
+            if len(q) != 32 or not all(c in _HEX for c in q):
+                return
+            dest, name = bytes.fromhex(q), None
+        new = dest not in self.peers
+        if new:
+            self.add_peer(dest, name)
+        self._find_close()
+        self.selected_idx = self._peer_keys.index(dest)
+        rows = BODY_ROWS - 1
+        if self.selected_idx < self.node_scroll:
+            self.node_scroll = self.selected_idx
+        elif self.selected_idx >= self.node_scroll + rows:
+            self.node_scroll = self.selected_idx - rows + 1
+        if new and self.on_add_contact:
+            try:
+                self.on_add_contact(dest)
+            except Exception:
+                pass
+        self._enter_chat()
+
+    def _draw_find(self):
+        """Find screen: title row, results (name, hash prefix, age), a
+        count/keys row, and the query on the input line."""
+        q = self._find_q
+        ql = q.lower()
+        y = BODY_Y + CHAR_H
+        if self._draw_row_cached(2, "Find  name or hash prefix", y, self.DIM_CYAN):
+            self.tft.text(self.font, "Find", 0, y, self.NEON_GREEN, self.BG_DARK)
+        rows = BODY_ROWS - 3
+        hc = COLS - 14                  # hash column; age ends one short of the edge
+        res = self._find_res
+        if not res:
+            if len(ql) == 32 and all(c in _HEX for c in ql):
+                msg = ("Not heard yet.", "", "Enter: add as ? " + ql[:8],
+                       "and ask the network for a path.")
+            else:
+                msg = ("No match.", "", "Not heard lately? Type the full",
+                       "32-hex hash to add it anyway.")
+        for i in range(rows):
+            slot = i + 3
+            y = BODY_Y + (i + 2) * CHAR_H
+            if not res:
+                t = msg[i] if i < len(msg) else ""
+                self._draw_row_cached(slot, "  " + t if t else "",
+                                      y, self.NEON_CYAN if i == 0 else self.DIM_CYAN)
+                continue
+            idx = self._find_scroll + i
+            if idx >= len(res):
+                self._draw_row_cached(slot, "", y, self.NEON_CYAN)
+                continue
+            dest, name, ts = res[idx]
+            name = _ascii(name or "?")[:hc - 3]
+            a = _age(ts)
+            tail = dest.hex()[:8] + " " + " " * (4 - len(a)) + a
+            line = _pad("  " + name, hc) + tail
+            sel = idx == self._find_sel
+            key = ('\x01' if sel else '') + line + '\x00' + ql
+            if self._cache[slot] == key:
+                continue
+            self._cache[slot] = key
+            bg = self.SEL_BG if sel else self.BG_DARK
+            self._row(line, y, self.YELLOW if sel else self.NEON_CYAN, bg)
+            self.tft.text(self.font, tail, hc * CHAR_W, y, self.DIM_CYAN, bg)
+            if ql:
+                m = name.lower().find(ql)
+                if m >= 0:
+                    self.tft.text(self.font, name[m:m + len(ql)], (2 + m) * CHAR_W, y,
+                                  self.NEON_GREEN, bg)
+                elif tail.startswith(ql[:8]):
+                    self.tft.text(self.font, ql[:8], hc * CHAR_W, y, self.NEON_GREEN, bg)
+            if sel:
+                self.tft.fill_rect(0, y, 3, CHAR_H, self.NEON_MAG)
+        n = str(len(self._find_snap)) + " heard"
+        if q:
+            n = str(len(res)) + "/" + n
+        keys = "Ent=open Esc=back"
+        self._draw_row_cached(BODY_ROWS, " " + n + " " * (COLS - 2 - len(n) - len(keys)) + keys,
+                              BODY_Y + (BODY_ROWS - 1) * CHAR_H, self.DIM_CYAN)
+        if self._cache[INPUT_SLOT] != "F" + q:
+            self._cache[INPUT_SLOT] = "F" + q
+            self._draw_input_line(q)
 
     def add_shell_node(self, dest_hash, name=None, hops=None, seen=None, fav=False):
         """Add or update an rnsh listener (SSH tab, called by rnsh_client)."""
@@ -3379,7 +3555,7 @@ class UI:
         return ("msgs", "all", "never")[self._wake_mode]
 
     def _draw_settings_main(self):
-        self._draw_row_cached(1, "Settings", BODY_Y, self.NEON_CYAN)
+        self._draw_row_cached(1, "Setup", BODY_Y, self.NEON_CYAN)
 
         if self._wifi_connected:
             wifi_status = self._wifi_ssid_current
@@ -3804,7 +3980,9 @@ class UI:
             if self.state == STATE_IMAGE:
                 self._exit_image_view()
             elif self.state == STATE_NODES:
-                if self.node_tab == TAB_MSG:
+                if self.node_tab == TAB_MSG and self._find:
+                    self._find_pick()
+                elif self.node_tab == TAB_MSG:
                     self._enter_chat()
                 elif self.node_tab == TAB_NET:
                     self._open_selected_node()
@@ -3859,7 +4037,9 @@ class UI:
         if self.state == STATE_IMAGE:
             return
         elif self.state == STATE_NODES:
-            if self.node_tab == TAB_MSG:
+            if self.node_tab == TAB_MSG and self._find:
+                self._find_move(-1)
+            elif self.node_tab == TAB_MSG:
                 if self.selected_idx > 0:
                     self.selected_idx -= 1
                     if self.selected_idx < self.node_scroll:
@@ -3933,7 +4113,9 @@ class UI:
             return
         elif self.state == STATE_NODES:
             _rows = BODY_ROWS - 1  # tab bar takes the first body row
-            if self.node_tab == TAB_MSG:
+            if self.node_tab == TAB_MSG and self._find:
+                self._find_move(1)
+            elif self.node_tab == TAB_MSG:
                 if self.selected_idx < len(self._peer_keys) - 1:
                     self.selected_idx += 1
                     if self.selected_idx >= self.node_scroll + _rows:
