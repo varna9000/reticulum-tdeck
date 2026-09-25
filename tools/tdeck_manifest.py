@@ -50,6 +50,18 @@ os.makedirs(_stage, exist_ok=True)
 shutil.copyfile(_root + "/tdeck_node.py", _stage + "/main.py")
 freeze(_stage, "main.py")
 
+# --- Splash logo ---
+# logo.jpg is also frozen, as bytes in splash_logo.LOGO: a Launcher install
+# (or any app-only flash) never touches the filesystem, so a logo changed in
+# the repo would otherwise never reach a device that already has a VFS. The
+# splash falls back to /logo.jpg if this module is missing.
+with open(_root + "/logo.jpg", "rb") as _f:
+    _logo = _f.read()
+with open(_stage + "/splash_logo.py", "w") as _f:
+    _f.write("# Generated at build time from logo.jpg by tdeck_manifest.py\n")
+    _f.write("LOGO = " + repr(_logo) + "\n")
+freeze(_stage, "splash_logo.py")
+
 # --- App modules (top-level) ---
 # tdeck_config.py is frozen as a FALLBACK and also shipped on the filesystem.
 # sys.path is ['', '.frozen', '/lib'] (py/runtime.c:140-143 then

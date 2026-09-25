@@ -79,8 +79,11 @@ if board.HAS_JPEG_SPLASH:
     # Render JPEG logo centered, then "Loading..." below.
     try:
         import tjpgd_fast_xtensawin as tjpgd
-        with open("logo.jpg", "rb") as f:
-            _jpeg_data = f.read()
+        try:
+            from splash_logo import LOGO as _jpeg_data   # frozen; see manifest
+        except ImportError:
+            with open("logo.jpg", "rb") as f:
+                _jpeg_data = f.read()
         _w, _h, _rgb565 = tjpgd.decode(_jpeg_data, 320, 220)
         del _jpeg_data
         _logo_x = (320 - _w) // 2
@@ -90,12 +93,12 @@ if board.HAS_JPEG_SPLASH:
         gc.collect()
         _txt = "Loading..."
         _tx = (320 - len(_txt) * 8) // 2
-        tft.text(font, _txt, _tx, 224, 0x07E0, 0x0821)  # NEON_GREEN
+        tft.text(font, _txt, _tx, 224, 0x0514, 0x0821)  # DIM_CYAN teal, like the logo
     except ImportError:
         # No JPEG decoder -- fall back to simple text splash
-        tft.text(font, "Starting...", 100, 112, 0x07FF, 0x0821)
+        tft.text(font, "Starting...", 100, 112, 0x0514, 0x0821)
     except Exception as e:
-        tft.text(font, "Starting...", 100, 112, 0x07FF, 0x0821)
+        tft.text(font, "Starting...", 100, 112, 0x0514, 0x0821)
         if DEBUG >= 1:
             print("Splash error:", e)
 else:
@@ -103,7 +106,7 @@ else:
     # loop over 70k pixels. Text only, centred from the panel's own size.
     _txt = "Starting..."
     tft.text(font, _txt, (tft.width - len(_txt) * 8) // 2,
-             (tft.height - 16) // 2, 0x07FF, 0x0821)
+             (tft.height - 16) // 2, 0x0514, 0x0821)
 
 board.flush()
 spi_release_display()
