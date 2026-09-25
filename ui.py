@@ -418,6 +418,7 @@ class UI:
         self.DIM_CYAN   = 0x0514  # secondary/dimmed text
         self.HEADER_BG  = 0x0011  # very dark blue — navbar background
         self.SEL_BG     = 0x2966  # selection highlight — bright blue tint
+        self.TAB_BG     = 0x02AA  # teal — selected tab, and the Find band under it
         self.BODY_FG    = 0xC618  # light grey — message body text (matches micron)
 
         # State
@@ -1033,20 +1034,28 @@ class UI:
     def _draw_tab_bar(self):
         """MSG/NET/RNSH/RRC tab bar — first body row of the node screen."""
         tabs = self._tab_labels()
-        cache_key = str(self.node_tab) + "".join(tabs)
+        cache_key = str(self.node_tab) + ("F" if self._find else "") + "".join(tabs)
         if self._cache[1] == cache_key:
             return
         self._cache[1] = cache_key
         y = BODY_Y
-        self.tft.fill_rect(0, y, SCREEN_W, 16, self.BG_DARK)
+        bg = self.BG_DARK
+        self.tft.fill_rect(0, y, SCREEN_W, 16, bg)
         x = 0
         for i, label in enumerate(tabs):
+            w = len(label) * CHAR_W
             if i == self.node_tab:
-                self.tft.text(self.font, label, x, y, self.NEON_GREEN, self.SEL_BG)
+                self.tft.text(self.font, label, x, y, self.NEON_GREEN, self.TAB_BG)
+                # Round the top corners (3 px): background into the corners.
+                for j, cut in ((0, 3), (1, 1), (2, 1)):
+                    self.tft.fill_rect(x, y + j, cut, 1, bg)
+                    self.tft.fill_rect(x + w - cut, y + j, cut, 1, bg)
             else:
-                self.tft.text(self.font, label, x, y, self.DIM_CYAN, self.BG_DARK)
-            x += len(label) * CHAR_W
-        self.tft.fill_rect(0, y + CHAR_H - 1, SCREEN_W, 1, self.DIM_CYAN)
+                self.tft.text(self.font, label, x, y, self.DIM_CYAN, bg)
+            x += w
+        # In Find the selected tab runs straight into the band below it.
+        if not self._find:
+            self.tft.fill_rect(0, y + CHAR_H - 1, SCREEN_W, 1, self.DIM_CYAN)
 
     def _draw_list_rows(self, keys, table, scroll, sel_idx, show_unread, empty_lines):
         """Shared list body for both tabs: 11 rows below the tab bar."""
@@ -1090,8 +1099,6 @@ class UI:
                         self.tft.text(self.font, self._tb(_pad(line)), 0, y, self.YELLOW, self.SEL_BG)
                         if uc:
                             self.tft.text(self.font, marker, 0, y, self.NEON_MAG, self.SEL_BG)
-                        # Dim hash on right
-                        self.tft.text(self.font, hash_tag, hash_x, y, self.DIM_CYAN, self.SEL_BG)
                         # Accent bar last, in the blank left margin (over marker cell)
                         self.tft.fill_rect(0, y, 3, CHAR_H, self.NEON_MAG)
                 else:
@@ -2205,9 +2212,7 @@ class UI:
         self.dirty = True
 
     def _find_rows(self):
-        # RRC/RNSH give two rows to our identity hash, which a hub operator
-        # or an rnsh listener (-a) needs in order to let us in.
-        return BODY_ROWS - (5 if self.node_tab in (TAB_RRC, TAB_SSH) else 3)
+        return BODY_ROWS - 3
 
     def _find_move(self, d):
         n = len(self._find_res)
@@ -2279,33 +2284,49 @@ class UI:
             except Exception:
                 pass
 
+    _FIND_TITLES = ("Find peer: name or hash", "Find node: name or hash",
+                    "Find listener: hash", "Find hub: name or hash")   # by TAB_*
+    _FIND_NOT_HEARD = ("Not heard yet.", "Enter: and ask the network for a path.")
+    _FIND_NO_MATCH = ("No match.", "Type the full 32-hex hash to add it.")
+
     def _draw_find(self):
-        """Find screen: title row, results (name, hash prefix, age), our
-        identity on RRC/RNSH, a count/keys row, and the query on the input
-        line."""
+        """Find screen: a teal title band continuing the selected tab,
+        results (name, hash prefix, age), a count/keys row, and the query on
+        the input line. With no results, a centred hint instead."""
         q = self._find_q
         ql = q.lower()
         y = BODY_Y + CHAR_H
-        title = "Find  hash prefix" if self.node_tab == TAB_SSH else "Find  name or hash prefix"
-        if self._draw_row_cached(2, title, y, self.DIM_CYAN):
-            self.tft.text(self.font, "Find", 0, y, self.NEON_GREEN, self.BG_DARK)
+        title = self._FIND_TITLES[self.node_tab]
+        if self._cache[2] != title:
+            self._cache[2] = title
+            self.tft.fill_rect(0, y, SCREEN_W, CHAR_H, self.TAB_BG)
+            self.tft.text(self.font, title, (COLS - len(title)) // 2 * CHAR_W, y,
+                          self.NEON_GREEN, self.TAB_BG)
         rows = self._find_rows()
         hc = COLS - 14                  # hash column; age ends one short of the edge
         res = self._find_res
         if not res:
-            if len(ql) == 32 and all(c in _HEX for c in ql):
-                msg = ("Not heard yet.", "", "Enter: add as ? " + ql[:8],
-                       "and ask the network for a path.")
-            else:
-                msg = ("No match.", "", "Not heard lately? Type the full",
-                       "32-hex hash to add it anyway.")
+            # word-wrap to the panel (the Pro has 30 columns), then centre
+            # the block both ways in the results area
+            msg = []
+            for ln in (self._FIND_NOT_HEARD if len(ql) == 32 and all(c in _HEX for c in ql)
+                       else self._FIND_NO_MATCH):
+                cur = ""
+                for w in ln.split(" "):
+                    if cur and len(cur) + 1 + len(w) > COLS - 2:
+                        msg.append(cur)
+                        cur = w
+                    else:
+                        cur = cur + " " + w if cur else w
+                msg.append(cur)
+            top = (rows - len(msg)) // 2
         for i in range(rows):
             slot = i + 3
             y = BODY_Y + (i + 2) * CHAR_H
             if not res:
-                t = msg[i] if i < len(msg) else ""
-                self._draw_row_cached(slot, "  " + t if t else "",
-                                      y, self.NEON_CYAN if i == 0 else self.DIM_CYAN)
+                t = msg[i - top] if 0 <= i - top < len(msg) else ""
+                self._draw_row_cached(slot, " " * ((COLS - len(t)) // 2) + t if t else "",
+                                      y, self.NEON_CYAN if i == top else self.DIM_CYAN)
                 continue
             idx = self._find_scroll + i
             if idx >= len(res):
@@ -2323,7 +2344,8 @@ class UI:
             self._cache[slot] = key
             bg = self.SEL_BG if sel else self.BG_DARK
             self._row(line, y, self.YELLOW if sel else self.NEON_CYAN, bg)
-            self.tft.text(self.font, tail, hc * CHAR_W, y, self.DIM_CYAN, bg)
+            if not sel:
+                self.tft.text(self.font, tail, hc * CHAR_W, y, self.DIM_CYAN, bg)
             if ql:
                 m = name.lower().find(ql)
                 if m >= 0:
@@ -2333,11 +2355,6 @@ class UI:
                     self.tft.text(self.font, ql[:8], hc * CHAR_W, y, self.NEON_GREEN, bg)
             if sel:
                 self.tft.fill_rect(0, y, 3, CHAR_H, self.NEON_MAG)
-        if rows < BODY_ROWS - 3:
-            y = BODY_Y + (rows + 2) * CHAR_H
-            self._draw_row_cached(rows + 3, "your id (hub / listener -a):", y, self.DIM_CYAN)
-            self._draw_row_cached(rows + 4, self.my_identity_hash or "?", y + CHAR_H,
-                                  self.NEON_GREEN)
         n = str(len(self._find_snap)) + " heard"
         if q:
             n = str(len(res)) + "/" + n

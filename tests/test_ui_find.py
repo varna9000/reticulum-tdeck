@@ -49,6 +49,8 @@ class FakeTFT:
 
     def __init__(self):
         self.texts = []
+        self.colors = []      # (s, x, y, fg, bg) for every text call
+        self.rects = []       # (x, y, w, h, c)
 
     def text(self, font, s, x, y, fg, bg=None):
         if isinstance(s, (bytes, bytearray)):
@@ -56,9 +58,11 @@ class FakeTFT:
         s.encode("ascii")
         assert 0 <= x <= 320 and 0 <= y <= 240, (x, y)
         self.texts.append((s, x, y))
+        self.colors.append((s, x, y, fg, bg))
 
     def fill_rect(self, x, y, w, h, c):
         assert 0 <= x <= 320 and 0 <= y <= 240, (x, y)
+        self.rects.append((x, y, w, h, c))
 
     def fill(self, c):
         pass
@@ -331,6 +335,8 @@ def test_enter_with_no_match_and_a_partial_hash_stays_put():
 
 def _draw(g):
     g.tft.texts = []
+    g.tft.colors = []
+    g.tft.rects = []
     g._cache = [''] * ui.CACHE_ROWS
     g.draw_node_list()
     return g.tft
@@ -363,15 +369,74 @@ def test_find_screen_draws_with_long_names_and_no_results():
     assert "No match" in _draw(g).drawn()
 
 
-def test_rrc_and_ssh_find_show_our_identity():
-    for tab in (ui.TAB_RRC, ui.TAB_SSH):
+def test_find_title_names_what_the_tab_adds_and_no_identity_rows():
+    want = {ui.TAB_MSG: "Find peer", ui.TAB_NET: "Find node",
+            ui.TAB_RRC: "Find hub", ui.TAB_SSH: "Find listener"}
+    for tab, title in want.items():
         g = _mkui()
         g.my_identity_hash = "ab" * 16
         g._switch_tab(tab)
         g.handle_key(b"m")
         out = _draw(g).drawn()
-        assert "ab" * 16 in out, tab
-        assert "Ratspeak" in out, tab     # results still listed above it
+        assert title in out, (tab, out)
+        assert "ab" * 16 not in out, tab      # our id is not shown in Find
+        assert "Ratspeak" in out, tab
+
+
+def test_title_band_is_teal_and_centred():
+    g = _mkui()
+    g.handle_key(b"m")
+    t = _draw(g)
+    y = ui.BODY_Y + ui.CHAR_H
+    band = [r for r in t.rects if r[1] == y and r[2] == ui.SCREEN_W]
+    assert band and band[0][4] == g.TAB_BG, band
+    title = [c for c in t.colors if c[2] == y and c[0].startswith("Find")][0]
+    assert title[3] == g.NEON_GREEN and title[4] == g.TAB_BG, title
+    assert title[1] == (ui.COLS - len(title[0])) // 2 * ui.CHAR_W, title
+
+
+def test_tab_underline_only_outside_find():
+    line_y = ui.BODY_Y + ui.CHAR_H - 1
+    g = _mkui()
+    t = _draw(g)
+    assert any(r[1] == line_y and r[2] == ui.SCREEN_W for r in t.rects)
+    g.handle_key(b"m")
+    t = _draw(g)
+    assert not any(r[1] == line_y and r[2] == ui.SCREEN_W for r in t.rects)
+
+
+def test_selected_tab_is_teal_with_rounded_corners():
+    g = _mkui()
+    t = _draw(g)
+    tab = [c for c in t.colors if c[2] == ui.BODY_Y and "MSG" in c[0]][0]
+    assert tab[3] == g.NEON_GREEN and tab[4] == g.TAB_BG, tab
+    corners = [r for r in t.rects if r[1] == ui.BODY_Y and r[4] == g.BG_DARK and r[2] == 3]
+    assert len(corners) == 2, corners         # top-left and top-right
+
+
+def test_no_match_hints_are_centred():
+    g = _mkui()
+    g.handle_key(b"m")
+    _type(g, "zzz")
+    t = _draw(g)
+    for want in ("No match.", "Type the full 32-hex hash to add it."):
+        row = [c for c in t.texts if want in c[0]][0]
+        assert row[0].strip() == want, row
+        assert row[0].index(want) == (ui.COLS - len(want)) // 2, row
+
+
+def test_selected_line_is_all_yellow_in_find_and_lists():
+    g = _mkui()
+    g.handle_key(b"m")
+    _type(g, "rat")
+    t = _draw(g)
+    hashes = [c for c in t.colors if c[0].startswith("b90dae78")]
+    assert hashes == [] or all(c[3] != g.DIM_CYAN for c in hashes), hashes
+    g.handle_key(b"\x1b")
+    g.add_peer(RATS, "Ratspeak")
+    t = _draw(g)
+    tags = [c for c in t.colors if "[b90dae78]" in c[0] and c[0].strip() == "[b90dae78]"]
+    assert tags == [], tags                   # no dim hash overdraw on the selected row
 
 
 def test_other_tab_footers_read_fav_hash():
