@@ -3795,14 +3795,15 @@ class UI:
         self._draw_input_line(self.cmd_buf.decode())
 
     def _draw_settings_bottom_bar(self):
-        self.tft.text(self.font, _pad(""), 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-        self.tft.text(self.font, "(", 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-        self.tft.text(self.font, "click", CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
-        self.tft.text(self.font, ")select", 6 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-        _hx = (COLS - 12) * CHAR_W
-        self.tft.text(self.font, "[", _hx, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-        self.tft.text(self.font, "bksp", _hx + CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
-        self.tft.text(self.font, "=back]", _hx + 5 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+        """(CLICK)select ... (BKSP)back, in the small font like the node-list
+        footer, keys in capitals, one-char right margin."""
+        sw = self.SW
+        self.tft.fill_rect(0, INPUT_Y, SCREEN_W, CHAR_H, self.BG_DARK)
+        x = SCREEN_W - sw - len("(BKSP)back") * sw
+        for kx, key, rest in ((0, "CLICK", "select"), (x, "BKSP", "back")):
+            self._stext("(", kx, INPUT_Y, self.DIM_CYAN)
+            self._stext(key, kx + sw, INPUT_Y, self.NEON_GREEN)
+            self._stext(")" + rest, kx + (len(key) + 1) * sw, INPUT_Y, self.DIM_CYAN)
 
     def _draw_wifi_scan(self):
         _hdr = ("WiFi: " + self._wifi_err[:18] + "  (r)escan"
