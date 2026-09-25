@@ -348,6 +348,48 @@ def _sw565(c):
     return ((c << 8) | (c >> 8)) & 0xFFFF
 
 
+class _SmallText:
+    """Small-font text through a framebuf, pushed with one blit_buffer.
+
+    The st7789 driver's text() only handles 8- and 16-pixel-wide fonts; a
+    6-wide font through it draws garbage (solid boxes). Same technique as
+    _ShellFont: 1-bit MONO_HLSB glyph views over the font's bytes, blitted
+    through a 2-colour palette into an RGB565 strip."""
+
+    def __init__(self, mod):
+        import framebuf
+        self._fbm = framebuf
+        self.w = mod.WIDTH
+        self.h = mod.HEIGHT
+        self._mv = memoryview(bytearray(mod.FONT))
+        self._glyphs = [None] * 256
+        self._buf = bytearray(SCREEN_W * self.h * 2)
+        self._pal = framebuf.FrameBuffer(bytearray(4), 2, 1, framebuf.RGB565)
+
+    def draw(self, tft, slots, x, y, fg, bg):
+        n = min(len(slots), (SCREEN_W - x) // self.w)
+        if n <= 0:
+            return
+        w = n * self.w
+        fbm = self._fbm
+        fb = fbm.FrameBuffer(self._buf, w, self.h, fbm.RGB565)
+        b = _sw565(bg)
+        fb.fill(b)
+        self._pal.pixel(0, 0, b)
+        self._pal.pixel(1, 0, _sw565(fg))
+        h = self.h
+        for i in range(n):
+            c = slots[i]
+            if c == 0x20:
+                continue
+            g = self._glyphs[c]
+            if g is None:
+                g = fbm.FrameBuffer(self._mv[c * h:(c + 1) * h], self.w, h, fbm.MONO_HLSB)
+                self._glyphs[c] = g
+            fb.blit(g, i * self.w, 0, -1, self._pal)
+        tft.blit_buffer(memoryview(self._buf)[:w * h * 2], x, y, w, h)
+
+
 class _ShellFont:
     """Glyph cache + row compositor for the rnsh terminal.
 
@@ -455,12 +497,14 @@ class UI:
         # counts. The e-ink shim draws 8px-wide fonts only, so the Pro keeps
         # the main font; every layout below measures with SW/SH, not 6/12.
         self.sfont = font
+        self._small = None
         if not self._mono:
             try:
                 import spleen_6x12
                 self.sfont = spleen_6x12
+                self._small = _SmallText(spleen_6x12)
             except ImportError:
-                pass
+                pass            # host tests: no framebuf; text() stands in
         self.SW = getattr(self.sfont, "WIDTH", CHAR_W)
         self.SH = getattr(self.sfont, "HEIGHT", CHAR_H)
         self.BODY_FG    = 0xC618  # light grey — message body text (matches micron)
@@ -918,10 +962,16 @@ class UI:
         if w < SCREEN_W:
             self.tft.fill_rect(w, y, SCREEN_W - w, 16, bg)
 
+    def _sdraw(self, text, x, y, fg, bg):
+        """Small-font text with its top at y."""
+        if self._small:
+            self._small.draw(self.tft, self._tb(text), x, y, fg, bg)
+        else:
+            self.tft.text(self.sfont, self._tb(text), x, y, fg, bg)
+
     def _stext(self, text, x, y, fg, bg=None):
         """Small-font text vertically centred in the 16px row at y."""
-        self.tft.text(self.sfont, self._tb(text), x, y + (CHAR_H - self.SH) // 2,
-                      fg, bg or self.BG_DARK)
+        self._sdraw(text, x, y + (CHAR_H - self.SH) // 2, fg, bg or self.BG_DARK)
 
     def _bitmap(self, icon, x, y, c):
         for dx, dy, w in icon[2]:
@@ -935,7 +985,7 @@ class UI:
         x = xr - w
         top = y + (CHAR_H - self.SH) // 2
         self.tft.fill_rect(x, top, w, self.SH, self.NEON_MAG)
-        self.tft.text(self.sfont, t, x + 1, top, self.BG_DARK, self.NEON_MAG)
+        self._sdraw(t, x + 1, top, self.BG_DARK, self.NEON_MAG)
         for cx in (x, x + w - 1):          # rounded ends
             self.tft.fill_rect(cx, top, 1, 1, bg)
             self.tft.fill_rect(cx, top + self.SH - 1, 1, 1, bg)
@@ -1038,7 +1088,7 @@ class UI:
             self.tft.fill_rect(11, 6, 7, 8, gr if bl >= 2 else dm)
             self.tft.fill_rect(19, 6, 7, 8, gr if bl >= 3 else dm)
             self.tft.fill_rect(4 * CHAR_W, 0, 5 * sw, NAV_H, hb)
-            self.tft.text(self.sfont, bat_v_str, 4 * CHAR_W, ny, self.NEON_GREEN, hb)
+            self._sdraw(bat_v_str, 4 * CHAR_W, ny, self.NEON_GREEN, hb)
 
         # Center + right (announce flash, node name): repainted together, as
         # the name's length decides how much room the center gets.
@@ -1046,9 +1096,9 @@ class UI:
             self._nav_mid_cache = mid_key
             self.tft.fill_rect(left_end, 0, SCREEN_W - left_end, NAV_H, hb)
             right_x = SCREEN_W - sw - len(right_str) * sw     # one-char right margin
-            self.tft.text(self.sfont, right_str, right_x, ny, self.NEON_CYAN, hb)
+            self._sdraw(right_str, right_x, ny, self.NEON_CYAN, hb)
             if ann:
-                self.tft.text(self.sfont, ann, right_x, ny, self.NEON_MAG, hb)
+                self._sdraw(ann, right_x, ny, self.NEON_MAG, hb)
             lo, hi = left_end + sw, right_x - sw
             iw = icon[0] + 4 if icon else 0
             fit = max(0, (hi - lo - iw) // sw)
@@ -1058,7 +1108,7 @@ class UI:
             if icon:
                 self._bitmap(icon, x, (NAV_H - icon[1]) // 2, center_color)
             if center:
-                self.tft.text(self.sfont, self._tb(center), x + iw, ny, center_color, hb)
+                self._sdraw(center, x + iw, ny, center_color, hb)
 
         self._cache[0] = bat_key + mid_key
 
