@@ -447,6 +447,19 @@ def test_other_tab_footers_read_fav_hash():
         assert word in foot, foot
 
 
+def test_selected_row_bar_does_not_cover_the_unread_count():
+    g = _mkui()
+    g.add_peer(ALICE, "nomad-alice")
+    g.unread[ALICE] = 2
+    t = _draw(g)
+    y = ui.BODY_Y + ui.CHAR_H
+    assert any(c[0] == "2*" and c[2] == y for c in t.colors)
+    assert not any(r[:4] == (0, y, 3, ui.CHAR_H) and r[4] == g.NEON_MAG for r in t.rects)
+    g.unread.pop(ALICE)
+    t = _draw(g)                               # no unread: the bar is back
+    assert any(r[:4] == (0, y, 3, ui.CHAR_H) and r[4] == g.NEON_MAG for r in t.rects)
+
+
 def test_msg_footer_matches_the_other_tabs():
     g = _mkui()
     foot = _draw(g).at_y(ui.INPUT_Y)

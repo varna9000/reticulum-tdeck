@@ -1098,9 +1098,12 @@ class UI:
                         self._cache[ci] = cache_key
                         self.tft.text(self.font, self._tb(_pad(line)), 0, y, self.YELLOW, self.SEL_BG)
                         if uc:
+                            # The magenta unread count marks the row; an accent
+                            # bar here would paint over its first digit.
                             self.tft.text(self.font, marker, 0, y, self.NEON_MAG, self.SEL_BG)
-                        # Accent bar last, in the blank left margin (over marker cell)
-                        self.tft.fill_rect(0, y, 3, CHAR_H, self.NEON_MAG)
+                        else:
+                            # Accent bar in the blank left margin
+                            self.tft.fill_rect(0, y, 3, CHAR_H, self.NEON_MAG)
                 else:
                     self._draw_row_cached(ci, line, y, self.NEON_CYAN, self.BG_DARK)
                     if uc:
