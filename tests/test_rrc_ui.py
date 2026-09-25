@@ -152,7 +152,7 @@ def test_rrc_tab_lists_hubs_like_the_ssh_tab():
     g.draw_node_list()
     painted = _painted(g.tft.calls)
     assert "Varna Hub" in painted, painted
-    assert "[42424242]" in painted, painted
+    assert "42424242" in painted, painted
     print("ok test_rrc_tab_lists_hubs_like_the_ssh_tab")
 
 

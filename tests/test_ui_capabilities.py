@@ -167,16 +167,18 @@ def test_unlit_battery_segments_are_visible_on_mono():
             self.rects = []
 
         def fill_rect(self, x, y, w, h, c):
-            self.rects.append(c)
+            self.rects.append((x, y, w, h, c))
 
     def segments(bat_v):
-        """The three bar fills are the last three rects draw_navbar paints."""
+        """The three bar fills: the 7x8 rects at x=3/11/19, y=6 inside the
+        battery outline (found by position -- the navbar paints more after
+        them: the voltage, the interface icon)."""
         g = ui.UI(MonoTFT(), object(), lambda: b"\x00", node_name="t",
                   trackball=False)
         g._screen_on = True
         g.bat_v = bat_v
         g.draw_navbar()
-        return g, g.tft.rects[-3:]
+        return g, [r[4] for r in g.tft.rects if r[1:4] == (6, 7, 8) and r[0] in (3, 11, 19)]
 
     g, flat = segments(3.0)             # below every threshold: all unlit
     check("mono panel is detected", g._mono is True)

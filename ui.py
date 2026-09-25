@@ -287,13 +287,43 @@ def _age(ts):
     if d < 60:
         return "now"
     if d < 3600:
-        return str(d // 60) + "m"
+        return str(d // 60) + "min"
     if d < 86400:
         return str(d // 3600) + "h"
     return str(d // 86400) + "d"
 
 
 _HEX = "0123456789abcdef"
+
+
+def _hops(n):
+    return str(n) + (" hop" if n == 1 else " hops")
+
+
+def _icon(rows):
+    """Pixel icon -> (width, height, runs): one fill_rect per horizontal run."""
+    runs = []
+    for y, row in enumerate(rows):
+        x = 0
+        while x < len(row):
+            if row[x] == "#":
+                k = x
+                while k < len(row) and row[k] == "#":
+                    k += 1
+                runs.append((x, y, k - x))
+                x = k
+            else:
+                x += 1
+    return len(rows[0]), len(rows), tuple(runs)
+
+
+_STAR = _icon(("....#....", "....#....", "...###...", "#########", ".#######.",
+               "..#####..", "..##.##..", ".##...##.", ".#.....#."))
+_GLOBE = _icon(("..#####..", ".#.#.#.#.", "#..#.#..#", "#..#.#..#", "#########",
+                "#..#.#..#", "#..#.#..#", ".#.#.#.#.", "..#####.."))
+_ANTENNA = _icon((".#.......#.", "#..#...#..#", "#.#..#..#.#", "#.#.###.#.#",
+                  "#..#.#.#..#", ".#...#...#.", ".....#.....", "....###....",
+                  "...#.#.#...", "..#..#..#.."))
 
 
 def match_contacts(snap, q):
@@ -419,6 +449,20 @@ class UI:
         self.HEADER_BG  = 0x0011  # very dark blue — navbar background
         self.SEL_BG     = 0x2966  # selection highlight — bright blue tint
         self.TAB_BG     = 0x02AA  # teal — selected tab, and the Find band under it
+        self.ORANGE     = 0xFD20  # favourite star
+
+        # Small font for secondary text: header, footer, hashes, ages, pill
+        # counts. The e-ink shim draws 8px-wide fonts only, so the Pro keeps
+        # the main font; every layout below measures with SW/SH, not 6/12.
+        self.sfont = font
+        if not self._mono:
+            try:
+                import spleen_6x12
+                self.sfont = spleen_6x12
+            except ImportError:
+                pass
+        self.SW = getattr(self.sfont, "WIDTH", CHAR_W)
+        self.SH = getattr(self.sfont, "HEIGHT", CHAR_H)
         self.BODY_FG    = 0xC618  # light grey — message body text (matches micron)
 
         # State
@@ -433,7 +477,6 @@ class UI:
         self._cache = [''] * CACHE_ROWS
         self._nav_bat_cache = ''
         self._nav_mid_cache = ''
-        self._nav_right_cache = ''
 
         # Peers: dest_hash_bytes -> {"name": str, "rssi": int,
         #                            "hops": int|None, "via": str|None, "seen": ts}
@@ -875,6 +918,29 @@ class UI:
         if w < SCREEN_W:
             self.tft.fill_rect(w, y, SCREEN_W - w, 16, bg)
 
+    def _stext(self, text, x, y, fg, bg=None):
+        """Small-font text vertically centred in the 16px row at y."""
+        self.tft.text(self.sfont, self._tb(text), x, y + (CHAR_H - self.SH) // 2,
+                      fg, bg or self.BG_DARK)
+
+    def _bitmap(self, icon, x, y, c):
+        for dx, dy, w in icon[2]:
+            self.tft.fill_rect(x + dx, y + dy, w, 1, c)
+
+    def _pill(self, n, xr, y, bg):
+        """Magenta unread-count pill ending at x=xr in the row at y; returns
+        its width. Two digits max (99)."""
+        t = str(min(n, 99))
+        w = len(t) * self.SW + 2
+        x = xr - w
+        top = y + (CHAR_H - self.SH) // 2
+        self.tft.fill_rect(x, top, w, self.SH, self.NEON_MAG)
+        self.tft.text(self.sfont, t, x + 1, top, self.BG_DARK, self.NEON_MAG)
+        for cx in (x, x + w - 1):          # rounded ends
+            self.tft.fill_rect(cx, top, 1, 1, bg)
+            self.tft.fill_rect(cx, top + self.SH - 1, 1, 1, bg)
+        return w
+
     def _text(self, text, x, y, fg, bg=None):
         """Draw text at pixel position."""
         self.tft.text(self.font, self._tb(text), x, y, fg, bg or self.BG_DARK)
@@ -899,7 +965,7 @@ class UI:
         corners never get chewed by full-width rows or the scrollbar."""
         _cx = self.NEON_CYAN
         _L = 12  # corner arm length
-        _top = BODY_Y - 3
+        _top = NAV_H                  # right under the navbar, no gap
         _bot = BODY_Y + BODY_ROWS * CHAR_H + 1
         self.tft.fill_rect(0, _top, SCREEN_W, 1, _cx)
         self.tft.fill_rect(0, _bot, SCREEN_W, 1, _cx)
@@ -924,53 +990,45 @@ class UI:
         name = self.node_name[:10]
         ann = ">>>" if (self.announce_flash and time.ticks_diff(time.ticks_ms(), self.announce_flash) < 2000) else ""
 
-        # Center section: iface + optional SNR or transfer progress
+        # Center: transfer / voice status as text, else an interface icon --
+        # globe for TCP, antenna for LoRa (magenta when the radio failed) --
+        # with the SNR; then the mesh clock once time is synced.
+        icon = None
         if self._audio_status:
             center = "[" + self._audio_status + "]"
         elif self.transfer_progress:
             rcv, tot = self.transfer_progress
             center = "RX " + str(rcv) + "/" + str(tot)
         elif self._tcp_enabled:
-            center = "[TCP]"
+            icon, center = _GLOBE, ""
         elif not self.lora_online:
-            center = "[LoRa FAIL]"
+            icon, center = _ANTENNA, "FAIL"
         elif self.rssi is not None:
-            center = "[LoRa] snr:" + str(self.snr or 0)
+            icon, center = _ANTENNA, "snr " + str(self.snr or 0)
         else:
-            center = "[LoRa]"
-
-        # Mesh-synced wall clock (only meaningful after time sync)
+            icon, center = _ANTENNA, ""
         if _clock_valid():
-            center = center + " " + _fmt_clock()
+            center = (center + "  " if center else "") + _fmt_clock()
 
-        # Right side: [ann][name] right-aligned
         right_str = (ann + " " if ann else "") + name
-        left_w = 4 + len(bat_v_str)  # icon chars + voltage
-        right_w = len(right_str)
-        mid_w = COLS - left_w - right_w
         center_color = self.NEON_MAG if (not self._tcp_enabled and not self.lora_online) else self.DIM_CYAN
-
         hb = self.HEADER_BG
+        sw = self.SW
+        ny = (NAV_H - self.SH) // 2
+        left_end = 4 * CHAR_W + 5 * sw          # battery icon + voltage
 
-        # --- Section-based redraw: only repaint what changed ---
-
-        # Build per-section cache keys
         bl = 3 if self.bat_v > 3.9 else (2 if self.bat_v > 3.6 else (1 if self.bat_v > 3.3 else 0))
         bat_key = bat_v_str + str(bl)
-        mid_key = center
-        right_key = right_str + ann
+        mid_key = ("G" if icon is _GLOBE else "A" if icon else "") + center + right_str
 
-        # Full navbar invalidation: reset section caches + fill background
         if self._cache[0] == '':
             self._nav_bat_cache = ''
             self._nav_mid_cache = ''
-            self._nav_right_cache = ''
             self.tft.fill_rect(0, 0, SCREEN_W, NAV_H, hb)
 
         # Battery section (icon + voltage text)
         if self._nav_bat_cache != bat_key:
             self._nav_bat_cache = bat_key
-            # Battery icon (28x12 at top-left)
             gr = self.NEON_GREEN
             dm = self.BG_DARK if self._mono else self.DIM_CYAN
             self.tft.fill_rect(1, 4, 26, 12, gr)
@@ -979,29 +1037,30 @@ class UI:
             self.tft.fill_rect(3,  6, 7, 8, gr if bl >= 1 else dm)
             self.tft.fill_rect(11, 6, 7, 8, gr if bl >= 2 else dm)
             self.tft.fill_rect(19, 6, 7, 8, gr if bl >= 3 else dm)
-            # Voltage text (padded to fixed width to clear old chars)
-            self.tft.text(self.font, _pad(bat_v_str, 5), 4 * CHAR_W, NAV_TY, self.NEON_GREEN, hb)
+            self.tft.fill_rect(4 * CHAR_W, 0, 5 * sw, NAV_H, hb)
+            self.tft.text(self.sfont, bat_v_str, 4 * CHAR_W, ny, self.NEON_GREEN, hb)
 
-        # Center section (interface status / progress)
+        # Center + right (announce flash, node name): repainted together, as
+        # the name's length decides how much room the center gets.
         if self._nav_mid_cache != mid_key:
             self._nav_mid_cache = mid_key
-            mid_str = center.center(mid_w) if mid_w > len(center) else center[:mid_w]
-            center_x = left_w * CHAR_W
-            # Pad to full mid_w to clear old text
-            self.tft.text(self.font, self._tb(_pad(mid_str, mid_w)), center_x, NAV_TY, center_color, hb)
-
-        # Right section (announce flash + node name)
-        if self._nav_right_cache != right_key:
-            self._nav_right_cache = right_key
-            right_x = (COLS - right_w) * CHAR_W
-            # Clear right area first (name length may change)
-            right_max = COLS - left_w - mid_w
-            self.tft.text(self.font, _pad(right_str, right_max), right_x, NAV_TY, self.NEON_CYAN, hb)
+            self.tft.fill_rect(left_end, 0, SCREEN_W - left_end, NAV_H, hb)
+            right_x = SCREEN_W - sw - len(right_str) * sw     # one-char right margin
+            self.tft.text(self.sfont, right_str, right_x, ny, self.NEON_CYAN, hb)
             if ann:
-                self.tft.text(self.font, ann, right_x, NAV_TY, self.NEON_MAG, hb)
+                self.tft.text(self.sfont, ann, right_x, ny, self.NEON_MAG, hb)
+            lo, hi = left_end + sw, right_x - sw
+            iw = icon[0] + 4 if icon else 0
+            fit = max(0, (hi - lo - iw) // sw)
+            center = center[:fit]
+            cw = iw + len(center) * sw
+            x = max(lo, min((SCREEN_W - cw) // 2, hi - cw))
+            if icon:
+                self._bitmap(icon, x, (NAV_H - icon[1]) // 2, center_color)
+            if center:
+                self.tft.text(self.sfont, self._tb(center), x + iw, ny, center_color, hb)
 
-        # Update composite cache key
-        self._cache[0] = bat_key + mid_key + right_key
+        self._cache[0] = bat_key + mid_key
 
     # --- Node list screen ---
 
@@ -1038,20 +1097,24 @@ class UI:
         if self._cache[1] == cache_key:
             return
         self._cache[1] = cache_key
-        y = BODY_Y
         bg = self.BG_DARK
-        self.tft.fill_rect(0, y, SCREEN_W, 16, bg)
-        x = 0
+        top = NAV_H + 1                  # just under the frame's top rail
+        line = BODY_Y + CHAR_H - 1
+        ly = BODY_Y - 2                  # labels centred in top..line
+        sw = SCREEN_W // len(tabs)
+        self.tft.fill_rect(0, top, SCREEN_W, line - top + 1, bg)
         for i, label in enumerate(tabs):
-            w = len(label) * CHAR_W
+            label = label.strip()
+            x = i * sw
+            tx = x + (sw - len(label) * CHAR_W) // 2
             if i == self.node_tab:
-                self.tft.text(self.font, label, x, y, self.NEON_GREEN, self.TAB_BG)
+                # In Find the tab runs straight into the band below it.
+                self.tft.fill_rect(x, top, sw, line - top + (1 if self._find else 0), self.TAB_BG)
+                self.tft.text(self.font, label, tx, ly, self.NEON_GREEN, self.TAB_BG)
             else:
-                self.tft.text(self.font, label, x, y, self.DIM_CYAN, bg)
-            x += w
-        # In Find the selected tab runs straight into the band below it.
+                self.tft.text(self.font, label, tx, ly, self.DIM_CYAN, bg)
         if not self._find:
-            self.tft.fill_rect(0, y + CHAR_H - 1, SCREEN_W, 1, self.DIM_CYAN)
+            self.tft.fill_rect(0, line, SCREEN_W, 1, self.DIM_CYAN)
 
     def _draw_list_rows(self, keys, table, scroll, sel_idx, show_unread, empty_lines):
         """Shared list body for both tabs: 11 rows below the tab bar."""
@@ -1068,6 +1131,8 @@ class UI:
                     self._draw_row_cached(i + 2, "", y, self.NEON_CYAN)
             return
         visible = keys[scroll:scroll + _rows]
+        sw = self.SW
+        hash_x = SCREEN_W - 8 - 8 * sw          # small-font hash, 8px right margin
         for i in range(_rows):
             y = BODY_Y + (i + 1) * CHAR_H
             ci = i + 2
@@ -1075,37 +1140,27 @@ class UI:
                 key = visible[i]
                 entry = table[key]
                 name = _ascii(entry.get("name") or "?")
-                if entry.get("fav") == True:
-                    name = "[*] " + name
-                hash_tag = "[" + key.hex()[:8] + "]"
+                fav = entry.get("fav") == True
+                hsh = key.hex()[:8]
                 uc = self.unread.get(key, 0) if show_unread else 0
-                marker = str(min(uc, 9)) + "*" if uc > 1 else ("* " if uc == 1 else "  ")
-                # Hash in brackets, 1 char right padding
-                _rpad = 1
-                max_name = COLS - len(marker) - len(hash_tag) - _rpad
-                left = marker + name[:max_name]
-                line = left + " " * (COLS - len(left) - len(hash_tag) - _rpad) + hash_tag
-                hash_x = (COLS - len(hash_tag) - _rpad) * CHAR_W
-
-                abs_idx = scroll + i
-                if abs_idx == sel_idx:
-                    cache_key = '\x01' + line
-                    if self._cache[ci] != cache_key:
-                        self._cache[ci] = cache_key
-                        self.tft.text(self.font, self._tb(_pad(line)), 0, y, self.YELLOW, self.SEL_BG)
-                        if uc:
-                            # The magenta unread count marks the row; an accent
-                            # bar here would paint over its first digit.
-                            self.tft.text(self.font, marker, 0, y, self.NEON_MAG, self.SEL_BG)
-                        else:
-                            # Accent bar in the blank left margin
-                            self.tft.fill_rect(0, y, 3, CHAR_H, self.NEON_MAG)
-                else:
-                    self._draw_row_cached(ci, line, y, self.NEON_CYAN, self.BG_DARK)
-                    if uc:
-                        self.tft.text(self.font, marker, 0, y, self.NEON_MAG, self.BG_DARK)
-                    # Dim hash on right
-                    self.tft.text(self.font, hash_tag, hash_x, y, self.DIM_CYAN, self.BG_DARK)
+                pw = (len(str(min(uc, 99))) * sw + 2 + 6) if uc else 0
+                name = name[:(hash_x - 6 - pw - 2 * CHAR_W) // CHAR_W]
+                sel = scroll + i == sel_idx
+                cache_key = ('\x01' if sel else '') + name + '\x00' + hsh + str(uc) + ('*' if fav else '')
+                if self._cache[ci] == cache_key:
+                    continue
+                self._cache[ci] = cache_key
+                bg = self.SEL_BG if sel else self.BG_DARK
+                self._row("  " + name, y, self.YELLOW if sel else self.NEON_CYAN, bg)
+                self._stext(hsh, hash_x, y, self.YELLOW if sel else self.DIM_CYAN, bg)
+                if uc:
+                    self._pill(uc, hash_x - 6, y, bg)
+                if fav:
+                    # small orange star in the left slot
+                    self._bitmap(_STAR, 3, y + (CHAR_H - _STAR[1]) // 2, self.ORANGE)
+                elif sel:
+                    # Accent bar in the blank left margin
+                    self.tft.fill_rect(0, y, 3, CHAR_H, self.NEON_MAG)
             else:
                 self._draw_row_cached(ci, "", y, self.NEON_CYAN)
 
@@ -1153,80 +1208,57 @@ class UI:
         _nf_key = "NF" + str(self.node_tab)
         if self._cache[FOOT_SLOT] != _nf_key:
             self._cache[FOOT_SLOT] = _nf_key
-            self.tft.text(self.font, _pad(""), 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-            # One footer for every tab. (p)ing and (d)el still work on MSG
-            # but go unadvertised: only urns nodes answer probes, so ping
-            # times out on Sideband/MeshChat peers.
-            hints = (("a", "nnc"), ("s", "etup"), ("f", "av"), ("m", "hash"))
+            self.tft.fill_rect(0, INPUT_Y, SCREEN_W, CHAR_H, self.BG_DARK)
+            # One footer for every tab, in the small font. (p)ing and (d)el
+            # still work on MSG but go unadvertised: only urns nodes answer
+            # probes, so ping times out on Sideband/MeshChat peers.
+            sw = self.SW
             x = 0
-            for k, rest in hints:
-                if k:
-                    self.tft.text(self.font, "(", x, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-                    self.tft.text(self.font, k, x + CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
-                    rest = ")" + rest
-                    x += 2 * CHAR_W
-                self.tft.text(self.font, rest, x, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-                x += (len(rest) + 1) * CHAR_W
+            for k, rest in (("a", "nnc"), ("s", "etup"), ("f", "av"), ("m", "hash")):
+                self._stext("(", x, INPUT_Y, self.DIM_CYAN)
+                self._stext(k, x + sw, INPUT_Y, self.NEON_GREEN)
+                self._stext(")" + rest, x + 2 * sw, INPUT_Y, self.DIM_CYAN)
+                x += (len(rest) + 4) * sw
+            self._foot_x = x
             self._route_cache = ''
 
-        # Dynamic footer info, right-aligned in the last 12 cols (28-39),
-        # clear of the hints, which end at col 27 ("(m)hash"): transient
-        # ping result, else the selected peer's hops + RSSI + last-seen,
-        # e.g. "2h -87dB 5m". (Next-hop relay detail lives in the path
-        # table; too wide for this line.)
+        # Dynamic footer info, right-aligned with a one-char margin, clear of
+        # the hints: transient ping result, else the selected entry's hops,
+        # RSSI (peers) and last-seen, e.g. "2 hops -87dB 5min".
         info = ""
+        entry = None
         if self.node_tab == TAB_MSG:
             if self.ping_status:
                 info = self.ping_status
             elif self._peer_keys and self.selected_idx < len(self._peer_keys):
-                p = self.peers.get(self._peer_keys[self.selected_idx])
-                if p:
-                    bits = []
-                    hops = p.get("hops")
-                    if hops:
-                        bits.append(str(hops) + "hp")
-                    rs = p.get("rssi")
-                    if rs is not None:
-                        bits.append(str(rs) + "dB")
-                    bits.append(_age(p.get("seen")))
-                    info = " ".join(bits)
+                entry = self.peers.get(self._peer_keys[self.selected_idx])
         elif self.node_tab == TAB_NET:
             if self._node_keys and self.net_idx < len(self._node_keys):
-                n = self.nomad_nodes.get(self._node_keys[self.net_idx])
-                if n:
-                    bits = []
-                    hops = n.get("hops")
-                    if hops:
-                        bits.append(str(hops) + "hp")
-                    bits.append(_age(n.get("seen")))
-                    info = " ".join(bits)
+                entry = self.nomad_nodes.get(self._node_keys[self.net_idx])
         elif self.node_tab == TAB_RRC:
             if self._rrc_keys and self._rrc_idx < len(self._rrc_keys):
-                h = self.rrc_hubs.get(self._rrc_keys[self._rrc_idx])
-                if h:
-                    bits = []
-                    hops = h.get("hops")
-                    if hops:
-                        bits.append(str(hops) + "hp")
-                    bits.append(_age(h.get("seen")))
-                    info = " ".join(bits)
+                entry = self.rrc_hubs.get(self._rrc_keys[self._rrc_idx])
         else:  # TAB_SSH
             if self._shell_keys and self.ssh_idx < len(self._shell_keys):
-                s = self.shell_nodes.get(self._shell_keys[self.ssh_idx])
-                if s:
-                    bits = []
-                    hops = s.get("hops")
-                    if hops:
-                        bits.append(str(hops) + "hp")
-                    bits.append(_age(s.get("seen")))
-                    info = " ".join(bits)
-        info = info[:12]
+                entry = self.shell_nodes.get(self._shell_keys[self.ssh_idx])
+        if entry:
+            bits = []
+            if entry.get("hops"):
+                bits.append(_hops(entry["hops"]))
+            if entry.get("rssi") is not None:
+                bits.append(str(entry["rssi"]) + "dB")
+            bits.append(_age(entry.get("seen")))
+            info = " ".join(bits)
+        sw = self.SW
+        x0 = getattr(self, "_foot_x", 0) + sw
+        room = (SCREEN_W - sw - x0) // sw
+        if len(info) > room:
+            info = info.replace("dB", "")
+        info = info[:room]
         if self._route_cache != info:
             self._route_cache = info
-            # right-align by hand — MicroPython str has no rjust()
-            info = " " * (12 - len(info)) + info
-            self.tft.text(self.font, info, (COLS - 12) * CHAR_W, INPUT_Y,
-                          self.DIM_CYAN, self.BG_DARK)
+            self.tft.fill_rect(x0, INPUT_Y, SCREEN_W - x0, CHAR_H, self.BG_DARK)
+            self._stext(info, SCREEN_W - sw - len(info) * sw, INPUT_Y, self.DIM_CYAN)
 
     # --- Browser page view ---
 
@@ -2302,7 +2334,6 @@ class UI:
             self.tft.text(self.font, title, (COLS - len(title)) // 2 * CHAR_W, y,
                           self.NEON_GREEN, self.TAB_BG)
         rows = self._find_rows()
-        hc = COLS - 14                  # hash column; age ends one short of the edge
         res = self._find_res
         if not res:
             # word-wrap to the panel (the Pro has 30 columns), then centre
@@ -2332,10 +2363,11 @@ class UI:
                 self._draw_row_cached(slot, "", y, self.NEON_CYAN)
                 continue
             dest, name, ts = res[idx]
-            name = _ascii(name or "?")[:hc - 3]
             a = _age(ts)
-            tail = dest.hex()[:8] + " " + " " * (4 - len(a)) + a
-            line = _pad("  " + name, hc) + tail
+            tail = dest.hex()[:8] + " " + " " * (5 - len(a)) + a
+            tx = SCREEN_W - 8 - len(tail) * self.SW
+            name = _ascii(name or "?")[:(tx - 4) // CHAR_W - 2]
+            line = "  " + name
             sel = idx == self._find_sel
             key = ('\x01' if sel else '') + line + '\x00' + ql
             if self._cache[slot] == key:
@@ -2343,23 +2375,26 @@ class UI:
             self._cache[slot] = key
             bg = self.SEL_BG if sel else self.BG_DARK
             self._row(line, y, self.YELLOW if sel else self.NEON_CYAN, bg)
-            if not sel:
-                self.tft.text(self.font, tail, hc * CHAR_W, y, self.DIM_CYAN, bg)
+            self._stext(tail, tx, y, self.YELLOW if sel else self.DIM_CYAN, bg)
             if ql:
                 m = name.lower().find(ql)
                 if m >= 0:
                     self.tft.text(self.font, name[m:m + len(ql)], (2 + m) * CHAR_W, y,
                                   self.NEON_GREEN, bg)
                 elif tail.startswith(ql[:8]):
-                    self.tft.text(self.font, ql[:8], hc * CHAR_W, y, self.NEON_GREEN, bg)
+                    self._stext(ql[:8], tx, y, self.NEON_GREEN, bg)
             if sel:
                 self.tft.fill_rect(0, y, 3, CHAR_H, self.NEON_MAG)
         n = str(len(self._find_snap)) + " heard"
         if q:
             n = str(len(res)) + "/" + n
         keys = "Ent=add Esc=back"
-        self._draw_row_cached(BODY_ROWS, " " + n + " " * (COLS - 2 - len(n) - len(keys)) + keys,
-                              BODY_Y + (BODY_ROWS - 1) * CHAR_H, self.DIM_CYAN)
+        if self._cache[BODY_ROWS] != n:
+            self._cache[BODY_ROWS] = n
+            y = BODY_Y + (BODY_ROWS - 1) * CHAR_H
+            self._row("", y, self.DIM_CYAN)
+            self._stext(n, 8, y, self.DIM_CYAN)
+            self._stext(keys, SCREEN_W - 8 - len(keys) * self.SW, y, self.DIM_CYAN)
         if self._cache[INPUT_SLOT] != "F" + q:
             self._cache[INPUT_SLOT] = "F" + q
             self._draw_input_line(q)
@@ -4569,7 +4604,6 @@ class UI:
         # Clear body + invalidate cache on screen state change
         if self.state != self._prev_state:
             self.tft.fill_rect(0, NAV_H, SCREEN_W, SCREEN_H - NAV_H, self.BG_DARK)
-            self.tft.fill_rect(0, SEP_Y, SCREEN_W, 1, self.DIM_CYAN)
             self._cache = [''] * CACHE_ROWS  # invalidate all rows
             self._prev_state = self.state
 

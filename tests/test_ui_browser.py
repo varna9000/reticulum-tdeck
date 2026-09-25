@@ -356,8 +356,9 @@ def test_footer_hops_label():
     g, tft = _mkui()
     g.add_peer(b"\x01" * 16, "p", rssi=-80, hops=3)
     g.draw()
-    texts = [c[1] for c in tft.calls if c[0] == "text" and isinstance(c[1], str)]
-    assert any("3hp" in t for t in texts)       # hops labelled 'hp', not 'h'
+    texts = [c[1].decode() if isinstance(c[1], (bytes, bytearray)) else c[1]
+             for c in tft.calls if c[0] == "text"]
+    assert any("3 hops" in t for t in texts)    # spelled out, never 'h' (hours)
 
 
 def test_settings_timeout_and_volume_adjust():

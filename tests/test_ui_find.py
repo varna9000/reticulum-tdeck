@@ -13,6 +13,8 @@ import types
 import time as _time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# lib/ holds spleen_6x12, the small font the v1 draws secondary text in
+sys.path.insert(1, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib"))
 
 _time.ticks_ms = lambda: int(_time.time() * 1000)
 _time.ticks_diff = lambda a, b: a - b
@@ -68,7 +70,10 @@ class FakeTFT:
         pass
 
     def at_y(self, y):
-        return "".join(s for s, _x, _y in self.texts if _y == y)
+        """Text drawn in the 16px row at y (small-font text sits a few px
+        lower, centred in the row), left to right."""
+        row = sorted((_x, s) for s, _x, _y in self.texts if y <= _y < y + 16)
+        return "".join(s for _x, s in row)
 
     def drawn(self):
         return " | ".join(s for s, _x, _y in self.texts)
@@ -405,11 +410,27 @@ def test_tab_underline_only_outside_find():
     assert not any(r[1] == line_y and r[2] == ui.SCREEN_W for r in t.rects)
 
 
-def test_selected_tab_is_teal():
+def test_selected_tab_is_teal_and_evenly_spaced():
     g = _mkui()
     t = _draw(g)
-    tab = [c for c in t.colors if c[2] == ui.BODY_Y and "MSG" in c[0]][0]
+    ly = ui.BODY_Y - 2
+    labels = [c for c in t.colors if c[2] == ly]
+    tab = [c for c in labels if "MSG" in c[0]][0]
     assert tab[3] == g.NEON_GREEN and tab[4] == g.TAB_BG, tab
+    sw = ui.SCREEN_W // 4
+    for i, c in enumerate(sorted(labels, key=lambda c: c[1])):
+        centre = c[1] + len(c[0]) * ui.CHAR_W // 2
+        assert abs(centre - (i * sw + sw // 2)) <= ui.CHAR_W, (c, i)
+    fill = [r for r in t.rects if r[4] == g.TAB_BG and r[0] == 0 and r[2] == sw]
+    assert fill and fill[0][1] == ui.NAV_H + 1, fill       # up to the top rail
+
+
+def test_favourite_is_an_orange_star_not_text():
+    g = _mkui()
+    g.add_peer(ALICE, "nomad-alice", fav=True)
+    t = _draw(g)
+    assert "[*]" not in t.drawn()
+    assert any(r[4] == g.ORANGE for r in t.rects)
 
 
 def test_no_match_hints_are_centred():
@@ -445,17 +466,25 @@ def test_other_tab_footers_read_fav_hash():
         assert word in foot, foot
 
 
-def test_selected_row_bar_does_not_cover_the_unread_count():
+def test_unread_count_is_a_pill_on_the_right_of_the_row():
     g = _mkui()
     g.add_peer(ALICE, "nomad-alice")
-    g.unread[ALICE] = 2
+    g.unread[ALICE] = 23
     t = _draw(g)
     y = ui.BODY_Y + ui.CHAR_H
-    assert any(c[0] == "2*" and c[2] == y for c in t.colors)
-    assert not any(r[:4] == (0, y, 3, ui.CHAR_H) and r[4] == g.NEON_MAG for r in t.rects)
-    g.unread.pop(ALICE)
-    t = _draw(g)                               # no unread: the bar is back
+    pill = [r for r in t.rects if r[4] == g.NEON_MAG and r[1] >= y and r[3] > 1]
+    assert pill and pill[0][0] > ui.SCREEN_W // 2, pill      # right side
+    assert any(c[0] == "23" for c in t.colors)
+    # the left margin is free, so the selection bar is drawn
     assert any(r[:4] == (0, y, 3, ui.CHAR_H) and r[4] == g.NEON_MAG for r in t.rects)
+
+
+def test_footer_spells_out_hops_and_minutes():
+    g = _mkui()
+    g.add_peer(ALICE, "nomad-alice", rssi=-87, hops=2)
+    g.peers[ALICE]["seen"] = _time.time() - 300
+    foot = _draw(g).at_y(ui.INPUT_Y)
+    assert "2 hops -87dB 5min" in foot, foot
 
 
 def test_msg_footer_matches_the_other_tabs():
