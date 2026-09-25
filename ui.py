@@ -1083,7 +1083,7 @@ class UI:
         self._draw_tab_bar()
         _rows = BODY_ROWS - 1
         # SSH/RRC tab in manual-entry mode: a hex-address input, not the list.
-        if self._manual_hex and self.node_tab in (TAB_SSH, TAB_RRC):
+        if self._manual_hex:
             self._draw_manual_hex()
             return
         if self.node_tab == TAB_MSG:
@@ -1138,12 +1138,19 @@ class UI:
                 self.tft.text(self.font, "(", 20 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
                 self.tft.text(self.font, "d", 21 * CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
                 self.tft.text(self.font, ")el", 22 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-            elif self.node_tab == TAB_SSH:
-                self.tft.text(self.font, "(", 13 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-                self.tft.text(self.font, "m", 14 * CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
-                self.tft.text(self.font, ")hash  click=open", 15 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+                self.tft.text(self.font, "(", 26 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+                self.tft.text(self.font, "f", 27 * CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
+                self.tft.text(self.font, ")av", 28 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+                self.tft.text(self.font, "(", 32 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+                self.tft.text(self.font, "m", 33 * CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
+                self.tft.text(self.font, ")hash", 34 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
             else:
-                self.tft.text(self.font, "click=open", 13 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+                self.tft.text(self.font, "(", 13 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+                self.tft.text(self.font, "f", 14 * CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
+                self.tft.text(self.font, ")av", 15 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+                self.tft.text(self.font, "(", 19 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+                self.tft.text(self.font, "m", 20 * CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
+                self.tft.text(self.font, ")hash", 21 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
             self._route_cache = ''
 
         # Dynamic footer info, right-aligned in the last 14 cols (26-39),
@@ -1979,7 +1986,7 @@ class UI:
 
     def _handle_key_nodes(self, ch, key):
         # Manual hex-entry sub-mode captures all keys.
-        if self._manual_hex and self.node_tab in (TAB_SSH, TAB_RRC):
+        if self._manual_hex:
             return self._handle_manual_hex_key(ch, key)
         if key == b'a' or key == b'A':
             if self.on_announce:
@@ -1998,7 +2005,7 @@ class UI:
             # keyboard fallback for trackball left/right tab switch
             self._switch_tab((self.node_tab + 1) % N_TABS)
             return True
-        elif (key == b'm' or key == b'M') and self.node_tab in (TAB_SSH, TAB_RRC):
+        elif (key == b'm' or key == b'M'):
             self._manual_hex = True
             self._shell_hex = bytearray()
             self._cache = [''] * CACHE_ROWS
@@ -2149,19 +2156,31 @@ class UI:
         the RRC tab's empty state has advertised "(m) to enter a hash"
         since it landed. Only the label and the identity hint differ.
         """
-        rrc = self.node_tab == TAB_RRC
-        self._draw_row_cached(2, "RRC hub hash:" if rrc else "rnsh listener hash:",
-                              BODY_Y + CHAR_H, self.NEON_CYAN)
+        if self.node_tab == TAB_MSG:
+            tab_text = "Peer hash:"
+        elif self.node_tab == TAB_NET:
+            tab_text = "Nomad hash:"
+        elif self.node_tab == TAB_RRC:
+            tab_text = "RRC hub hash:"
+        elif self.node_tab == TAB_SSH:
+            tab_text = "RNSH listener hash:"
+        else:
+            return # Unknown error
+        self._draw_row_cached(2, tab_text, BODY_Y + CHAR_H, self.NEON_CYAN)
         self._draw_row_cached(3, "(32 hex chars)", BODY_Y + 2 * CHAR_H, self.DIM_CYAN)
         for i in range(3, BODY_ROWS - 2):
             self._draw_row_cached(i + 1, "", BODY_Y + i * CHAR_H, self.NEON_CYAN)
         # Show our identity hash — a listener authorizes it via -a /
         # allowed_identities, and an rrcd operator registers or bans by it.
-        self._draw_row_cached(BODY_ROWS - 1,
-                              "your id:" if rrc else "your id (for listener -a):",
-                              BODY_Y + (BODY_ROWS - 2) * CHAR_H, self.DIM_CYAN)
-        self._draw_row_cached(BODY_ROWS, self.my_identity_hash or "?",
-                              BODY_Y + (BODY_ROWS - 1) * CHAR_H, self.NEON_GREEN)
+        if self.node_tab in [TAB_RRC, TAB_SSH]:
+            self._draw_row_cached(BODY_ROWS - 1,
+                                "your id:" if self.node_tab == TAB_RRC else "your id (for listener -a):",
+                                BODY_Y + (BODY_ROWS - 2) * CHAR_H, self.DIM_CYAN)
+            self._draw_row_cached(BODY_ROWS, self.my_identity_hash or "?",
+                                BODY_Y + (BODY_ROWS - 1) * CHAR_H, self.NEON_GREEN)
+        else:
+            self._draw_row_cached(BODY_ROWS - 1, '', BODY_Y + (BODY_ROWS - 2) * CHAR_H, self.NEON_CYAN)
+            self._draw_row_cached(BODY_ROWS, '', BODY_Y + (BODY_ROWS - 1) * CHAR_H, self.NEON_CYAN)
         self._draw_input_line(self._shell_hex.decode())
         foot = "Enter=connect  Esc=cancel"
         if self._cache[FOOT_SLOT] != foot:
@@ -2189,16 +2208,21 @@ class UI:
             except Exception:
                 if self.node_tab == TAB_RRC:
                     self._rrc_status = "bad hash (need 32 hex)"
-                else:
+                elif self.node_tab == TAB_SSH:
                     self._shell_status = "bad hash (need 32 hex)"
                 self.dirty = True
                 return True
             self._manual_hex = False
-            if self.node_tab == TAB_RRC:
-                import rrc_ui
-                rrc_ui.open_hub(self, dest)
+            if self.node_tab == TAB_MSG:
+                self.add_peer(dest, "?")
+            elif self.node_tab == TAB_NET:
+                self.add_nomad_node(dest, "?")
+            elif self.node_tab == TAB_RRC:
+                self.add_rrc_hub(dest)
+            elif self.node_tab == TAB_SSH:
+                self.add_shell_node(dest)
             else:
-                self._start_shell(dest)
+                return False # Unknown error
             return True
         if 0x20 <= ch < 0x7F and len(self._shell_hex) < 32:
             c = chr(ch).lower()
