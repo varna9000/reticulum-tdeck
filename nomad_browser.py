@@ -362,7 +362,7 @@ async def _fetch_image(src):
     from urns.link import OutgoingLink
 
     if not src.startswith(":"):
-        _status("image: cross-node not supported")
+        _status("image: cross-node unsupported")
         return None
     media_path = src[1:]                       # ':/media/x.webp' -> '/media/x.webp'
     if _link is None or _link.status != OutgoingLink.ACTIVE:

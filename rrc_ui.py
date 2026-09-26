@@ -10,7 +10,7 @@
 
 from ui import (UI, BODY_Y, CACHE_ROWS, CHAR_H, CHAR_W, COLS, INPUT_Y,
                 SCREEN_W, BODY_ROWS, STATE_NODES, STATE_RRC_CHAT,
-                STATE_RRC_ROOMS, TAB_RRC, _pad, _ascii, _ascii_keep_spacing)
+                STATE_RRC_ROOMS, TAB_RRC, FOOT_SLOT, _pad, _ascii, _ascii_keep_spacing)
 # SCREEN_H and SEP_Y are unused here.
 
 import rrc_proto as _P      # constants only -- for the composer's fallback cap
@@ -71,12 +71,17 @@ def _draw_header(ui, left, right):
     if ui._cache[1] != cache_key:
         ui._cache[1] = cache_key
         ui.tft.text(ui.font, _pad(""), 0, BODY_Y, ui.DIM_CYAN, ui.BG_DARK)
-        ui.tft.text(ui.font, "<", 0, BODY_Y, ui.NEON_GREEN, ui.BG_DARK)
+        # One column in from the body frame's rail, like the room header.
+        ui.tft.text(ui.font, "<", CHAR_W, BODY_Y, ui.NEON_GREEN, ui.BG_DARK)
         # left is hub-controlled (announced hub name); _tb() carries it
         # through the same glyph-index path _row() uses, so a kept
         # Cyrillic char doesn't hit tft.text() as a raw non-ASCII str.
-        ui.tft.text(ui.font, ui._tb(_ascii(left)[:COLS - len(right) - 3]),
-                    CHAR_W, BODY_Y, ui.NEON_CYAN, ui.BG_DARK)
+        # "< " + text, like the browser's "> title": drawn straight after
+        # the glyph it read as "<finding path...". One blank column before
+        # a right-hand status, one margin at the right edge.
+        room = COLS - 3 - (len(right) + 2 if right else 1)
+        ui.tft.text(ui.font, ui._tb(_ascii(left)[:room]),
+                    3 * CHAR_W, BODY_Y, ui.NEON_CYAN, ui.BG_DARK)
         if right:
             # right is ui._rrc_status, which carries str(e) from a failed
             # send or connect. Same glyph-index path as everything else on
@@ -161,37 +166,55 @@ def _visible_lines(ui, rows):
 def draw_rooms(ui):
     """Hub console: the MOTD and any /list reply, verbatim."""
     if ui._rrc_hub_name:
+        # The status gets all but ~8 columns of hub name: cut at 10 it read
+        # "rate limit" / "send faile", which says nothing.
         _draw_header(ui, ui._rrc_hub_name,
-                     ui._rrc_status[:10] if ui._rrc_status else "")
+                     ui._rrc_status[:COLS - 13] if ui._rrc_status else "")
     else:
         # Before WELCOME there is no hub name, and the connect status is the
         # only thing on this screen worth reading. Give it the whole row:
         # squeezed into the right-hand corner it truncates to "waiting fo",
         # which tells the user nothing and hides the failure from us too.
         _draw_header(ui, ui._rrc_status or "connecting...", "")
-    rows = BODY_ROWS - 1
-    lines = _visible_lines(ui, rows)
-    for i in range(rows):
-        y = BODY_Y + (i + 1) * CHAR_H
-        if i < len(lines):
-            kind, text = lines[i]
-            ui._draw_row_cached(i + 2, _pad(text), y, _line_color(ui, kind))
-        else:
-            ui._draw_row_cached(i + 2, "", y, ui.NEON_CYAN)
+    _draw_scrollback(ui)
     if ui._rrc_panel:
         draw_panel(ui)
     _draw_footer(ui)
 
 
+def _draw_scrollback(ui):
+    """The body rows under the header, from the cached row painter.
+
+    Rows the open panel overlaps are left alone: repainting one draws it
+    full-width over the panel, and the panel then repaints on top -- a
+    visible flash for every line that arrives or scrolls while a panel is
+    up. What sits under the panel is already correct on screen, and closing
+    it invalidates the cache so every row repaints then.
+    """
+    rows = BODY_ROWS - 1
+    lines = _visible_lines(ui, rows)
+    for i in range(rows):
+        y = BODY_Y + (i + 1) * CHAR_H
+        if ui._rrc_panel and y + CHAR_H > PANEL_Y and y < PANEL_Y + PANEL_H:
+            continue
+        if i < len(lines):
+            kind, text = lines[i]
+            ui._draw_row_cached(i + 2, _pad(text), y, _line_color(ui, kind))
+        else:
+            ui._draw_row_cached(i + 2, "", y, ui.NEON_CYAN)
+
+
 def _draw_footer(ui):
     if ui._rrc_prompt:
+        ui._cache[FOOT_SLOT] = ''         # hints repaint once the prompt closes
         ui.tft.text(ui.font, _pad("room> " + ui._rrc_input)[:COLS], 0, INPUT_Y,
                     ui.NEON_CYAN, ui.BG_DARK)
         return
     # No letter keys left: the picker owns the room list and joining by
     # name, and backspace owns the exit. One gesture, one key, both named.
-    hint = "bksp=exit  click=rooms"
-    ui.tft.text(ui.font, _pad(hint), 0, INPUT_Y, ui.DIM_CYAN, ui.BG_DARK)
+    if ui._cache[FOOT_SLOT] != "\x02rooms":
+        ui._cache[FOOT_SLOT] = "\x02rooms"
+        ui._draw_hints((("BKSP", "exit"), ("CLICK", "rooms")))
 
 
 # There is no modifier key on this hardware, and that is settled, not
@@ -489,6 +512,33 @@ def _panel_len(ui):
     return len(ui._rrc_roster)
 
 
+def _pc(ui, part, key):
+    """True when this panel part must repaint, and records its new key.
+
+    The panel used to repaint whole on every draw -- a black fill_rect over
+    the box, then frame, title, rows, scrollbar and foot -- so every
+    trackball tick, arriving line or roster change blanked it for a moment:
+    the flicker. Parts now repaint only when what they show changes. The
+    cache belongs to the ui._cache list it was built against: every path
+    that drops the row cache (panel open/close, a state change's body wipe)
+    swaps in a new list, and that invalidates the panel parts with it.
+    """
+    if getattr(ui, "_rrc_pc_owner", None) is not ui._cache:
+        ui._rrc_pc_owner = ui._cache
+        ui._rrc_pc = {}
+    if ui._rrc_pc.get(part, _PC_MISSING) == key:
+        return False
+    ui._rrc_pc[part] = key
+    return True
+
+
+_PC_MISSING = object()
+
+
+def _panel_clear_row(ui, y):
+    ui.tft.fill_rect(PANEL_X + 2, y, PANEL_W - 4 - 6, CHAR_H, ui.BG_DARK)
+
+
 def _panel_chrome(ui, title, count):
     """Box, 2px frame, title band and rule -- identical for both panels.
 
@@ -497,6 +547,10 @@ def _panel_chrome(ui, title, count):
     glyph-index path, same as the Task 8 header fix. The static labels are
     wrapped too, for consistency, though they are only ever ASCII.
     """
+    key = (ui._rrc_panel_kind, title, count)
+    if not _pc(ui, "chrome", key):
+        return
+    ui._rrc_pc = {"chrome": key}     # the fill below wipes every other part
     ui.tft.fill_rect(PANEL_X, PANEL_Y, PANEL_W, PANEL_H, ui.BG_DARK)
     for i in range(2):               # 2px frame
         ui.tft.fill_rect(PANEL_X + i, PANEL_Y + i, PANEL_W - 2 * i, 1, ui.NEON_CYAN)
@@ -523,6 +577,8 @@ def _panel_row_bg(ui, y, selected):
 
 
 def _panel_scrollbar(ui, total):
+    if not _pc(ui, "sb", (total, ui._rrc_panel_scroll)):
+        return
     track_y = PANEL_Y + 22
     track_h = PANEL_ROWS * CHAR_H
     ui.tft.fill_rect(PANEL_X + PANEL_W - 6, track_y, 4, track_h, ui.BG_DARK)
@@ -532,19 +588,28 @@ def _panel_scrollbar(ui, total):
         ui.tft.fill_rect(PANEL_X + PANEL_W - 6, bar_y, 4, bar_h, ui.NEON_CYAN)
 
 
-def _panel_foot(ui, hint):
-    """Footer band: how to leave on the left, what a click does on the right.
+def _panel_foot(ui, action):
+    """Footer band: how to leave on the left, what a click does on the right,
+    in the footer hint style -- (BKSP)close ... (CLICK)mention.
 
-    "bksp close" and not "alt+w close": alt+w cannot be pressed on this
-    hardware (see the note above handle_key), so naming it here was an
-    instruction to press a key that does nothing.
+    BKSP and not alt+w: alt+w cannot be pressed on this hardware (see the
+    note above handle_key), so naming it here was an instruction to press a
+    key that does nothing.
     """
+    if not _pc(ui, "foot", action):
+        return
     foot_y = PANEL_Y + PANEL_H - 22
     ui.tft.fill_rect(PANEL_X + 2, foot_y, PANEL_W - 4, 20, ui.SEL_BG)
-    ui.tft.text(ui.font, ui._tb("bksp close"), _PANEL_TEXT_X, foot_y + 2,
-                ui.NEON_GREEN, ui.SEL_BG)
-    ui.tft.text(ui.font, ui._tb(hint), PANEL_X + PANEL_W - 8 - len(hint) * CHAR_W,
-                foot_y + 2, ui.DIM_CYAN, ui.SEL_BG)
+    _panel_hint(ui, "BKSP", "close", _PANEL_TEXT_X, foot_y + 2)
+    x = PANEL_X + PANEL_W - 8 - (len(action) + 7) * CHAR_W
+    _panel_hint(ui, "CLICK", action, x, foot_y + 2)
+
+
+def _panel_hint(ui, key, rest, x, y):
+    ui.tft.text(ui.font, "(", x, y, ui.DIM_CYAN, ui.SEL_BG)
+    ui.tft.text(ui.font, key, x + CHAR_W, y, ui.NEON_GREEN, ui.SEL_BG)
+    ui.tft.text(ui.font, ")" + rest, x + (len(key) + 1) * CHAR_W, y,
+                ui.DIM_CYAN, ui.SEL_BG)
 
 
 def draw_panel(ui):
@@ -570,10 +635,17 @@ def draw_member_panel(ui):
     for i in range(PANEL_ROWS):
         y = PANEL_Y + 22 + i * CHAR_H
         idx = top + i
-        if idx >= len(roster):
-            break
-        src, nick = roster[idx]
-        selected = (idx == ui._rrc_panel_idx)
+        if idx < len(roster):
+            src, nick = roster[idx]
+            selected = (idx == ui._rrc_panel_idx)
+            key = (src, nick, selected)
+        else:
+            key = None
+        if not _pc(ui, i, key):
+            continue
+        _panel_clear_row(ui, y)
+        if key is None:
+            continue
         bg = _panel_row_bg(ui, y, selected)
         # A member who has never spoken is known only by hash -- the app's
         # existing convention for an unknown name is "?".
@@ -587,7 +659,7 @@ def draw_member_panel(ui):
                     ui.DIM_CYAN, bg)
 
     _panel_scrollbar(ui, len(roster))
-    _panel_foot(ui, "click = mention")
+    _panel_foot(ui, "mention")
 
 
 def draw_rooms_panel(ui):
@@ -602,14 +674,35 @@ def draw_rooms_panel(ui):
     listed = len(rows) - 1
     _panel_chrome(ui, "#rooms", "%d rooms" % listed)
 
+    # Say why the picker is empty, and separate the two reasons: no
+    # answer yet is worth waiting on, an empty answer is not. A hub
+    # with no registered public rooms is healthy, not broken, so that
+    # second line is a statement of fact under an action row that still
+    # works -- not an error. It sits in the second row's slot.
+    msg = None
+    if not listed:
+        msg = "hub lists no public rooms" if ui._rrc_list_seen else "asking hub..."
+
     top = ui._rrc_panel_scroll
     for i in range(PANEL_ROWS):
         y = PANEL_Y + 22 + i * CHAR_H
         idx = top + i
-        if idx >= len(rows):
-            break
-        row = rows[idx]
-        selected = (idx == ui._rrc_panel_idx)
+        if idx < len(rows):
+            row = rows[idx]
+            selected = (idx == ui._rrc_panel_idx)
+            key = (row, selected)
+        elif msg and i == 1:
+            key = ("msg", msg)
+        else:
+            key = None
+        if not _pc(ui, i, key):
+            continue
+        _panel_clear_row(ui, y)
+        if key is None:
+            continue
+        if key[0] == "msg":
+            ui.tft.text(ui.font, ui._tb(msg), _PANEL_TEXT_X, y, ui.DIM_CYAN, ui.BG_DARK)
+            continue
         bg = _panel_row_bg(ui, y, selected)
         if row is None:
             # The action row spans the full width: it carries no topic, and
@@ -626,18 +719,9 @@ def draw_rooms_panel(ui):
             ui.tft.text(ui.font, ui._tb(_ascii(topic)[:_PANEL_TOPIC_COLS]),
                         _PANEL_TOPIC_X, y, ui.DIM_CYAN, bg)
 
-    if not listed:
-        # Say why the picker is empty, and separate the two reasons: no
-        # answer yet is worth waiting on, an empty answer is not. A hub
-        # with no registered public rooms is healthy, not broken, so that
-        # second line is a statement of fact under an action row that still
-        # works -- not an error.
-        msg = "hub lists no public rooms" if ui._rrc_list_seen else "asking hub..."
-        ui.tft.text(ui.font, ui._tb(msg),
-                    _PANEL_TEXT_X, PANEL_Y + 22 + CHAR_H, ui.DIM_CYAN, ui.BG_DARK)
 
     _panel_scrollbar(ui, len(rows))
-    _panel_foot(ui, "click = join")
+    _panel_foot(ui, "join")
 
 
 def panel_toggle(ui, kind):
@@ -802,15 +886,7 @@ def draw_room(ui):
                     ui.DIM_CYAN, ui.BG_DARK)
     ui.tft.fill_rect(0, BODY_Y + CHAR_H - 1, SCREEN_W, 1, ui.DIM_CYAN)
 
-    rows = BODY_ROWS - 1
-    lines = _visible_lines(ui, rows)
-    for i in range(rows):
-        y = BODY_Y + (i + 1) * CHAR_H
-        if i < len(lines):
-            kind, text = lines[i]
-            ui._draw_row_cached(i + 2, _pad(text), y, _line_color(ui, kind))
-        else:
-            ui._draw_row_cached(i + 2, "", y, ui.NEON_CYAN)
+    _draw_scrollback(ui)
 
     if ui._rrc_panel:
         draw_panel(ui)                 # Task 9

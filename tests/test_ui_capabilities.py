@@ -91,12 +91,12 @@ def test_hint_hidden_without_mic():
     print("the record hint follows the hardware")
     g, tft = _mkui(with_mic=False)
     g.draw_input()
-    check("no mic: the chat footer does not offer [0=rec]",
+    check("no mic: the chat footer does not offer (mic)rec",
           not _drew_rec_hint(tft), str(tft.texts))
 
     g, tft = _mkui(with_mic=True)
     g.draw_input()
-    check("mic present: the chat footer still offers [0=rec]",
+    check("mic present: the chat footer still offers (mic)rec",
           _drew_rec_hint(tft), str(tft.texts))
 
 

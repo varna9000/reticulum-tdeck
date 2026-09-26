@@ -262,7 +262,7 @@ async def _session_task(dest_hash):
     from urns.transport import Transport
 
     if is_active():
-        _status("busy — session in progress")
+        _status("busy - session in progress")
         return
 
     my_gen = _task_gen_next()
@@ -329,7 +329,7 @@ async def _session_task(dest_hash):
             _link = None
             link = None
         if link is None or link.status != OutgoingLink.ACTIVE:
-            _status("link failed (no reply after %d tries)" % LINK_ATTEMPTS)
+            _status("link failed after %d tries" % LINK_ATTEMPTS)
             _teardown()
             return
 

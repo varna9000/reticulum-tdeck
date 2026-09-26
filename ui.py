@@ -337,6 +337,9 @@ _GLOBE = _icon(("..#####..", ".#.#.#.#.", "#..#.#..#", "#..#.#..#", "#########",
 _ANTENNA = _icon((".#.......#.", "#..#...#..#", "#.#..#..#.#", "#.#.###.#.#",
                   "#..#.#.#..#", ".#...#...#.", ".....#.....", "....###....",
                   "...#.#.#...", "..#..#..#.."))
+# The keyboard's mic key (Sym+0), for the DM footer's record hint.
+_MIC = _icon(("..###..", ".#####.", ".#####.", ".#####.", ".#####.",
+              "#.###.#", "#.....#", ".#...#.", "..###..", "...#...", "..###.."))
 
 
 def match_contacts(snap, q):
@@ -505,6 +508,7 @@ class UI:
         self.SEL_BG     = 0x2966  # selection highlight — bright blue tint
         self.TAB_BG     = 0x02AA  # teal — selected tab, and the Find band under it
         self.ORANGE     = 0xFD20  # favourite star
+        self.WHITE      = 0xFFFF  # unread-count digits on the magenta pill
 
         # Small font for secondary text: header, footer, hashes, ages, pill
         # counts. The e-ink shim draws 8px-wide fonts only, so the Pro keeps
@@ -934,6 +938,49 @@ class UI:
                           for o in [ord(c) for c in text]])
         return text
 
+    def _draw_hints(self, hints, prefix=""):
+        """Footer hotkeys in the node-list style, e.g. (R)eload (BKSP)back:
+        brackets and label dim cyan, the key neon green. `hints` holds
+        (key, rest) or (key, rest, optional) tuples; optional ones are
+        dropped, last first, until the row fits COLS -- so the 30-column
+        Pro loses a nicety instead of clipping the exit key. A plain-text
+        `prefix` (e.g. "link 3/12 ") goes first. Clears the row; returns the
+        x just past the last hint's trailing space."""
+        hints = list(hints)
+
+        def width():
+            return len(prefix) + sum(len(h[0]) + len(h[1]) + 3 for h in hints) - 1
+
+        i = len(hints) - 1
+        while width() > COLS and i >= 0:
+            if len(hints[i]) > 2 and hints[i][2]:
+                hints.pop(i)
+            i -= 1
+        self.tft.fill_rect(0, INPUT_Y, SCREEN_W, CHAR_H, self.BG_DARK)
+        x = 0
+        if prefix:
+            self.tft.text(self.font, self._tb(prefix), 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+            x = len(prefix) * CHAR_W
+        for h in hints:
+            x = self._hint_at(h[0], h[1], x)
+        return x
+
+    def _hint_at(self, k, rest, x):
+        """One (KEY)rest footer hint at x; returns x past it and a space.
+        k may be an icon tuple (see _icon) drawn in one cell, e.g. _MIC."""
+        self.tft.text(self.font, "(", x, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+        if isinstance(k, tuple):
+            self.tft.fill_rect(x + CHAR_W, INPUT_Y, CHAR_W, CHAR_H, self.BG_DARK)
+            self._bitmap(k, x + CHAR_W + (CHAR_W - k[0]) // 2,
+                         INPUT_Y + (CHAR_H - k[1]) // 2, self.NEON_GREEN)
+            kw = 1
+        else:
+            self.tft.text(self.font, k, x + CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
+            kw = len(k)
+        self.tft.text(self.font, ")" + rest, x + (kw + 1) * CHAR_W, INPUT_Y,
+                      self.DIM_CYAN, self.BG_DARK)
+        return x + (kw + len(rest) + 3) * CHAR_W
+
     @staticmethod
     def _marker_span(text, keyword):
         """Locate a '[keyword...]' marker in a chat row and return
@@ -992,15 +1039,19 @@ class UI:
         for dx, dy, w in icon[2]:
             self.tft.fill_rect(x + dx, y + dy, w, 1, c)
 
+    def _pill_w(self, n):
+        """Width of the unread pill for count n (see _pill)."""
+        return len(str(min(n, 99))) * self.SW + 6     # 3px either side
+
     def _pill(self, n, xr, y, bg):
         """Magenta unread-count pill ending at x=xr in the row at y; returns
-        its width. Two digits max (99)."""
+        its width. Two digits max (99), small font, white digits."""
         t = str(min(n, 99))
-        w = len(t) * self.SW + 2
+        w = self._pill_w(n)
         x = xr - w
         top = y + (CHAR_H - self.SH) // 2
         self.tft.fill_rect(x, top, w, self.SH, self.NEON_MAG)
-        self._sdraw(t, x + 1, top, self.BG_DARK, self.NEON_MAG)
+        self._sdraw(t, x + 3, top, self.WHITE, self.NEON_MAG)
         for cx in (x, x + w - 1):          # rounded ends
             self.tft.fill_rect(cx, top, 1, 1, bg)
             self.tft.fill_rect(cx, top + self.SH - 1, 1, 1, bg)
@@ -1208,7 +1259,7 @@ class UI:
                 fav = entry.get("fav") == True
                 hsh = key.hex()[:8]
                 uc = self.unread.get(key, 0) if show_unread else 0
-                pw = (len(str(min(uc, 99))) * sw + 2 + 6) if uc else 0
+                pw = (self._pill_w(uc) + 6) if uc else 0
                 name = name[:(hash_x - 6 - pw - 2 * CHAR_W) // CHAR_W]
                 sel = scroll + i == sel_idx
                 cache_key = ('\x01' if sel else '') + name + '\x00' + hsh + str(uc) + ('*' if fav else '')
@@ -1277,12 +1328,7 @@ class UI:
             # One footer for every tab; hotkeys in the main font, capitals.
             # (P)ing and (D)el still work on MSG but go unadvertised: only
             # urns nodes answer probes, so ping times out on Sideband/MeshChat.
-            x = 0
-            for k, rest in (("A", "nnc"), ("S", "etup"), ("F", "av"), ("M", "hash")):
-                self.tft.text(self.font, "(", x, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-                self.tft.text(self.font, k, x + CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
-                self.tft.text(self.font, ")" + rest, x + 2 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-                x += (len(rest) + 4) * CHAR_W
+            x = self._draw_hints((("A", "nnc"), ("S", "etup"), ("F", "av"), ("M", "hash")))
             self._foot_x = x - CHAR_W
             self._route_cache = ''
 
@@ -1401,17 +1447,25 @@ class UI:
         # Footer: transient status/error, link position, else key hints
         if self.browser_status:
             foot = self.browser_status[:COLS]
-            fcol = self.NEON_MAG
+            if self._cache[FOOT_SLOT] != foot:
+                self._cache[FOOT_SLOT] = foot
+                self.tft.text(self.font, self._tb(_pad(foot)), 0, INPUT_Y,
+                              self.NEON_MAG, self.BG_DARK)
+            return
+        _li = self._browser_link_rows.get(self.browser_cursor)
+        if _li is not None and self.browser_links:
+            pos = "%d/%d " % (_li + 1, len(self.browser_links))
+            if COLS >= 40:
+                pos = "link " + pos
+            fkey = "\x02" + pos
+            hints = (("CLICK", "open"), ("BKSP", "back"))
         else:
-            _li = self._browser_link_rows.get(self.browser_cursor)
-            if _li is not None and self.browser_links:
-                foot = "link %d/%d  click=open  <back" % (_li + 1, len(self.browser_links))
-            else:
-                foot = "(r)load (n)ext (p)rev  click  <back"
-            fcol = self.DIM_CYAN
-        if self._cache[FOOT_SLOT] != foot:
-            self._cache[FOOT_SLOT] = foot
-            self.tft.text(self.font, self._tb(_pad(foot)), 0, INPUT_Y, fcol, self.BG_DARK)
+            pos = ""
+            fkey = "\x02"
+            hints = (("R", "eload", True), ("N", "ext"), ("P", "rev"), ("BKSP", "back"))
+        if self._cache[FOOT_SLOT] != fkey:
+            self._cache[FOOT_SLOT] = fkey
+            self._draw_hints(hints, pos)
 
     def _draw_image_row(self, li, subrow, y):
         img = self._page_images.get(li)
@@ -1650,19 +1704,13 @@ class UI:
                 self.tft.text(self.font, _pad(_ts_txt, 16), 6 * CHAR_W, INPUT_Y,
                               self.DIM_CYAN, self.BG_DARK)
             elif _show_rec:
-                self.tft.text(self.font, "[", 4 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-                self.tft.text(self.font, "0", 5 * CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
-                self.tft.text(self.font, "=rec]", 6 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-            if _on_image:
-                _hx = (COLS - 12) * CHAR_W
-                self.tft.text(self.font, "[", _hx, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-                self.tft.text(self.font, "click", _hx + CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
-                self.tft.text(self.font, "=view]", _hx + 6 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-            else:
-                _hx = (COLS - 12) * CHAR_W
-                self.tft.text(self.font, "[", _hx, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-                self.tft.text(self.font, "bksp", _hx + CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
-                self.tft.text(self.font, "=back]", _hx + 5 * CHAR_W, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+                # The key is Sym+0, printed as a mic on the keycap: show the
+                # mic rather than a bare "0".
+                self._hint_at(_MIC, "rec", 4 * CHAR_W)
+            # Same (KEY)label style as every other footer, right-aligned
+            # with a one-column margin.
+            k, rest = ("CLICK", "view") if _on_image else ("BKSP", "back")
+            self._hint_at(k, rest, (COLS - 1 - len(k) - len(rest) - 2) * CHAR_W)
 
     # --- Image viewer ---
 
@@ -2528,14 +2576,14 @@ class UI:
         if self._terminal is not None:
             self._terminal.feed(("\r\n[process exited: %s]\r\n" % str(code)).encode())
         self._shell_connected = False
-        self._shell_status = "exited (%s) — Esc to leave" % str(code)
+        self._shell_status = "exited (%s): any key to leave" % str(code)
         if self.state == STATE_SHELL:
             self.dirty = True
 
     def shell_closed(self):
         self._shell_connected = False
         if self._shell_status is None or "exited" not in self._shell_status:
-            self._shell_status = "disconnected — Esc to leave"
+            self._shell_status = "disconnected: any key to leave"
         if self.state == STATE_SHELL:
             self.dirty = True
 
@@ -2953,16 +3001,17 @@ class UI:
             self._cache[FOOT_SLOT] = ''           # input redraws live; repaint on next status change
             self._draw_input_line(self._safe_decode(self._shell_input))
         else:
+            # Line mode quits on Backspace; raw mode sends Backspace to the
+            # remote and quits from the keys menu (or ~.).
             if self._shell_line_mode:
-                foot = "Bksp=quit click=keys trkbl=scrl"
+                hints = (("BKSP", "quit"), ("CLICK", "keys"), ("BALL", "scroll", True))
             else:
-                foot = "click=keys menu  trkbl=scroll"
-            if self._shell_view:
-                foot = "[+" + str(self._shell_view) + "] " + foot
-            foot = foot[:COLS]
-            if self._cache[FOOT_SLOT] != foot:
-                self._cache[FOOT_SLOT] = foot
-                self.tft.text(self.font, self._tb(_pad(foot)), 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+                hints = (("CLICK", "keys"), ("BALL", "scroll", True))
+            pos = "[+" + str(self._shell_view) + "] " if self._shell_view else ""
+            fkey = "\x02" + str(self._shell_line_mode) + pos
+            if self._cache[FOOT_SLOT] != fkey:
+                self._cache[FOOT_SLOT] = fkey
+                self._draw_hints(hints, pos)
 
     def _shell_send(self, data):
         if data:
@@ -3057,10 +3106,9 @@ class UI:
                     self._draw_row_cached(ci, line, y, self.NEON_CYAN, self.BG_DARK)
             else:
                 self._draw_row_cached(ci, "", y, self.NEON_CYAN)
-        foot = "click=send  U/D=move  Bksp=close"
-        if self._cache[FOOT_SLOT] != foot:
-            self._cache[FOOT_SLOT] = foot
-            self.tft.text(self.font, self._tb(_pad(foot)), 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+        if self._cache[FOOT_SLOT] != "\x02menu":
+            self._cache[FOOT_SLOT] = "\x02menu"
+            self._draw_hints((("CLICK", "send"), ("U/D", "move", True), ("BKSP", "close")))
 
     def _leave_shell(self):
         if self.on_shell_disconnect:

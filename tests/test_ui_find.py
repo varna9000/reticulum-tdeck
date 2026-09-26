@@ -475,6 +475,9 @@ def test_unread_count_is_a_pill_on_the_right_of_the_row():
     pill = [r for r in t.rects if r[4] == g.NEON_MAG and r[1] >= y and r[3] > 1]
     assert pill and pill[0][0] > ui.SCREEN_W // 2, pill      # right side
     assert any(c[0] == "23" for c in t.colors)
+    # white digits on the magenta
+    digits = [c for c in t.colors if c[0] == "23"][0]
+    assert digits[3] == g.WHITE and digits[4] == g.NEON_MAG, digits
     # the left margin is free, so the selection bar is drawn
     assert any(r[:4] == (0, y, 3, ui.CHAR_H) and r[4] == g.NEON_MAG for r in t.rects)
 

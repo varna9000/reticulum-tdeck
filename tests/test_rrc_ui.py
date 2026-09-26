@@ -694,7 +694,7 @@ def test_panel_footer_names_a_key_that_exists():
     rrc_ui.draw_member_panel(g)
     painted = _painted(g.tft.calls)
     assert "alt+w" not in painted, painted
-    assert "bksp close" in painted, painted
+    assert "BKSP" in painted and ")close" in painted, painted
     print("ok test_panel_footer_names_a_key_that_exists")
 
 

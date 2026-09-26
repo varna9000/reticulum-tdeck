@@ -202,7 +202,7 @@ def _send_env(env):
         return False
     data = P.encode_capped(env, _mdu())
     if data is None:
-        _status("send failed: will not fit the link")
+        _status("message too big")
         return False
     return _send_raw(data)
 
