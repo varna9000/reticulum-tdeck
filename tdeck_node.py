@@ -1721,8 +1721,18 @@ async def _auto_start_tcp():
                 if gui._wifi_connected:
                     break
                 await asyncio.sleep(0.5)
-            if gui._wifi_connected and tcp_toggle(True, host, port):
-                gui._tcp_enabled = True
+            # Retry: right after WiFi associates, DNS often isn't answering
+            # yet (getaddrinfo -202), and one failure used to leave TCP off
+            # for the whole session. Stop if the user connects by hand.
+            for attempt in range(6):
+                if not gui._wifi_connected or gui._tcp_enabled:
+                    break
+                if tcp_toggle(True, host, port):
+                    gui._tcp_enabled = True
+                    break
+                if DEBUG >= 1:
+                    print("[TCP] auto-connect attempt", attempt + 1, "failed")
+                await asyncio.sleep(10)
     gc.collect()
 
 
