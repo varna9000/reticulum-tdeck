@@ -57,8 +57,11 @@ def test_fetch_image_request_includes_key():
         nomad_browser._on_response(b"\x00" * 16, b"IMGBYTES")
         return b"\x00" * 16
 
-    nomad_browser._gui = types.SimpleNamespace(
+    g = types.SimpleNamespace(
         browser_status="", dirty=False, transfer_progress=None)
+    g.set_transfer = lambda r: None
+    g.clear_transfer = lambda: setattr(g, "transfer_progress", None)
+    nomad_browser._gui = g
     nomad_browser._link = types.SimpleNamespace(
         status=OutgoingLink.ACTIVE, request=fake_request)
     nomad_browser._fetching = False

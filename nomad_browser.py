@@ -229,8 +229,7 @@ def _on_req_failed(request_id):
 
 
 def _on_progress(resource):
-    _gui.transfer_progress = (resource.received_count, resource.total_parts)
-    _gui._progress_dirty = True
+    _gui.set_transfer(resource)
 
 
 async def _fetch_task(dest_hash, path, push, keep_pos=False):
@@ -245,7 +244,7 @@ async def _fetch_task(dest_hash, path, push, keep_pos=False):
         _status("error: " + str(e))
     finally:
         _fetching = False
-        _gui.transfer_progress = None
+        _gui.clear_transfer()
         _gui.wake_screen()
         _gui.dirty = True
         gc.collect()
@@ -404,7 +403,7 @@ async def _fetch_image(src):
         return bytes(data)
     finally:
         _fetching = False
-        _gui.transfer_progress = None
+        _gui.clear_transfer()
 
 
 def fetch_page_image(li, src):

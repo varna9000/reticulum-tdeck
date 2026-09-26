@@ -399,8 +399,7 @@ def on_message(message):
         sys.print_exception(e)
 
 def _on_message_inner(message):
-    gui.transfer_progress = None
-    gui._progress_dirty = False
+    gui.clear_transfer()
     content = message.content_as_string() or "(binary)"
     source_hash = message.source_hash
 
@@ -540,8 +539,7 @@ def on_announce(destination_hash, display_name):
 
 def on_progress(resource):
     # Reference-RNS-shaped callback: one resource argument
-    gui.transfer_progress = (resource.received_count, resource.total_parts)
-    gui._progress_dirty = True
+    gui.set_transfer(resource)
 
 router.register_delivery_callback(on_message)
 router.register_announce_callback(on_announce)

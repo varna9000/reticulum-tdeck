@@ -625,6 +625,8 @@ class UI:
         self.snr = None
         self.lora_online = True
         self.transfer_progress = None  # (received, total) or None
+        self._transfer_res = None      # the resource behind transfer_progress
+        self._transfer_ms = 0          # ticks of its last progress report
         self._audio_status = None      # None, "decoding", or "playing"
         self._rec_seconds = 0          # recording duration counter (driven by node)
         self._rec_max = REC_MAX_SECS   # max recording length in seconds
@@ -4897,12 +4899,52 @@ class UI:
                 self.dirty = True
             await asyncio.sleep(10)
 
+    # Resource status at or past which a transfer is over (urns resource.py:
+    # COMPLETE 0x05, FAILED 0x06, CORRUPT 0x07).
+    _RES_CONCLUDED = 0x05
+    # No progress for this long and the transfer is treated as over, even if
+    # the resource never reported an ending.
+    _TRANSFER_STALE_MS = 120000
+
+    def set_transfer(self, resource):
+        """Progress callback for any incoming resource (LXMF, Nomad): shows
+        "RX n/total" in the navbar until the transfer ends."""
+        self.transfer_progress = (resource.received_count, resource.total_parts)
+        self._transfer_res = resource
+        self._transfer_ms = time.ticks_ms()
+        self._progress_dirty = True
+
+    def clear_transfer(self):
+        if self.transfer_progress is not None:
+            self.transfer_progress = None
+            self._progress_dirty = True
+        self._transfer_res = None
+
+    def _expire_transfer(self):
+        """Drop "RX n/total" once its resource has ended, however it ended.
+        It used to clear only when a message was delivered, so a transfer
+        that failed, timed out, or turned out to be a duplicate (a sender
+        re-sending an image whose proof it never got -- urns drops it without
+        a delivery callback) left the counter in the header for good, the
+        LoRa icon never came back, and the screen never slept (a transfer
+        in progress keeps it awake)."""
+        if self.transfer_progress is None:
+            return
+        r = self._transfer_res
+        if (r is None or getattr(r, "status", 0) >= self._RES_CONCLUDED
+                or time.ticks_diff(time.ticks_ms(), self._transfer_ms)
+                   >= self._TRANSFER_STALE_MS):
+            self.clear_transfer()
+
     async def ticker_loop(self):
         """1s housekeeping tick: refresh the radio stats page while open,
         expire the transient ping status, and repaint the navbar clock on
         minute changes. Never draws — row caches skip unchanged text."""
         _last_min = -1
         while True:
+            # Outside the screen-on check: a stuck transfer is exactly what
+            # would keep the screen from ever sleeping.
+            self._expire_transfer()
             # Skip entirely during recording: no housekeeping redraw is worth
             # stealing GIL cycles from the mic capture thread.
             if self._screen_on and self.state != STATE_RECORDING:
