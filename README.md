@@ -214,7 +214,7 @@ Edit `tdeck_config.py` (on-device or before flashing):
 Default radio settings: **868.8 MHz, SF8, BW125, CR5, 22 dBm, syncword 0x1424**.
 These are compatible with RNode firmware and reference Reticulum.
 
-Default TCP settings: connects to `TCP_CONFIG["target_host"]` on port `4242`. The remote machine needs a Reticulum `TCPServerInterface` listening on that port.
+Default TCP settings: the host field is prefilled with `rns.varnatransport.com:4242` (`TCP_CONFIG` in the board config) until you connect somewhere else; your last host is remembered after that. The remote machine needs a Reticulum `TCPServerInterface` listening on that port.
 
 ### Run
 

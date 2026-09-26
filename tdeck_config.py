@@ -91,7 +91,7 @@ TCP_CONFIG = {
     "type": "TCPClientInterface",
     "name": "WiFi TCP",
     "enabled": True,
-    "target_host": "127.0.0.1",
+    "target_host": "rns.varnatransport.com",
     "target_port": 4242,
 }
 
