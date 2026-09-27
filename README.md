@@ -409,9 +409,11 @@ The format: the 16 hash bytes plus a CRC-16/CCITT-FALSE, as 36 hex digits, one s
 3. Add the action **Run Shell Script**: Shell `zsh`, Input **Shortcut Input**, Pass Input **to stdin**, and the script
    ```sh
    PY=/opt/homebrew/bin/python3; [ -x "$PY" ] || PY=/usr/bin/python3
-   exec "$PY" "/path/to/reticulum-tdeck/tools/dtmf_send.py"
+   exec "$PY" "/path/to/reticulum-tdeck/tools/dtmf_send.py" --once
    ```
 4. Shortcuts → Settings → Advanced → turn on **Allow Running Scripts** (needed either way).
+
+The shortcut plays the address once (~4.5 s); if the T-Deck misses it, just pick the menu entry again. (`dtmf_send.py` on its own plays it twice.)
 
 **Using it:** select a hash anywhere (a chat, a web page, a terminal) → right-click → **Services → Transfer via sound**. Surrounding text is fine — `<a1b2…>` or a whole line — the first 32-hex run is used. For a key instead of the menu: System Settings → Keyboard → Keyboard Shortcuts → Services → Text → *Transfer via sound*.
 

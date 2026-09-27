@@ -29,11 +29,13 @@ SENDER = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "dtmf_sen
 
 def _script():
     # Services and Quick Actions run with a minimal PATH: find a python3.
+    # One copy (~4.5 s): the T-Deck is listening already when you pick the
+    # menu entry, so the second copy mostly just made you wait.
     return (
         'PY=/opt/homebrew/bin/python3\n'
         '[ -x "$PY" ] || PY=/usr/local/bin/python3\n'
         '[ -x "$PY" ] || PY=/usr/bin/python3\n'
-        'exec "$PY" "%s"\n' % SENDER
+        'exec "$PY" "%s" --once\n' % SENDER
     )
 
 
