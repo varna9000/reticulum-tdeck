@@ -2,12 +2,17 @@
 """Play a Reticulum destination hash as DTMF tones for the T-Deck to hear.
 
 On the T-Deck: press m (Find), then 0 (the mic key) on an empty query, and
-hold it near the Mac's speaker. It fills the hash in; Enter adds it.
+hold it near the computer's speaker. It fills the hash in; Enter adds it.
 
     dtmf_send.py a1b2c3d4e5f60718293a4b5c6d7e8f90
     echo "<a1b2...>" | dtmf_send.py        # first 32-hex run in stdin
     dtmf_send.py                           # ...or on the clipboard
+    dtmf_send.py --selection               # Linux: the selected (primary) text
     dtmf_send.py HASH --wav out.wav        # write, don't play
+    dtmf_send.py HASH --digits             # the 36 keys, for another DTMF generator
+
+macOS plays with afplay; Linux with pw-play, paplay, aplay or ffplay
+(whichever is installed) and reads the clipboard with wl-paste, xclip or xsel.
 
 Format (dtmf.py decodes it): the 32 hash digits plus a 4-digit
 CRC-16/CCITT-FALSE of the 16 hash bytes, one DTMF tone per hex digit
@@ -23,6 +28,7 @@ import binascii
 import math
 import os
 import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -97,6 +103,37 @@ def encode(hash_hex, rate=44100, copies=2):
     return render(frame(hash_hex), rate, copies)
 
 
+def keys(hash_hex):
+    """The frame as DTMF key labels -- what to type into another generator."""
+    return "".join(_HEX2KEY[int(c, 16)] for c in frame(hash_hex))
+
+
+def player_cmd(platform=sys.platform, which=shutil.which):
+    """Command (minus the file) that plays a WAV here, or None."""
+    if platform == "darwin":
+        return ["afplay"]
+    for cmd in (["pw-play"], ["paplay"], ["aplay", "-q"],
+                ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet"]):
+        if which(cmd[0]):
+            return cmd
+    return None
+
+
+def paste_cmd(platform=sys.platform, which=shutil.which, primary=False):
+    """Command that prints the clipboard (or, on X11/Wayland, the primary
+    selection -- the text currently selected), or None."""
+    if platform == "darwin":
+        return ["pbpaste"]
+    sel = "primary" if primary else "clipboard"
+    if which("wl-paste"):
+        return ["wl-paste", "--no-newline"] + (["--primary"] if primary else [])
+    if which("xclip"):
+        return ["xclip", "-o", "-selection", sel]
+    if which("xsel"):
+        return ["xsel", "-o", "-p" if primary else "-b"]
+    return None
+
+
 def write_wav(samples, rate, path):
     with wave.open(path, "wb") as w:
         w.setnchannels(1)
@@ -106,24 +143,31 @@ def write_wav(samples, rate, path):
 
 
 def _notify(msg):
+    if sys.platform == "darwin":
+        cmd = ["osascript", "-e",
+               'display notification "%s" with title "Transfer via sound"' % msg]
+    elif shutil.which("notify-send"):
+        cmd = ["notify-send", "Transfer via sound", msg]
+    else:
+        return
     try:
-        subprocess.run(["osascript", "-e",
-                        'display notification "%s" with title "Transfer via sound"' % msg],
-                       timeout=5, check=False)
+        subprocess.run(cmd, timeout=5, check=False)
     except Exception:
         pass
 
 
-def _input_text(arg):
+def _input_text(arg, primary=False):
     if arg:
         return arg
-    if not sys.stdin.isatty():
+    if not primary and sys.stdin is not None and not sys.stdin.isatty():
         text = sys.stdin.read()
         if text.strip():
             return text
+    cmd = paste_cmd(primary=primary)
+    if not cmd:
+        return ""
     try:
-        return subprocess.run(["pbpaste"], capture_output=True, text=True,
-                              timeout=5).stdout
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=5).stdout
     except Exception:
         return ""
 
@@ -134,26 +178,39 @@ def main(argv=None):
                    "default: stdin, then clipboard")
     p.add_argument("--wav", help="write the audio to this WAV file instead of playing")
     p.add_argument("--once", action="store_true", help="one copy instead of two")
+    p.add_argument("--digits", action="store_true",
+                   help="print the 36 DTMF keys (for another generator) and exit")
+    p.add_argument("--selection", action="store_true",
+                   help="Linux: read the selected (primary) text instead of the clipboard")
     p.add_argument("--rate", type=int, default=44100, help=argparse.SUPPRESS)
     a = p.parse_args(argv)
 
-    h = extract_hash(_input_text(a.text))
+    h = extract_hash(_input_text(a.text, a.selection))
     if not h:
         print("No 32-hex address found.", file=sys.stderr)
         _notify("No 32-hex address in selection")
         return 1
 
+    if a.digits:
+        print(keys(h))
+        return 0
     samples = encode(h, a.rate, 1 if a.once else 2)
     if a.wav:
         write_wav(samples, a.rate, a.wav)
         print(h, "->", a.wav)
         return 0
+    play = player_cmd()
+    if not play:
+        print("No audio player found (install pipewire, pulseaudio-utils, alsa-utils "
+              "or ffmpeg), or use --wav.", file=sys.stderr)
+        _notify("No audio player found")
+        return 1
     fd, path = tempfile.mkstemp(suffix=".wav")
     os.close(fd)
     try:
         write_wav(samples, a.rate, path)
         print("Playing", h)
-        subprocess.run(["afplay", path], check=False)
+        subprocess.run(play + [path], check=False)
     finally:
         os.unlink(path)
     return 0

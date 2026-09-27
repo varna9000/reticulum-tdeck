@@ -238,6 +238,7 @@ The device starts on the node list screen with four tabs: **MSG** (LXMF chat pee
 | Open chat / node page / shell | Trackball click (or Enter) |
 | Favorite/Unfavorite selected peer/node | Press `f` |
 | Find, or add by hash, a peer / node / hub / listener | Press `m` |
+| Receive an address by sound (in Find, empty query) | Press `0` — see [Address by Sound](#address-by-sound-dtmf) |
 | Send announce | Press `a` |
 | Open setup | Press `s` |
 | Ping selected peer (MSG, not shown in the footer) | Press `p` |
@@ -385,17 +386,57 @@ JPEG and WebP are decoded on-device using the native `tjpgd_fast` (TJpgDec) and 
 
 ### Address by Sound (DTMF)
 
-Getting a 32-hex address onto the T-Deck without typing it: play it from a Mac as DTMF tones and let the T-Deck's microphone take it down.
+Getting a 32-hex address onto the T-Deck without typing it: play it from a computer as DTMF tones and let the T-Deck's microphone take it down. Works from macOS and Linux with the included script, or from any DTMF generator.
 
 1. On the T-Deck, open **Find** (`m`) and press `0` (the Sym+0 mic key) on the empty query. The screen shows *Listening...*.
-2. On the Mac, select the address in any app and choose **Services → Transfer via sound** (or run `python3 tools/dtmf_send.py <hash>`; with no argument it takes the clipboard).
+2. On a Mac, select the address in any app and choose **Services → Transfer via sound**. On Linux, select it and press the key you bound to `dtmf_send.py --selection`. Or anywhere: `python3 tools/dtmf_send.py <hash>`. Setup for each is below.
 3. The T-Deck chimes and the address appears in the Find query — a heard contact is highlighted, an unheard one offers *Enter: add*. Nothing is added until you press Enter.
 
 **Hold the T-Deck** about 30 cm from the speaker, at a normal volume (~60%). Lying on a desk in its case, the T-Deck's mic path loses 15–25 dB around 1.5–2 kHz — exactly where the A–D DTMF tone (1633 Hz) sits — so hex digits a–d go missing; held in the hand the notch disappears. Listening gives up after 30 s (`0` tries again); pressing any other key cancels, and the character goes into the query after the `0` — so a hash that starts with `0` can still be typed.
 
 The format: the 16 hash bytes plus a CRC-16/CCITT-FALSE, as 36 hex digits, one standard DTMF tone pair per digit (`a`–`d` → `A`–`D`, `e` → `*`, `f` → `#`), 80 ms on / 40 ms off, high tone +3 dB (standard forward twist), played twice (~9 s). There are no start/end markers: `dtmf.py` keeps the last 36 digits and reports the hash the moment their CRC checks out, so it can join mid-way through the first copy. Decoding is eight viper Goertzel filters over 20 ms blocks on the voice-memo capture path — about 6% of a core.
 
-**Setting up the Mac side** (once): `python3 tools/mac/make_shortcut.py` builds and signs the *Transfer via sound* Quick Action and opens it — click *Add Shortcut*, then enable Shortcuts → Settings → Advanced → **Allow Running Scripts**. It runs `tools/dtmf_send.py` from this checkout (standard library only), so re-run the script if you move the repo. A keyboard shortcut can be bound under System Settings → Keyboard → Keyboard Shortcuts → Services.
+#### Sending from a Mac
+
+`tools/dtmf_send.py` does the work and needs nothing beyond the Python 3 that comes with macOS or Homebrew: `python3 tools/dtmf_send.py <hash>` plays it; with no argument it takes the first 32-hex run from the clipboard. The *Transfer via sound* menu entry is a Shortcuts Quick Action wrapped around it.
+
+**Automatic setup:** `python3 tools/mac/make_shortcut.py` builds and signs the shortcut and opens it — click **Add Shortcut**. It points at `dtmf_send.py` in this checkout, so run it again if you move the repo.
+
+**Manual setup** (same result, if you'd rather build it yourself):
+
+1. Open **Shortcuts** → File → New Shortcut, and name it `Transfer via sound`.
+2. Open the details panel (ⓘ): tick **Use as Quick Action** and **Services Menu**; set *Receive* to **Text** from **Quick Actions**.
+3. Add the action **Run Shell Script**: Shell `zsh`, Input **Shortcut Input**, Pass Input **to stdin**, and the script
+   ```sh
+   PY=/opt/homebrew/bin/python3; [ -x "$PY" ] || PY=/usr/bin/python3
+   exec "$PY" "/path/to/reticulum-tdeck/tools/dtmf_send.py"
+   ```
+4. Shortcuts → Settings → Advanced → turn on **Allow Running Scripts** (needed either way).
+
+**Using it:** select a hash anywhere (a chat, a web page, a terminal) → right-click → **Services → Transfer via sound**. Surrounding text is fine — `<a1b2…>` or a whole line — the first 32-hex run is used. For a key instead of the menu: System Settings → Keyboard → Keyboard Shortcuts → Services → Text → *Transfer via sound*.
+
+#### Sending from Linux
+
+The same script runs on Linux. It plays with the first of `pw-play` (PipeWire), `paplay` (PulseAudio), `aplay` (ALSA) or `ffplay` it finds, and reads the clipboard with `wl-paste` (Wayland), `xclip` or `xsel` — install one of each if you have none (e.g. `sudo apt install pulseaudio-utils wl-clipboard` or `alsa-utils xclip`).
+
+```sh
+python3 tools/dtmf_send.py a1b2c3d4e5f60718293a4b5c6d7e8f90   # a hash
+python3 tools/dtmf_send.py                                     # the clipboard
+python3 tools/dtmf_send.py --selection                         # the selected text
+python3 tools/dtmf_send.py <hash> --wav hash.wav               # a file to play anywhere
+```
+
+**Select-and-press, like the Mac menu:** bind `python3 /path/to/reticulum-tdeck/tools/dtmf_send.py --selection` to a key — GNOME: Settings → Keyboard → View and Customize Shortcuts → Custom Shortcuts → **+**; KDE: System Settings → Shortcuts → Custom Shortcuts → Edit → New → Global Shortcut → Command/URL. Then select a hash anywhere and press the key. (`--selection` reads the X11/Wayland primary selection, i.e. whatever is highlighted; drop it to use the clipboard instead.) Errors show up as a desktop notification via `notify-send` when it is installed.
+
+#### Sending from any other DTMF generator
+
+Any tone generator works — a phone app, a web page, a radio — as long as it plays the right keys at a sensible pace:
+
+- **The keys, not the hash.** The T-Deck expects the hash plus a 4-digit checksum, 36 keys, with `a`–`d` as `A`–`D`, `e` as `*` and `f` as `#`. Get the string with `python3 tools/dtmf_send.py <hash> --digits` (e.g. `3#A1C9*07D2B48AA91*5C07#6B2D1*449A9C`). Enter it twice in a row if you can — the decoder slides along, so the second copy covers anything the first missed.
+- **Timing:** tones of 80–100 ms with 40–50 ms gaps. Keys must start at least 100 ms apart (faster is taken for one long tone), and the gap is what separates repeated keys like `AA`. Many generators default to 50/50 ms — right at the limit; slow them down.
+- **Level:** loud but not clipping; clipping adds harmonics that confuse `B` and `C`. Our sender plays the high tone 3 dB above the low one; most generators play them equal, which works but makes `A`–`D` the keys most likely to be missed — hold the T-Deck closer.
+- **Literal keys:** make sure the tool plays one tone per key. Some "text to DTMF" converters send each character's ASCII code instead (`1` → `049`); test with a single key first.
+- Phone keypads have no `A`–`D`, so a dialer can't send hashes containing `a`–`d`; use a generator app that has them.
 
 ### Voice Messages
 
@@ -870,7 +911,7 @@ path on stock MicroPython.
 | `tools/build_firmware.sh` | Builds custom MicroPython firmware with st7789 C driver + frozen modules |
 | `tools/flash_tdeck.sh` | Flashes firmware + uploads natmod files via mpremote |
 | `tools/tdeck_manifest.py` | MicroPython frozen module manifest |
-| `tools/dtmf_send.py` | Plays a 32-hex address as DTMF for the T-Deck's Find → `0` (stdlib only; `--wav` writes a file instead) |
+| `tools/dtmf_send.py` | Plays a 32-hex address as DTMF for the T-Deck's Find → `0` — macOS and Linux, stdlib only; `--wav` writes a file, `--digits` prints the keys for another generator |
 | `tools/mac/make_shortcut.py` | Builds, signs and imports the macOS *Transfer via sound* Quick Action |
 | `tools/gen_cp866_font.py` | Regenerates the legacy VGA Cyrillic font from the CP437 base + a BDF source |
 | `tools/gen_shell_font.py` | Converts any ≤8px-wide BDF into a font module in the CP437+CP866 slot layout (system or shell); `--fallback` fills slots the BDF lacks from another font |

@@ -100,6 +100,38 @@ def test_extract_hash():
     assert x("") is None
 
 
+def test_keys_for_other_generators():
+    # what to type into any DTMF generator: 36 keys, hex a-d/e/f as A-D/*/#
+    k = dtmf_send.keys(H)
+    assert len(k) == 36
+    assert k[:32] == H.upper().replace("E", "*").replace("F", "#")
+    assert set(k) <= set("0123456789ABCD*#")
+    assert dtmf_send.main([H, "--digits"]) == 0
+
+
+def test_player_per_platform():
+    which = lambda have: (lambda cmd: "/usr/bin/" + cmd if cmd in have else None)
+    p = dtmf_send.player_cmd
+    assert p("darwin", which({"afplay"}))[0] == "afplay"
+    assert p("linux", which({"pw-play", "paplay", "aplay"}))[0] == "pw-play"
+    assert p("linux", which({"paplay", "aplay"}))[0] == "paplay"
+    assert p("linux", which({"aplay"}))[0] == "aplay"
+    assert p("linux", which({"ffplay"}))[0] == "ffplay"
+    assert p("linux", which(set())) is None
+
+
+def test_clipboard_per_platform():
+    which = lambda have: (lambda cmd: "/usr/bin/" + cmd if cmd in have else None)
+    c = dtmf_send.paste_cmd
+    assert c("darwin", which({"pbpaste"}), False) == ["pbpaste"]
+    assert c("linux", which({"wl-paste", "xclip"}), False)[0] == "wl-paste"
+    assert c("linux", which({"xclip"}), False) == ["xclip", "-o", "-selection", "clipboard"]
+    assert c("linux", which({"xclip"}), True) == ["xclip", "-o", "-selection", "primary"]
+    assert c("linux", which({"wl-paste"}), True) == ["wl-paste", "--no-newline", "--primary"]
+    assert c("linux", which({"xsel"}), True) == ["xsel", "-o", "-p"]
+    assert c("linux", which(set()), False) is None
+
+
 # --- decoding ---------------------------------------------------------------
 
 def test_clean_8k():
