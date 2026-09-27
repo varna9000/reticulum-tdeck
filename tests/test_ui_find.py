@@ -706,6 +706,32 @@ def test_footer_offers_listen_only_with_a_mic():
     assert "0=listen" not in _draw(g).drawn()
 
 
+def test_screen_stays_on_while_listening():
+    # listening lasts up to 30 s and the default sleep is 10 s: the screen
+    # must not go dark while you wait for the tones
+    g = _mklisten()
+    assert not g._sleep_blocked()
+    g.handle_key(b"0")
+    assert g._sleep_blocked()
+    g.listen_result(None)             # timed out: nothing in progress any more
+    assert not g._sleep_blocked()
+
+
+def test_screen_stays_on_while_recording():
+    g = _mkui()
+    g.state = ui.STATE_RECORDING
+    assert g._sleep_blocked()
+
+
+def test_transfers_and_playback_still_block_sleep():
+    g = _mkui()
+    g._audio_status = "playing"
+    assert g._sleep_blocked()
+    g._audio_status = None
+    g.transfer_progress = (1, 4)
+    assert g._sleep_blocked()
+
+
 def _run():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

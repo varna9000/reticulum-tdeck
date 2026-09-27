@@ -4454,6 +4454,13 @@ class UI:
                 self._lora_field += 1
                 self.dirty = True
 
+    def _sleep_blocked(self):
+        """Something the user is watching or waiting on: a transfer, audio
+        playback, a voice recording (up to 15 s) or a DTMF listen (up to
+        30 s) -- both longer than the default 10 s sleep."""
+        return (self.transfer_progress is not None or self._audio_status is not None
+                or self.state == STATE_RECORDING or self._find_listen == "on")
+
     def _cycle_timeout(self, delta=1):
         """Step the screen inactivity timeout through the preset choices."""
         choices = _TIMEOUT_CHOICES
@@ -4924,10 +4931,9 @@ class UI:
         while True:
             now = time.ticks_ms()
 
-            # Screen timeout: turn off after inactivity (0 = never). Never
-            # sleep mid-transfer or mid-audio — the user is waiting on it.
-            _busy = self.transfer_progress is not None or self._audio_status is not None
-            if (self._screen_on and self._screen_timeout_ms and not _busy
+            # Screen timeout: turn off after inactivity (0 = never), unless
+            # something the user is waiting on is in progress.
+            if (self._screen_on and self._screen_timeout_ms and not self._sleep_blocked()
                     and time.ticks_diff(now, self._last_activity) > self._screen_timeout_ms):
                 self.sleep_screen()
                 spi_release_display()
