@@ -104,6 +104,7 @@ freeze(_root, "board_tdeck_v1.py")
 
 freeze(_root, "ui.py")
 freeze(_root, "sound.py")
+freeze(_root, "dtmf.py")
 freeze(_root, "es7210.py")
 freeze(_root, "micron.py")
 freeze(_root, "nomad_browser.py")

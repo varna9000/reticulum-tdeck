@@ -574,6 +574,10 @@ class UI:
         self._find_res = []
         self._find_sel = 0
         self._find_scroll = 0
+        # Listening for a hash played as DTMF (0 = the mic key, on an empty
+        # query): None, "on" while the mic decodes, "failed" after a timeout.
+        self._find_listen = None
+        self._listen_digits = 0
 
         # Shell session (STATE_SHELL)
         self._terminal = None        # terminal.Terminal, created on connect
@@ -769,6 +773,8 @@ class UI:
         self.on_audio_play = None     # (codec2_bytes, mode) -> None
         self.on_record_start = None   # () -> None
         self.on_record_stop = None    # (send: bool) -> None
+        self.on_listen_start = None   # () -> None; decode a DTMF hash, then listen_result()
+        self.on_listen_stop = None    # () -> None
         self.on_browse = None         # (dest_hash_bytes) -> None — open node index page
         self.on_browse_follow = None  # (url_str) -> None — follow a micron link
         self.on_browse_back = None    # () -> bool — went back (False: at stack bottom)
@@ -2212,6 +2218,7 @@ class UI:
         if tab == self.node_tab:
             return
         self.node_tab = tab
+        self._listen_end()
         self._find = False
         if tab == TAB_NET and self.on_net_seed:
             try:
@@ -2351,6 +2358,7 @@ class UI:
         self.dirty = True
 
     def _find_close(self):
+        self._listen_end()
         self._find = False
         self._find_snap = []
         self._find_res = []
@@ -2373,6 +2381,26 @@ class UI:
         self.dirty = True
 
     def _handle_find_key(self, ch):
+        if self._find_listen == "on":
+            if ch == 0x0D:
+                return True      # nothing to add yet
+            # any other key ends listening; a character also lands in the query,
+            # after the 0 that started it -- so a hash starting with 0 can
+            # still be typed
+            self._listen_end()
+            if 0x20 <= ch < 0x7F:
+                self._find_q = "0" + chr(ch)
+            self._find_filter()
+            return True
+        if self._find_listen == "failed":
+            self._find_listen = None
+            self._cache = [''] * CACHE_ROWS
+            self.dirty = True
+            if ch == 0x1B:
+                return True
+        if ch == 0x30 and not self._find_q and self.on_listen_start:   # the mic key
+            self._listen_start()
+            return True
         if ch == 0x1B:   # Esc
             self._find_close()
         elif ch == 0x08:   # Backspace
@@ -2386,10 +2414,56 @@ class UI:
             self._find_filter()
         return True
 
+    def _listen_start(self):
+        self._find_listen = "on"
+        self._listen_digits = 0
+        self._cache = [''] * CACHE_ROWS
+        self.dirty = True
+        try:
+            self.on_listen_start()
+        except Exception:
+            self._find_listen = None
+
+    def _listen_end(self):
+        """Stop listening (if on) and drop the listen panel."""
+        if self._find_listen == "on" and self.on_listen_stop:
+            try:
+                self.on_listen_stop()
+            except Exception:
+                pass
+        if self._find_listen:
+            self._find_listen = None
+            self._cache = [''] * CACHE_ROWS
+            self.dirty = True
+
+    def listen_progress(self, n):
+        """Digits decoded so far (tdeck_node, while listening)."""
+        if self._find_listen == "on" and n != self._listen_digits:
+            self._listen_digits = n
+            self.dirty = True
+
+    def listen_result(self, hash_hex):
+        """Listening ended (tdeck_node): the decoded 32-hex hash, or None on
+        a timeout. The hash goes into the query like typed text, so a heard
+        contact shows as the match and an unheard one as 'Enter: add' --
+        nothing is added until Enter. Ignored if the user cancelled."""
+        if self._find_listen != "on":
+            return
+        if hash_hex:
+            self._find_listen = None
+            self._find_q = hash_hex
+            self._find_filter()
+        else:
+            self._find_listen = "failed"
+        self._cache = [''] * CACHE_ROWS
+        self.dirty = True
+
     def _find_pick(self):
         """Add the highlighted result -- or, with no result, a full 32-hex
         hash nobody has announced yet -- to this tab's list and select it.
         Opening it is the usual click away; nothing connects by surprise."""
+        if self._find_listen:
+            return
         if self._find_res:
             dest, name = self._find_res[self._find_sel][:2]
         else:
@@ -2434,6 +2508,8 @@ class UI:
                     "Find listener: hash", "Find hub: name or hash")   # by TAB_*
     _FIND_NOT_HEARD = ("Not heard yet.", "Enter: and ask the network for a path.")
     _FIND_NO_MATCH = ("No match.", "Type the full 32-hex hash to add it.")
+    _FIND_LISTEN = ("Listening...", "Play the address from your Mac.")
+    _FIND_NOTHING = ("Nothing heard.", "Hold the T-Deck near the speaker.")
 
     def _draw_find(self):
         """Find screen: a teal title band continuing the selected tab,
@@ -2450,12 +2526,21 @@ class UI:
                           self.NEON_GREEN, self.TAB_BG)
         rows = self._find_rows()
         res = self._find_res
+        lines = None
+        if self._find_listen == "on":
+            res = ()
+            lines = self._FIND_LISTEN + ("", "digits heard: %d" % self._listen_digits)
+        elif self._find_listen == "failed":
+            res = ()
+            lines = self._FIND_NOTHING
+        elif not res:
+            lines = (self._FIND_NOT_HEARD if len(ql) == 32 and all(c in _HEX for c in ql)
+                     else self._FIND_NO_MATCH)
         if not res:
             # word-wrap to the panel (the Pro has 30 columns), then centre
             # the block both ways in the results area
             msg = []
-            for ln in (self._FIND_NOT_HEARD if len(ql) == 32 and all(c in _HEX for c in ql)
-                       else self._FIND_NO_MATCH):
+            for ln in lines:
                 cur = ""
                 for w in ln.split(" "):
                     if cur and len(cur) + 1 + len(w) > COLS - 2:
@@ -2503,9 +2588,16 @@ class UI:
         n = str(len(self._find_snap)) + " heard"
         if q:
             n = str(len(res)) + "/" + n
-        keys = "Ent=add Esc=back"
-        if self._cache[BODY_ROWS] != n:
-            self._cache[BODY_ROWS] = n
+        if self._find_listen == "on":
+            n, keys = "", "Esc=cancel"
+        elif self._find_listen == "failed":
+            n, keys = "", "0=try again Esc=back"
+        elif self.on_listen_start:
+            keys = "0=listen Ent=add Esc=back"
+        else:
+            keys = "Ent=add Esc=back"
+        if self._cache[BODY_ROWS] != n + keys:
+            self._cache[BODY_ROWS] = n + keys
             y = BODY_Y + (BODY_ROWS - 1) * CHAR_H
             self._row("", y, self.DIM_CYAN)
             self._stext(n, 8, y, self.DIM_CYAN)

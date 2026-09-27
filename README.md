@@ -383,6 +383,20 @@ When a peer sends an image — LXMF `FIELD_IMAGE` (MeshChat's image button, Side
 
 JPEG and WebP are decoded on-device using the native `tjpgd_fast` (TJpgDec) and `webp_fast` modules with nearest-neighbor scaling. The decoder is chosen from the payload's magic bytes, never from the type string the sender declared — senders label images by MIME subtype, so the same JPEG arrives as `"jpeg"` from MeshChat and `"jpg"` from Sideband. Formats with no decoder on board (PNG, GIF) still show a marker naming the format, and the viewer says so instead of failing blankly. Up to 3 recent images are cached in RAM; older images appear dimmed with a strikethrough to indicate they've been evicted.
 
+### Address by Sound (DTMF)
+
+Getting a 32-hex address onto the T-Deck without typing it: play it from a Mac as DTMF tones and let the T-Deck's microphone take it down.
+
+1. On the T-Deck, open **Find** (`m`) and press `0` (the Sym+0 mic key) on the empty query. The screen shows *Listening...*.
+2. On the Mac, select the address in any app and choose **Services → Transfer via sound** (or run `python3 tools/dtmf_send.py <hash>`; with no argument it takes the clipboard).
+3. The T-Deck chimes and the address appears in the Find query — a heard contact is highlighted, an unheard one offers *Enter: add*. Nothing is added until you press Enter.
+
+**Hold the T-Deck** about 30 cm from the speaker, at a normal volume (~60%). Lying on a desk in its case, the T-Deck's mic path loses 15–25 dB around 1.5–2 kHz — exactly where the A–D DTMF tone (1633 Hz) sits — so hex digits a–d go missing; held in the hand the notch disappears. Listening gives up after 30 s (`0` tries again); pressing any other key cancels, and the character goes into the query after the `0` — so a hash that starts with `0` can still be typed.
+
+The format: the 16 hash bytes plus a CRC-16/CCITT-FALSE, as 36 hex digits, one standard DTMF tone pair per digit (`a`–`d` → `A`–`D`, `e` → `*`, `f` → `#`), 80 ms on / 40 ms off, high tone +3 dB (standard forward twist), played twice (~9 s). There are no start/end markers: `dtmf.py` keeps the last 36 digits and reports the hash the moment their CRC checks out, so it can join mid-way through the first copy. Decoding is eight viper Goertzel filters over 20 ms blocks on the voice-memo capture path — about 6% of a core.
+
+**Setting up the Mac side** (once): `python3 tools/mac/make_shortcut.py` builds and signs the *Transfer via sound* Quick Action and opens it — click *Add Shortcut*, then enable Shortcuts → Settings → Advanced → **Allow Running Scripts**. It runs `tools/dtmf_send.py` from this checkout (standard library only), so re-run the script if you move the repo. A keyboard shortcut can be bound under System Settings → Keyboard → Keyboard Shortcuts → Services.
+
 ### Voice Messages
 
 Press `0` (the Sym+0 mic key) with an empty input field to start recording a voice message. Capture starts almost immediately — the ES7210 ADC is primed once at boot and kept clocked, so there is no per-recording warm-up (a "Warming mic..." screen appears only in the rare case the ADC needs re-priming). Start speaking when the screen shows `* Recording *`. The recording screen is deliberately **static** — any display update steals GIL cycles from the capture thread and degrades the audio, so there is no live meter or counter. Press any key to stop and send, Escape/Backspace to cancel; recording stops and sends automatically at the 15 s buffer cap. Voice messages are encoded with **Codec2 3200 bps** and sent via LXMF `FIELD_AUDIO` using link-based (DIRECT) delivery. They are compatible with [meshchat](https://github.com/liamcottle/reticulum-meshchat) and other LXMF clients that support Codec2.
@@ -400,6 +414,7 @@ Getting usable audio from the T-Deck's ES7210 ADC for Codec2 encoding required s
 
 **ES7210 register configuration:**
 - Register `0x08` must be `0x20` (slave mode). The default `0x00` is master mode — both ESP32 and ES7210 driving BCLK/LRCK causes bus contention and 88% zero samples.
+  - **Correction (measured 2026-09-27, not yet applied):** bit 0 of `0x08` is the master/slave bit, so both `0x00` and `0x20` are slave; bits 7:4 are `LRCK_RATE_MODE`. `0x20` (rate mode 2) makes the ADC convert at half the LRCK rate — that, not the async MCLK, is the `[L, R, 0, 0]` pattern below, and the stride-8 extraction then decimates without anti-aliasing (a 6 kHz harmonic measured folding into 2 kHz at −2 dB). `0x10` (rate mode 1, the chip default) gives valid samples in every frame (`[L, ·, L, ·]` at a true 16 kHz) and removes the aliasing; the ES7210's EQ bit made no difference. Adopting it needs `read_mic_chunk` to low-pass before decimating and a boot test of the priming sequence.
 - LRCK divider = 256 (registers `0x04`/`0x05`) with 4.096 MHz MCLK gives 16 kHz sample rate.
 - PGA gain at maximum (37.5 dB, register value `0x1E`) for the MEMS microphone.
 - DLL power down (`0x06 = 0x04`) works better with async PWM MCLK than DLL enabled.
@@ -815,6 +830,7 @@ A power cycle or reset button always starts with a full pool.
 | `terminal.py` | Frozen in ROM | Scrolling text-log terminal — CR/LF/BS/TAB, ANSI-strip, incremental UTF-8, scrollback |
 | `sound.py` | Frozen in ROM | I2S audio: tones, mic capture (ES7210 stride extraction), PCM playback |
 | `es7210.py` | Frozen in ROM | ES7210 ADC mic driver — I2C register config, gain, slave mode |
+| `dtmf.py` | Frozen in ROM | DTMF receiver for addresses played by `tools/dtmf_send.py` — viper Goertzel, digit voting, CRC-16 |
 | `lib/st7789py.py` | Filesystem (`/lib`, as `.mpy`) | Pure Python ST7789 driver (fallback if C driver unavailable) |
 | `lib/spleen_8x16.py` | Frozen in ROM | **System font** (8x16, 40 columns) — Spleen, BSD-2, in the CP437+CP866 slot layout; generated by `tools/gen_shell_font.py` |
 | `lib/spleen_6x12.py` | Frozen in ROM | Shell font (6x12 → 53×16), default for the rnsh screen |
@@ -854,6 +870,8 @@ path on stock MicroPython.
 | `tools/build_firmware.sh` | Builds custom MicroPython firmware with st7789 C driver + frozen modules |
 | `tools/flash_tdeck.sh` | Flashes firmware + uploads natmod files via mpremote |
 | `tools/tdeck_manifest.py` | MicroPython frozen module manifest |
+| `tools/dtmf_send.py` | Plays a 32-hex address as DTMF for the T-Deck's Find → `0` (stdlib only; `--wav` writes a file instead) |
+| `tools/mac/make_shortcut.py` | Builds, signs and imports the macOS *Transfer via sound* Quick Action |
 | `tools/gen_cp866_font.py` | Regenerates the legacy VGA Cyrillic font from the CP437 base + a BDF source |
 | `tools/gen_shell_font.py` | Converts any ≤8px-wide BDF into a font module in the CP437+CP866 slot layout (system or shell); `--fallback` fills slots the BDF lacks from another font |
 | `tools/natmod/tjpgd_fast/` | TJpgDec native module source + Makefile |

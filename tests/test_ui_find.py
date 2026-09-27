@@ -565,6 +565,146 @@ def test_setup_scrolls_to_time_zone_and_addr_and_marks_subpages():
     assert len({r[1] // ui.CHAR_H for r in marks}) >= 4, marks
     g.set_tz(0)
 
+# --- listen: a hash played as DTMF from a Mac (0 = the mic key) -------------
+
+def _mklisten():
+    g = _mkui()
+    g.listen = []
+    g.on_listen_start = lambda: g.listen.append("start")
+    g.on_listen_stop = lambda: g.listen.append("stop")
+    g.handle_key(b"m")
+    return g
+
+
+def test_0_on_empty_query_starts_listening():
+    g = _mklisten()
+    g.handle_key(b"0")
+    assert g.listen == ["start"]
+    assert g._find_listen == "on"
+    assert g._find_q == ""
+
+
+def test_0_with_a_query_is_just_a_digit():
+    g = _mklisten()
+    _type(g, "b90")
+    assert g.listen == []
+    assert g._find_q == "b90"
+
+
+def test_no_mic_means_0_is_just_a_digit():
+    g = _mkui()
+    g.handle_key(b"m")
+    g.handle_key(b"0")
+    assert g._find_listen is None
+    assert g._find_q == "0"
+
+
+def test_typing_while_listening_cancels_and_keeps_the_0():
+    # a hash that starts with 0 can still be typed: 0 starts listening, the
+    # next character cancels it and both land in the query
+    g = _mklisten()
+    _type(g, "0a")
+    assert g.listen == ["start", "stop"]
+    assert g._find_listen is None
+    assert g._find_q == "0a"
+    assert _names(g._find_res) == ["nomad-alice"]
+
+
+def test_esc_and_backspace_cancel_listening_but_stay_in_find():
+    for k in (b"\x1b", b"\x08"):
+        g = _mklisten()
+        g.handle_key(b"0")
+        g.handle_key(k)
+        assert g.listen == ["start", "stop"], k
+        assert g._find and g._find_listen is None and g._find_q == "", k
+
+
+def test_enter_and_click_do_nothing_while_listening():
+    g = _mklisten()
+    g.handle_key(b"0")
+    g.handle_key(b"\r")
+    g.nav_event("click")
+    g.handle_trackball()
+    assert g._find_listen == "on"
+    assert g.added == []
+
+
+def test_leaving_find_stops_listening():
+    g = _mklisten()
+    g.handle_key(b"0")
+    g._switch_tab(ui.TAB_NET)
+    assert g.listen == ["start", "stop"]
+    assert g._find_listen is None
+
+
+def test_result_fills_the_query_and_selects_a_heard_match():
+    g = _mklisten()
+    g.handle_key(b"0")
+    g.listen_result(RATS.hex())
+    assert g._find_listen is None
+    assert g._find_q == RATS.hex()
+    assert _names(g._find_res) == ["Ratspeak"]
+    assert g.added == [] and RATS not in g.peers   # nothing is added until Enter
+    g.handle_key(b"\r")
+    assert g.added == [RATS] and RATS in g.peers
+
+
+def test_result_for_an_unheard_hash_offers_to_add_it():
+    g = _mklisten()
+    g.handle_key(b"0")
+    g.listen_result(UNKNOWN)
+    assert g._find_q == UNKNOWN
+    assert "Not heard yet" in _draw(g).drawn()
+    g.handle_key(b"\r")
+    assert g.added == [bytes.fromhex(UNKNOWN)]
+
+
+def test_late_result_after_cancel_is_ignored():
+    g = _mklisten()
+    _type(g, "0b")
+    g.listen_result(UNKNOWN)
+    assert g._find_q == "0b"
+
+
+def test_timeout_shows_nothing_heard_and_0_retries():
+    g = _mklisten()
+    g.handle_key(b"0")
+    g.listen_result(None)
+    assert g._find_listen == "failed"
+    out = _draw(g).drawn()
+    assert "Nothing heard" in out
+    assert "0=try again" in out
+    g.handle_key(b"0")
+    assert g.listen == ["start", "start"]
+    assert g._find_listen == "on"
+
+
+def test_after_a_timeout_typing_searches_again():
+    g = _mklisten()
+    g.handle_key(b"0")
+    g.listen_result(None)
+    _type(g, "rat")
+    assert g._find_listen is None
+    assert g._find_q == "rat"
+
+
+def test_listening_panel_shows_progress():
+    g = _mklisten()
+    g.handle_key(b"0")
+    out = _draw(g).drawn()
+    assert "Listening" in out
+    assert "Esc=cancel" in out
+    g.listen_progress(12)
+    assert "digits heard: 12" in _draw(g).drawn()
+
+
+def test_footer_offers_listen_only_with_a_mic():
+    g = _mklisten()
+    assert "0=listen" in _draw(g).drawn()
+    g = _mkui()
+    g.handle_key(b"m")
+    assert "0=listen" not in _draw(g).drawn()
+
 
 def _run():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

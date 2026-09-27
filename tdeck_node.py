@@ -1385,9 +1385,74 @@ def _on_record_stop(send=False):
     else:
         _rec_pos = 0
 
+
+# --- Listen: a destination hash played as DTMF (tools/dtmf_send.py) ---
+# Find's mic key (0 on an empty query). Same plumbing as a voice recording --
+# primed free-running ADC, capture thread on core 1 -- but the audio goes
+# through dtmf.Decoder instead of into _rec_buf.
+
+_LISTEN_SECS = 30
+_listen_hit = None
+
+def _listen_thread(dec):
+    global _listen_hit
+    try:
+        if not sound.prime_mic(abort=lambda: not sound.is_recording):
+            return
+        while sound.is_recording:
+            out = sound.read_mic_chunk(_REC_CHUNK)
+            if out:
+                h = dec.feed(out, _REC_CHUNK)
+                if h:
+                    _listen_hit = h
+                    return
+    except Exception as e:
+        if DEBUG >= 1:
+            print("[Listen] thread:", e)
+
+async def _listen_loop():
+    """Orchestrates one listen: paint the panel, start the capture thread,
+    report progress, and end on a hash, the timeout, or a cancel (the UI's
+    on_listen_stop clears is_recording)."""
+    global _listen_hit
+    import uasyncio as asyncio
+    import _thread
+    import dtmf
+    dec = dtmf.Decoder()
+    _listen_hit = None
+    sound.start_recording(_REC_CHUNK)
+    for _ in range(30):      # let the Listening panel reach the glass first
+        if not gui.dirty:
+            break
+        await asyncio.sleep_ms(10)
+    if not sound.is_recording:
+        return
+    _thread.start_new_thread(_listen_thread, (dec,))
+    t0 = time.ticks_ms()
+    while sound.is_recording and _listen_hit is None:
+        if time.ticks_diff(time.ticks_ms(), t0) > _LISTEN_SECS * 1000:
+            break
+        gui.listen_progress(dec.digits_heard)
+        await asyncio.sleep_ms(100)
+    if not sound.is_recording:
+        return               # cancelled from the UI
+    sound.stop_recording()
+    h = _listen_hit
+    if DEBUG >= 1:
+        print("[Listen]", h or "timeout", "digits", dec.digits_heard)
+    if h:
+        sound.play_rx()
+    gui.listen_result(h)
+
+def _on_listen_start():
+    import uasyncio as asyncio
+    asyncio.create_task(_listen_loop())
+
 if board.HAS_MIC:
     gui.on_record_start = _on_record_start
     gui.on_record_stop = _on_record_stop
+    gui.on_listen_start = _on_listen_start
+    gui.on_listen_stop = sound.stop_recording
 gui._tcp_default = TCP_CONFIG["target_host"] + ":" + str(TCP_CONFIG["target_port"])
 
 
