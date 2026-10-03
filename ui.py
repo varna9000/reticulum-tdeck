@@ -105,6 +105,9 @@ INPUT_Y = SCREEN_H - CHAR_H      # status bar, flush with the bottom edge
 BODY_Y = 26       # main area start (6px gap below navbar for frame line)
 SEP_Y = INPUT_Y - 2              # separator line just above the input bar
 BODY_ROWS = (SEP_Y - 4 - BODY_Y) // CHAR_H
+# Setup's last row index. A 32-hex hash plus its label is exactly 40 columns,
+# so a narrower panel (the Pro) gives Addr and Id two rows each.
+_SET_MAIN_LAST = 13 if COLS >= 40 else 15
 
 # Row cache slots: the navbar, one per body row, then the footer hint line and
 # the input line. The body rows have to scale with the panel or a taller screen
@@ -270,6 +273,15 @@ _TZ = 0
 def _fmt_clock():
     t = time.localtime(time.time() + _TZ)
     return "%02d:%02d" % (t[3], t[4])
+
+
+def _hash_rows(label, h):
+    """Setup rows for a 32-hex hash: one row where 40 columns fit it, else
+    16 + 16 with the second half under the first."""
+    h = h or "?"
+    if COLS >= 40:
+        return [label + h]
+    return [label + h[:16], (" " * len(label) + h[16:]) if h[16:] else ""]
 
 
 def _tz_label(minutes):
@@ -3803,17 +3815,20 @@ class UI:
         loracfg_line = ("LoRa cfg: %dk SF%d BW%s"
                         % (c["freq_khz"], c["sf"], c["bw"]))
         tz_line = "Time zone: " + _tz_label(self._tz_min)
-        addr_line = "Addr: " + (self.my_address or "?")
+        # Our LXMF address, then our identity hash (what an rnsh listener's
+        # -a list and an RRC hub operator ask for). Inert rows.
+        tail = (_hash_rows("Addr: ", self.my_address)
+                + _hash_rows("Id:   ", self.my_identity_hash))
         items = [wifi_line, tcp_line, name_line, lora_line, vol_line,
                  kbbl_line, anc_line, sleep_line, wake_line, radio_line,
-                 loracfg_line, tz_line, addr_line]
+                 loracfg_line, tz_line] + tail
         # Rows whose click opens a sub-page get a small > marker: WiFi (the
         # scan list, only while disconnected -- connected, a click drops it),
         # TCP (the host entry, only while off), Name, Radio stats, LoRa cfg.
         subpage = (not self._wifi_connected,
                    self._wifi_connected and not self._tcp_enabled,
                    True, False, False, False, False, False, False, True, True,
-                   False, False)
+                   False) + (False,) * len(tail)
         # More rows than the v1 body holds: scroll with the selection.
         rows = BODY_ROWS - 1
         top = max(0, self._settings_idx - rows + 1)
@@ -4436,9 +4451,9 @@ class UI:
 
     def _settings_scroll_down(self):
         if self._settings_page == _SET_MAIN:
-            # 13 items: WiFi TCP Name LoRa Vol KbBL Announce Sleep Wake Radio
-            #           LoRaCfg TimeZone Addr
-            if self._settings_idx < 12:
+            # WiFi TCP Name LoRa Vol KbBL Announce Sleep Wake Radio LoRaCfg
+            # TimeZone Addr Id
+            if self._settings_idx < _SET_MAIN_LAST:
                 self._settings_idx += 1
         elif self._settings_page == _SET_WIFI_SCAN:
             if self._settings_idx < len(self._wifi_networks) - 1:

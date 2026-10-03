@@ -336,6 +336,26 @@ def test_enter_with_no_match_and_a_partial_hash_stays_put():
     assert g.added == []
 
 
+def test_setup_shows_the_identity_hash_under_addr():
+    # issue #17: the rnsh listener's -a list and RRC hub operators need our
+    # identity hash, and Find stopped showing it.
+    g = _mkui()
+    g.my_address = "12" * 16
+    g.my_identity_hash = "ab" * 16
+    g.state = ui.STATE_SETTINGS
+    g._settings_page = ui._SET_MAIN
+    g._settings_idx = 0
+    for _ in range(40):
+        g._settings_scroll_down()
+    assert g._settings_idx == 13, g._settings_idx      # Id is the last row
+    g.tft.texts = []; g.tft.rects = []
+    g._cache = [''] * ui.CACHE_ROWS
+    g.draw_settings()
+    out = g.tft.drawn()
+    assert "Addr: " + "12" * 16 in out, out
+    assert "Id:   " + "ab" * 16 in out, out            # whole hash, aligned with Addr
+
+
 # --- drawing ---------------------------------------------------------------
 
 def _draw(g):

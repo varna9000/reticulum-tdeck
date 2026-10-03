@@ -122,6 +122,24 @@ def test_layout_fits_panel():
               % (ui.CACHE_ROWS, max(ui.FOOT_SLOT, ui.INPUT_SLOT)))
 
 
+def test_setup_hash_rows():
+    print("Setup Addr/Id rows")
+    h = "ab" * 8 + "cd" * 8
+    ui = load_ui(None)
+    check("v1: a hash is one 40-column row",
+          ui._hash_rows("Id:   ", h) == ["Id:   " + h], repr(ui._hash_rows("Id:   ", h)))
+    check("v1: Setup ends at row 13 (Id)", ui._SET_MAIN_LAST == 13, repr(ui._SET_MAIN_LAST))
+    ui = load_ui((240, 320))
+    rows = ui._hash_rows("Id:   ", h)
+    check("pro: a hash splits 16 + 16 under its label",
+          rows == ["Id:   " + "ab" * 8, "      " + "cd" * 8], repr(rows))
+    check("pro: every row fits 30 columns",
+          all(len("  " + r) <= ui.COLS for r in rows), repr(rows))
+    check("pro: unknown hash stays one row short of nothing",
+          ui._hash_rows("Id:   ", None) == ["Id:   ?", ""], repr(ui._hash_rows("Id:   ", None)))
+    check("pro: Setup ends at row 15", ui._SET_MAIN_LAST == 15, repr(ui._SET_MAIN_LAST))
+
+
 def test_pro_geometry_file_matches():
     print("shipped board_geometry_tdeck_pro.py")
     ns = {}
@@ -136,6 +154,7 @@ if __name__ == "__main__":
     test_v1_unchanged()
     test_pro_portrait()
     test_layout_fits_panel()
+    test_setup_hash_rows()
     test_pro_geometry_file_matches()
     print()
     if _failures:
