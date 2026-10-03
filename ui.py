@@ -821,6 +821,7 @@ class UI:
         self._rrc_scroll = 0
         self._rrc_lines = []            # (kind, nick, text), RAM only
         self._rrc_flat = None           # rrc_ui._flatten() cache; None = stale
+        self._rrc_nick_colors = {}      # nick -> palette index, this hub session
         self._rrc_scroll_chat = 0
         self._rrc_input = ""
         self._rrc_room = None

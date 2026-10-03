@@ -2197,7 +2197,7 @@ def test_the_flattened_scrollback_is_not_rebuilt_on_every_trackball_tick():
             "a five-tick drain plus a redraw re-wrapped %d entries" % calls[0])
         # ...and the cache still follows the scrollback.
         g.rrc_line("msg", "sam", "fresh")
-        assert ("msg", "sam> fresh") in rrc_ui._flatten(g)
+        assert ("msg", "sam> fresh", "sam") in rrc_ui._flatten(g)
     finally:
         rrc_ui._wrap_line = real
     print("ok test_the_flattened_scrollback_is_not_rebuilt_on_every_trackball_tick")
@@ -2392,6 +2392,79 @@ def test_no_hub_field_reaches_the_ui_untyped():
         _exercise_every_ui_path(g)
         _assert_ui_state_is_typed(g, (t, sorted(fields)))
     print("ok test_no_hub_field_reaches_the_ui_untyped (%d cases)" % len(cases))
+
+
+def _b(c):
+    """A recorded text draw's string as bytes, whichever way it was drawn."""
+    return c[1].encode("latin-1") if isinstance(c[1], str) else bytes(c[1])
+
+
+def _nick_draws(g, nick):
+    """(fg, x) of every draw of exactly this nick's "nick>" prefix."""
+    want = (nick + ">").encode()
+    return [(c[4], c[2]) for c in g.tft.calls
+            if c[0] == "text" and _b(c) == want]
+
+
+def test_each_nick_in_a_room_gets_its_own_colour():
+    """Every row was NEON_CYAN, nick and all, so a busy room read as one
+    block of text with no way to see who said what."""
+    import rrc_ui
+    g = make_ui()
+    rrc_ui.open_hub(g, b"\x42" * 16)
+    g.state = U.STATE_RRC_CHAT
+    g._rrc_room = "#varna"
+    for nick, text in (("ana", "hi"), ("boris", "hello"), ("ana", "again"),
+                       ("chris", "yo")):
+        g.rrc_line("msg", nick, text)
+    g.rrc_line("notice", None, "ana> not a message")
+    g.tft.calls = []
+    g._cache = [''] * U.CACHE_ROWS
+    rrc_ui.draw_room(g)
+    ana, boris, chris = (_nick_draws(g, n) for n in ("ana", "boris", "chris"))
+    assert len(ana) == 2 and len(boris) == 1 and len(chris) == 1, (ana, boris, chris)
+    assert ana[0][0] == ana[1][0], "one nick, two colours"
+    assert len({ana[0][0], boris[0][0], chris[0][0]}) == 3, "nicks share a colour"
+    for fg, x in ana + boris + chris:
+        assert x == 0
+        assert fg not in (g.NEON_CYAN, g.DIM_CYAN, g.NEON_MAG, g.BG_DARK), hex(fg)
+    # the message text itself is still the body colour
+    rows = [c for c in g.tft.calls if c[0] == "text" and _b(c) == b"boris> hello"]
+    assert rows and rows[0][4] == g.NEON_CYAN, rows
+    print("ok test_each_nick_in_a_room_gets_its_own_colour")
+
+
+def test_nick_colours_survive_wrapping_actions_and_odd_nicks():
+    import rrc_ui
+    g = make_ui()
+    rrc_ui.open_hub(g, b"\x42" * 16)
+    g.state = U.STATE_RRC_CHAT
+    g._rrc_room = "#varna"
+    g.rrc_line("msg", "ana", "word " * 30)        # wraps: only row one has the nick
+    g.rrc_line("action", "ana", "waves")
+    g.rrc_line("msg", "", "no nick")
+    g.tft.calls = []
+    g._cache = [''] * U.CACHE_ROWS
+    rrc_ui.draw_room(g)
+    assert len(_nick_draws(g, "ana")) == 1
+    act = [(c[4], c[2]) for c in g.tft.calls if c[0] == "text" and _b(c) == b"ana"]
+    assert act == [(_nick_draws(g, "ana")[0][0], 2 * U.CHAR_W)], act
+    # a new hub session starts the colour assignment afresh
+    assert g._rrc_nick_colors
+    rrc_ui.open_hub(g, b"\x43" * 16)
+    assert g._rrc_nick_colors == {}
+    print("ok test_nick_colours_survive_wrapping_actions_and_odd_nicks")
+
+
+def test_a_hub_cannot_grow_the_nick_colour_table_without_bound():
+    import rrc_ui
+    g = make_ui()
+    rrc_ui.open_hub(g, b"\x42" * 16)
+    for i in range(300):
+        rrc_ui._nick_color(g, "n%d" % i)
+    assert len(g._rrc_nick_colors) <= rrc_ui.NICK_COLOR_MAX
+    assert rrc_ui._nick_color(g, "n299") == rrc_ui._nick_color(g, "n299")
+    print("ok test_a_hub_cannot_grow_the_nick_colour_table_without_bound")
 
 
 if __name__ == "__main__":

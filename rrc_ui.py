@@ -32,6 +32,7 @@ def open_hub(ui, dest):
     """
     ui._rrc_lines = []
     ui._rrc_flat = None
+    ui._rrc_nick_colors = {}
     ui._rrc_room = None
     ui._rrc_members = 0
     ui._rrc_scroll_chat = 0
@@ -100,6 +101,48 @@ def _line_color(ui, kind):
     return ui.NEON_CYAN
 
 
+# Nick colours, RGB565: yellow, green, orange, white, pink, light blue, lime,
+# coral. None is a colour a row already means something in -- cyan is message
+# text, dim cyan a notice, magenta an error.
+NICK_COLORS = (0xFFE0, 0x07E0, 0xFD20, 0xFFFF, 0xFC9F, 0x867F, 0xAFE5, 0xFB2C)
+NICK_COLOR_MAX = 32
+
+
+def _nick_color(ui, nick):
+    """This nick's colour for the hub session.
+
+    Handed out in order of first appearance, so the first eight people to
+    speak are all different -- a hash of the nick would collide at random
+    in a three-person room. The table is hub-controlled input, so it stops
+    growing at NICK_COLOR_MAX and later nicks fall back to a sum of their
+    characters: still one stable colour each.
+    """
+    table = ui._rrc_nick_colors
+    i = table.get(nick)
+    if i is None:
+        if len(table) < NICK_COLOR_MAX:
+            i = table[nick] = len(table)
+        else:
+            i = sum(ord(c) for c in nick)
+    return NICK_COLORS[i % len(NICK_COLORS)]
+
+
+def _nick_span(kind, nick, row):
+    """(column, text) of the nick as drawn at the start of a wrapped row,
+    or None. "nick>" for a message, the bare nick after "* " for an action;
+    a nick so long it wrapped is left in the body colour."""
+    if not nick or not isinstance(nick, str):
+        return None
+    shown = _ascii_keep_spacing(nick)
+    if not shown:
+        return None
+    if kind == "msg" and row.startswith(shown + ">"):
+        return 0, shown + ">"
+    if kind == "action" and row.startswith("* " + shown + " "):
+        return 2, shown
+    return None
+
+
 def _wrap_line(kind, nick, text):
     """Wrap one scrollback entry into its display rows.
 
@@ -150,8 +193,12 @@ def _flatten(ui):
     if flat is None:
         flat = []
         for kind, nick, text in ui._rrc_lines:
+            first = True
             for piece in _wrap_line(kind, nick, text):
-                flat.append((kind, piece))
+                # the nick rides on the entry's first row only: that is the
+                # one it is drawn on, and the one _draw_scrollback colours
+                flat.append((kind, piece, nick if first else None))
+                first = False
         ui._rrc_flat = flat
     return flat
 
@@ -198,8 +245,15 @@ def _draw_scrollback(ui):
         if ui._rrc_panel and y + CHAR_H > PANEL_Y and y < PANEL_Y + PANEL_H:
             continue
         if i < len(lines):
-            kind, text = lines[i]
-            ui._draw_row_cached(i + 2, _pad(text), y, _line_color(ui, kind))
+            kind, text, nick = lines[i]
+            if ui._draw_row_cached(i + 2, _pad(text), y, _line_color(ui, kind)):
+                # Who said it, in that person's colour, over the row just
+                # painted. Skipped on the 1-bit Pro, where every colour is
+                # ink and the second draw would buy nothing.
+                span = None if ui._mono else _nick_span(kind, nick, text)
+                if span:
+                    ui.tft.text(ui.font, ui._tb(span[1]), span[0] * CHAR_W, y,
+                                _nick_color(ui, nick), ui.BG_DARK)
         else:
             ui._draw_row_cached(i + 2, "", y, ui.NEON_CYAN)
 
