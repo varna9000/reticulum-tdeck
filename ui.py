@@ -767,6 +767,7 @@ class UI:
         self.my_lxma_uri = None      # "lxma://<addr>:<pubkey hex>", shown as a QR
         self._qr = None              # (uri, module grid) once encoded
         self._qr_ms = 0              # when the QR page was opened
+        self._qr_hold = False        # QR page is still keeping the screen on
         self.get_radio_stats = None  # () -> [(label, value), ...] for radio page
 
         # Callbacks (set by tdeck_node.py)
@@ -3546,6 +3547,7 @@ class UI:
                       and self.my_lxma_uri):  # Addr -> its QR code
                     self._settings_page = _SET_QR
                     self._qr_ms = time.ticks_ms()
+                    self._qr_hold = True
                     self._cache = [''] * CACHE_ROWS
                     self.dirty = True
                     return True
@@ -4542,8 +4544,17 @@ class UI:
         while someone lines a phone up on it (capped, in case it is left)."""
         return (self.transfer_progress is not None or self._audio_status is not None
                 or self.state == STATE_RECORDING or self._find_listen == "on"
-                or (self.state == STATE_SETTINGS and self._settings_page == _SET_QR
-                    and time.ticks_diff(time.ticks_ms(), self._qr_ms) < _QR_HOLD_MS))
+                or self._qr_holding())
+
+    def _qr_holding(self):
+        """True for _QR_HOLD_MS after the QR page opens. Latched off once it
+        lapses: ticks_diff wraps after ~6 days, and a page left open that
+        long would otherwise read as freshly opened and hold the screen on."""
+        if self._qr_hold and not (
+                self.state == STATE_SETTINGS and self._settings_page == _SET_QR
+                and time.ticks_diff(time.ticks_ms(), self._qr_ms) < _QR_HOLD_MS):
+            self._qr_hold = False
+        return self._qr_hold
 
     def _cycle_timeout(self, delta=1):
         """Step the screen inactivity timeout through the preset choices."""

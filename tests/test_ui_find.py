@@ -430,6 +430,14 @@ def test_screen_stays_on_while_the_qr_shows_but_not_forever():
     assert g._sleep_blocked()
     g._qr_ms -= 121000                             # two minutes later
     assert not g._sleep_blocked()
+    # ...and it stays expired: ticks_diff wraps after ~6 days and would read
+    # as "just opened" again if the old stamp were simply re-compared
+    g._qr_ms += 10 ** 9
+    assert not g._sleep_blocked()
+    g.handle_key(b"\x08")                          # reopening starts a new hold
+    g._state_change_ms = 0
+    g.handle_key(b"\r")
+    assert g._settings_page == ui._SET_QR and g._sleep_blocked()
 
 
 # --- drawing ---------------------------------------------------------------
