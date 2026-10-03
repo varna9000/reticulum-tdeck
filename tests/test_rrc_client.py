@@ -584,13 +584,23 @@ def test_who_is_asked_when_the_hub_sends_no_member_list():
     print("ok test_who_is_asked_when_the_hub_sends_no_member_list")
 
 
-def test_who_is_not_asked_when_the_hub_volunteers_the_list():
-    """A hub with include_joined_member_list set must not be asked again."""
+def test_who_is_asked_even_when_the_hub_volunteers_the_list():
+    """The JOINED member list is identity hashes and nothing else -- rrcd
+    (router.py) and the Go hub (messages.go Joined) both send bare 16-byte
+    hashes. Not asking /who on such a hub left every member a "?" in the
+    panel until they happened to speak."""
     g, link = _fresh_join(body=[b"\x11" * 16, b"\x22" * 16])
-    bodies = _sent_bodies(link)
-    assert not [b for b in bodies if isinstance(b, str) and b.startswith("/who")], bodies
+    assert "/who varna" in _sent_bodies(link), _sent_bodies(link)
     assert len(rrc_client._roster) == 2, rrc_client._roster
-    print("ok test_who_is_not_asked_when_the_hub_volunteers_the_list")
+    assert g.rosters and g.rosters[-1] == 2          # the count is known already
+    # ...and the reply names the people the list only numbered
+    rrc_client._on_packet(_env(
+        P.T_NOTICE, body="members in varna: alice (%s), bob (%s)"
+        % ("11" * 6, "22" * 6)))
+    assert rrc_client._roster[b"\x11" * 6] == "alice", rrc_client._roster
+    assert rrc_client._roster[b"\x22" * 6] == "bob", rrc_client._roster
+    assert len(rrc_client._roster) == 2, "a named member was counted twice"
+    print("ok test_who_is_asked_even_when_the_hub_volunteers_the_list")
 
 
 def test_the_who_reply_seeds_the_roster():

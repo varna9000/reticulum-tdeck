@@ -406,8 +406,11 @@ def _dispatch(data):
             _state = JOINED
             if _gui is not None:
                 _gui.rrc_joined(room)
-            if not _roster:
-                _ask_who()
+            # Asked whether or not the hub volunteered the list: that list
+            # is bare identity hashes on both hubs, so it gives the count
+            # and no names. /who is what turns the panel's "?" rows into
+            # nicks; without it they stay "?" until each person speaks.
+            _ask_who()
         else:
             # Somebody else arrived. K_SRC is the hub; the body carries the
             # identity that actually joined, and K_NICK names it. rrcd
