@@ -618,6 +618,22 @@ def test_the_who_reply_seeds_the_roster():
     print("ok test_the_who_reply_seeds_the_roster")
 
 
+def test_the_who_reply_names_members_the_go_hub_marks_away():
+    """The Go hub renders a member as "nick (12-hex) [away]" or
+    "<32-hex> [away]" (helpers.go renderMember). The suffix made the entry
+    end in "]" rather than ")", so an away member was never named."""
+    g, link = _fresh_join()
+    rrc_client._on_packet(_env(
+        P.T_NOTICE,
+        body="members in varna: alice (aabbccddeeff) [away], bob (112233445566), "
+             + "9f" * 16 + " [away]"))
+    assert rrc_client._roster.get(bytes.fromhex("aabbccddeeff")) == "alice", rrc_client._roster
+    assert rrc_client._roster.get(bytes.fromhex("112233445566")) == "bob"
+    assert bytes.fromhex("9f" * 6) in rrc_client._roster
+    assert len(rrc_client._roster) == 3, rrc_client._roster
+    print("ok test_the_who_reply_names_members_the_go_hub_marks_away")
+
+
 def test_a_who_prefix_and_a_later_full_hash_are_one_member():
     """/who gives 12 hex, JOINED gives the whole 16-byte hash, and both
     name the same person. Roster keys are truncated so they collapse into

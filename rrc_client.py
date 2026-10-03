@@ -157,6 +157,7 @@ _roster = {}            # identity_hash[:6] -> nick or None
 _roster_exact = False
 _who_until = 0          # harvest /who entries from notices until this time
 WHO_WINDOW = 20         # seconds a /who reply is still expected
+AWAY_SUFFIX = "[away]"   # the Go hub's marker on a /who entry
 _seen_ids = []          # recent K_IDs, newest last
 _limits = {}            # WELCOME limits map
 _hub_name = None
@@ -561,6 +562,9 @@ def _harvest_members(text):
     found = 0
     for entry in text.split(","):
         entry = entry.strip()
+        if entry.endswith(AWAY_SUFFIX):
+            # the Go hub marks an away member after the entry
+            entry = entry[:-len(AWAY_SUFFIX)].rstrip()
         if not entry:
             continue
         nick = None
