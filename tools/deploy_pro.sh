@@ -110,7 +110,7 @@ printf '# Written by tools/deploy_pro.sh -- see board.py.\nBOARD = "tdeck_pro"\n
     > "$TMP/board_id.py"
 add "$TMP/board_id.py" "board_id.py"
 
-for f in ui.py sound.py micron.py nomad_browser.py rnsh_proto.py rnsh_client.py \
+for f in ui.py qr.py sound.py micron.py nomad_browser.py rnsh_proto.py rnsh_client.py \
          rrc_cbor.py rrc_proto.py rrc_client.py rrc_ui.py \
          terminal.py es7210.py tdeck_node.py; do
     add "$SRC/$f" "$f"

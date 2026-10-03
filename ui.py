@@ -65,6 +65,7 @@ _SET_NODE_NAME = 4
 _SET_RADIO     = 5
 _SET_LORA      = 6   # editable radio params (freq/bw/sf/cr/tx)
 _SET_LORA_FREQ = 7   # numeric entry sub-page for the frequency
+_SET_QR        = 8   # our lxma:// contact URI as a QR code (from the Addr row)
 
 # LoRa radio config: allowed values for the editor. BW cycles through every
 # bandwidth the SX1262 has (the exact key set of the sx126x driver's
@@ -108,6 +109,8 @@ BODY_ROWS = (SEP_Y - 4 - BODY_Y) // CHAR_H
 # Setup's last row index. A 32-hex hash plus its label is exactly 40 columns,
 # so a narrower panel (the Pro) gives Addr and Id two rows each.
 _SET_MAIN_LAST = 13 if COLS >= 40 else 15
+_ADDR_ROWS = 1 if COLS >= 40 else 2      # Setup rows 12.. that are the address
+_QR_HOLD_MS = 120000                     # QR page keeps the screen on this long
 
 # Row cache slots: the navbar, one per body row, then the footer hint line and
 # the input line. The body rows have to scale with the panel or a taller screen
@@ -761,6 +764,9 @@ class UI:
         # Node identity/info (set by tdeck_node.py)
         self.my_address = None       # own LXMF address hex string
         self.my_identity_hash = None # own identity hash (for rnsh -a auth lists)
+        self.my_lxma_uri = None      # "lxma://<addr>:<pubkey hex>", shown as a QR
+        self._qr = None              # (uri, module grid) once encoded
+        self._qr_ms = 0              # when the QR page was opened
         self.get_radio_stats = None  # () -> [(label, value), ...] for radio page
 
         # Callbacks (set by tdeck_node.py)
@@ -3536,7 +3542,21 @@ class UI:
                     self._cache = [''] * CACHE_ROWS
                     self.dirty = True
                     return True
-                # idx 12 (address) is informational — Enter does nothing
+                elif (12 <= self._settings_idx < 12 + _ADDR_ROWS
+                      and self.my_lxma_uri):  # Addr -> its QR code
+                    self._settings_page = _SET_QR
+                    self._qr_ms = time.ticks_ms()
+                    self._cache = [''] * CACHE_ROWS
+                    self.dirty = True
+                    return True
+                # the Id rows are informational — Enter does nothing
+        elif self._settings_page == _SET_QR:
+            if ch == 0x1B or ch == 0x08:
+                self._settings_page = _SET_MAIN
+                self._settings_idx = 12
+                self._cache = [''] * CACHE_ROWS
+                self.dirty = True
+                return True
         elif self._settings_page == _SET_RADIO:
             if ch == 0x1B or ch == 0x08:
                 self._settings_page = _SET_MAIN
@@ -3762,6 +3782,8 @@ class UI:
             self._draw_settings_lora()
         elif self._settings_page == _SET_LORA_FREQ:
             self._draw_lora_freq()
+        elif self._settings_page == _SET_QR:
+            self._draw_settings_qr()
 
     def set_tz(self, minutes):
         """Display time zone offset in minutes (UTC-12..UTC+14, wrapping)."""
@@ -3825,11 +3847,12 @@ class UI:
                  loracfg_line, tz_line] + tail
         # Rows whose click opens a sub-page get a small > marker: WiFi (the
         # scan list, only while disconnected -- connected, a click drops it),
-        # TCP (the host entry, only while off), Name, Radio stats, LoRa cfg.
+        # TCP (the host entry, only while off), Name, Radio stats, LoRa cfg,
+        # Addr (its QR code).
         subpage = (not self._wifi_connected,
                    self._wifi_connected and not self._tcp_enabled,
                    True, False, False, False, False, False, False, True, True,
-                   False) + (False,) * len(tail)
+                   False, bool(self.my_lxma_uri)) + (False,) * (len(tail) - 1)
         # More rows than the v1 body holds: scroll with the selection.
         rows = BODY_ROWS - 1
         top = max(0, self._settings_idx - rows + 1)
@@ -3855,6 +3878,48 @@ class UI:
                 self._draw_row_cached(i + 2, "", y, self.NEON_CYAN)
 
         self._draw_settings_bottom_bar()
+
+    def _draw_settings_qr(self):
+        """Our contact URI as a QR code: dark modules on a light square with
+        the 4-module quiet zone scanners expect, as large as whole pixels
+        per module allow. Static, so it is painted once per visit."""
+        if self._cache[1] == '\x00qr':
+            return
+        uri = self.my_lxma_uri
+        if self._qr is None or self._qr[0] != uri:
+            import qr
+            self._qr = (uri, qr.encode(uri))
+        mod = self._qr[1]
+        n = 49
+        top = BODY_Y + CHAR_H
+        self.tft.fill_rect(0, BODY_Y, SCREEN_W, SEP_Y - BODY_Y, self.BG_DARK)
+        self.tft.text(self.font, "< Scan: Columba, MeshChatX", 0, BODY_Y,
+                      self.NEON_CYAN, self.BG_DARK)
+        s = min(SCREEN_W, SEP_Y - top) // (n + 8)
+        side = (n + 8) * s
+        x0 = (SCREEN_W - side) // 2
+        y0 = top + (SEP_Y - top - side) // 2
+        # The e-ink shim inks bright colours and leaves dark ones as paper,
+        # so there the "light" square is the background colour.
+        paper, ink = (self.BG_DARK, 0xFFFF) if self._mono else (0xFFFF, 0x0000)
+        self.tft.fill_rect(x0, y0, side, side, paper)
+        x0 += 4 * s
+        y0 += 4 * s
+        for y in range(n):
+            row = y * n
+            x = 0
+            while x < n:
+                if mod[row + x]:
+                    e = x + 1
+                    while e < n and mod[row + e]:
+                        e += 1
+                    self.tft.fill_rect(x0 + x * s, y0 + y * s, (e - x) * s, s, ink)
+                    x = e
+                else:
+                    x += 1
+        self._draw_settings_bottom_bar(False)
+        for i in range(1, BODY_ROWS + 1):
+            self._cache[i] = '\x00qr'
 
     def _draw_settings_radio(self):
         stats = []
@@ -3952,12 +4017,12 @@ class UI:
             self._draw_row_cached(i + 1, "", BODY_Y + i * CHAR_H, self.NEON_CYAN)
         self._draw_input_line(self.cmd_buf.decode())
 
-    def _draw_settings_bottom_bar(self):
+    def _draw_settings_bottom_bar(self, select=True):
         """(CLICK)select ... (BKSP)back: hotkeys in the main font and
         capitals like the node-list footer, one-char right margin."""
         self.tft.fill_rect(0, INPUT_Y, SCREEN_W, CHAR_H, self.BG_DARK)
         x = SCREEN_W - CHAR_W - len("(BKSP)back") * CHAR_W
-        for kx, key, rest in ((0, "CLICK", "select"), (x, "BKSP", "back")):
+        for kx, key, rest in ((0, "CLICK", "select"), (x, "BKSP", "back"))[0 if select else 1:]:
             self.tft.text(self.font, "(", kx, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
             self.tft.text(self.font, key, kx + CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
             self.tft.text(self.font, ")" + rest, kx + (len(key) + 1) * CHAR_W, INPUT_Y,
@@ -4473,9 +4538,12 @@ class UI:
     def _sleep_blocked(self):
         """Something the user is watching or waiting on: a transfer, audio
         playback, a voice recording (up to 15 s) or a DTMF listen (up to
-        30 s) -- both longer than the default 10 s sleep."""
+        30 s) -- both longer than the default 10 s sleep -- or our QR code
+        while someone lines a phone up on it (capped, in case it is left)."""
         return (self.transfer_progress is not None or self._audio_status is not None
-                or self.state == STATE_RECORDING or self._find_listen == "on")
+                or self.state == STATE_RECORDING or self._find_listen == "on"
+                or (self.state == STATE_SETTINGS and self._settings_page == _SET_QR
+                    and time.ticks_diff(time.ticks_ms(), self._qr_ms) < _QR_HOLD_MS))
 
     def _cycle_timeout(self, delta=1):
         """Step the screen inactivity timeout through the preset choices."""

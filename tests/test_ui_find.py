@@ -356,6 +356,82 @@ def test_setup_shows_the_identity_hash_under_addr():
     assert "Id:   " + "ab" * 16 in out, out            # whole hash, aligned with Addr
 
 
+_URI = ("lxma://" + "12" * 16 + ":" + "ab" * 64)
+
+
+def _setup_at(g, idx):
+    g.state = ui.STATE_SETTINGS
+    g._settings_page = ui._SET_MAIN
+    g._settings_idx = idx
+    g._state_change_ms = 0
+    g.tft.texts = []; g.tft.colors = []; g.tft.rects = []
+    g._cache = [''] * ui.CACHE_ROWS
+
+
+def test_addr_row_opens_a_qr_of_the_lxma_uri():
+    g = _mkui()
+    g.my_address = "12" * 16
+    g.my_lxma_uri = _URI
+    _setup_at(g, 12)
+    g.draw_settings()
+    y = ui.BODY_Y + 11 * ui.CHAR_H                 # Addr: 10th of the 11 rows under the title
+    assert [r for r in g.tft.rects if r[0] == 9 and r[2] == 1 and y <= r[1] < y + 16], \
+        "Addr has no sub-page marker"
+    g.handle_key(b"\r")
+    assert g._settings_page == ui._SET_QR
+    g.tft.texts = []; g.tft.rects = []
+    g.draw_settings()
+    assert "Columba" in g.tft.drawn() and "MeshChatX" in g.tft.drawn(), g.tft.drawn()
+    import qr
+    mod = qr.encode(_URI)
+    white = [r for r in g.tft.rects if r[4] == 0xFFFF]
+    assert len(white) == 1 and white[0][2] == white[0][3] == (49 + 8) * 3, white
+    wx, wy, side = white[0][0], white[0][1], white[0][2]
+    assert wx == (ui.SCREEN_W - side) // 2
+    assert wy >= ui.BODY_Y + ui.CHAR_H and wy + side <= ui.SEP_Y, (wy, side)
+    # every dark module is painted, nothing else is, 3 px each, 4 modules in
+    dark = set()
+    for x, y, w, h, c in g.tft.rects:
+        if c == 0x0000 and h == 3:
+            assert (x - wx) % 3 == 0 and (y - wy) % 3 == 0 and w % 3 == 0
+            for k in range(w // 3):
+                dark.add(((x - wx) // 3 - 4 + k, (y - wy) // 3 - 4))
+    want = {(i % 49, i // 49) for i in range(49 * 49) if mod[i]}
+    assert dark == want, (len(dark), len(want))
+    # a second draw of the unchanged page paints nothing
+    g.tft.rects = []
+    g.draw_settings()
+    assert g.tft.rects == []
+    g.handle_key(b"\x08")
+    assert g._settings_page == ui._SET_MAIN and g._settings_idx == 12
+
+
+def test_addr_row_is_inert_without_a_uri():
+    g = _mkui()
+    g.my_address = "12" * 16
+    _setup_at(g, 12)
+    g.draw_settings()
+    y = ui.BODY_Y + 11 * ui.CHAR_H
+    assert not [r for r in g.tft.rects if r[0] == 9 and r[2] == 1 and y <= r[1] < y + 16]
+    g.handle_key(b"\r")
+    assert g._settings_page == ui._SET_MAIN
+    g._settings_idx = 13                           # Id never opens anything
+    g.my_lxma_uri = _URI
+    g.handle_key(b"\r")
+    assert g._settings_page == ui._SET_MAIN
+
+
+def test_screen_stays_on_while_the_qr_shows_but_not_forever():
+    g = _mkui()
+    g.my_lxma_uri = _URI
+    _setup_at(g, 12)
+    assert not g._sleep_blocked()
+    g.handle_key(b"\r")
+    assert g._sleep_blocked()
+    g._qr_ms -= 121000                             # two minutes later
+    assert not g._sleep_blocked()
+
+
 # --- drawing ---------------------------------------------------------------
 
 def _draw(g):

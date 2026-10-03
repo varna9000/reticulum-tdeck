@@ -1310,6 +1310,8 @@ gui.on_tz = set_tz_pref
 gui.on_delete_peer = forget_peer
 gui.get_radio_stats = get_radio_stats
 gui.my_address = dest.hexhash
+# The contact URI Columba and MeshChatX scan: address + full public key
+gui.my_lxma_uri = "lxma://" + dest.hexhash + ":" + rns.identity.get_public_key().hex()
 def _on_audio_play(audio_data, audio_mode):
     import uasyncio as asyncio
     asyncio.create_task(_play_audio(audio_data, audio_mode))
