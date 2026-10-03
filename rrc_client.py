@@ -166,6 +166,7 @@ _hub_name = None
 # The spec scopes the ban to the banning hub, and it holds for the session.
 _banned = set()
 _backoff_until = 0      # time.time() before which sends are refused
+_quiet_list_until = 0   # time.time() before which one /list reply is not printed
 
 
 def is_active():
@@ -315,6 +316,7 @@ def _dispatch(data):
     text rather than parsed, because its wording is an unversioned
     formatting choice that differs between hub implementations."""
     global _state, _limits, _hub_name, _backoff_until, _room, _roster_exact
+    global _quiet_list_until
 
     env = P.parse(data)
     if env is None:
@@ -366,7 +368,9 @@ def _dispatch(data):
         # hub volunteers nothing beyond an optional MOTD -- this one sent
         # no greeting at all, leaving a blank screen that read as a hang.
         # One small MSG buys the room list; replying to PING from in here
-        # is the same pattern.
+        # is the same pattern. This one is printed: a quiet refresh left
+        # over from the previous hub must not swallow it.
+        _quiet_list_until = 0
         list_rooms()
         return
 
@@ -462,7 +466,16 @@ def _dispatch(data):
     if t == P.T_NOTICE:
         if isinstance(body, str):
             _harvest_members(body)
-            _line("notice", None, _hash_room_list(body))
+            text = _hash_room_list(body)
+            if _is_room_list(body) and _quiet_list_until:
+                # The picker asked (refresh_rooms) and shows the rooms
+                # itself; printing the reply too put another copy of the
+                # list in the console on every click.
+                quiet = time.time() < _quiet_list_until
+                _quiet_list_until = 0
+                if quiet:
+                    return
+            _line("notice", None, text)
         return
 
     if t == P.T_ERROR:
@@ -566,6 +579,12 @@ def _harvest_members(text):
 
 
 LIST_HEADER = "Registered public rooms:"
+LIST_QUIET_S = 30       # how long refresh_rooms() waits for its reply
+
+
+def _is_room_list(text):
+    """Is this NOTICE body rrcd's /list reply? Its exact header line only."""
+    return bool(text) and text.split("\n", 1)[0].strip() == LIST_HEADER
 
 
 def _hash_room_list(text):
@@ -587,11 +606,9 @@ def _hash_room_list(text):
     full of its MOTD. Captured names are BARE -- join() owns the "#" and
     the wire must never carry one.
     """
-    if not text:
+    if not _is_room_list(text):
         return text
     lines = text.split("\n")
-    if not lines or lines[0].strip() != LIST_HEADER:
-        return text
     out = [lines[0]]
     rooms = []
     for line in lines[1:]:
@@ -668,6 +685,21 @@ def list_rooms():
         return False
     return _send_env(P.make_envelope(P.T_MSG, src=_my_identity.hash,
                                      body="/list", nick=_nick()))
+
+
+def refresh_rooms():
+    """list_rooms() for the room picker: the reply updates the picker's rows
+    and is not printed in the console, where the first list already is.
+
+    Only the next room list is quiet, and only for LIST_QUIET_S -- rrcd can
+    fail to send an oversize list at all, and a /list the user types later
+    must still be answered on screen.
+    """
+    global _quiet_list_until
+    if not list_rooms():
+        return False
+    _quiet_list_until = time.time() + LIST_QUIET_S
+    return True
 
 
 def say(text):

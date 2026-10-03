@@ -1569,6 +1569,39 @@ def test_the_fake_link_cannot_outgrow_the_real_one():
     print("ok test_the_fake_link_cannot_outgrow_the_real_one")
 
 
+def test_a_picker_refresh_does_not_reprint_the_room_list():
+    """Opening the room picker re-asks the hub for /list so its rows are
+    current. The reply used to be printed into the console as well, so
+    every trackball click added another copy of the same list."""
+    g, link = _session()
+    g.lines = []
+    body = "Registered public rooms:\n  varna - chat here\n  general"
+    assert rrc_client.refresh_rooms()
+    assert P.parse(link.sent[-1])[P.K_BODY] == "/list"
+    rrc_client._on_packet(_env(P.T_NOTICE, body=body))
+    assert g.lines == [], g.lines                       # not printed...
+    assert g.rooms[-1] == [("varna", "chat here"), ("general", "")]   # ...but the picker has it
+    # Only that one reply is quiet: a /list the user types is still answered
+    # on screen, and so is every other notice.
+    rrc_client._on_packet(_env(P.T_NOTICE, body=body))
+    assert len(g.lines) == 1 and g.lines[0][0] == "notice", g.lines
+    print("ok test_a_picker_refresh_does_not_reprint_the_room_list")
+
+
+def test_a_quiet_refresh_swallows_only_a_room_list_and_expires():
+    g, link = _session()
+    g.lines = []
+    assert rrc_client.refresh_rooms()
+    rrc_client._on_packet(_env(P.T_NOTICE, body="Welcome to the hub"))
+    assert [l[2] for l in g.lines] == ["Welcome to the hub"], g.lines
+    # A reply that never came must not swallow a list asked for much later.
+    rrc_client._quiet_list_until = rrc_client.time.time() - 1
+    rrc_client._on_packet(_env(P.T_NOTICE, body="Registered public rooms:\n  varna"))
+    assert len(g.lines) == 2, g.lines
+    assert rrc_client._quiet_list_until == 0
+    print("ok test_a_quiet_refresh_swallows_only_a_room_list_and_expires")
+
+
 if __name__ == "__main__":
     for name in list(globals()):
         if name.startswith("test_"):

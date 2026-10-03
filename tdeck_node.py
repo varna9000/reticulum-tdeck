@@ -1341,7 +1341,7 @@ gui.on_rrc_connect = rrc_client.connect
 gui.on_rrc_join = rrc_client.join
 gui.on_rrc_say = rrc_client.say
 gui.on_rrc_part = rrc_client.part
-gui.on_rrc_list = rrc_client.list_rooms
+gui.on_rrc_list = rrc_client.refresh_rooms
 gui.on_rrc_disconnect = rrc_client.disconnect
 gui.on_rrc_mention = rrc_client.mention_for
 # The composer's byte budget: the hub's WELCOME limit against the live link
