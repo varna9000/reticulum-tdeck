@@ -322,6 +322,24 @@ def test_drain_is_bounded():
           "fifo emptied, drain was unbounded")
 
 
+def test_clear_int():
+    # get_key() drains the FIFO but never writes INT_STAT, so the chip holds
+    # INT low; once INT is a sleep wake source that would wake the ESP32
+    # straight back up. clear_int() writes the flag without draining.
+    i2c, _, kb = new()
+    i2c.writes.clear()
+    kb.clear_int()
+    check("clear_int writes 0x03 to INT_STAT", i2c.writes == [(0x02, 0x03)], repr(i2c.writes))
+    i2c.press(5)
+    i2c.writes.clear()
+    kb.clear_int()
+    check("clear_int does not drain the FIFO", len(i2c.fifo) == 1)
+    i2c.writes.clear()
+    kb.flush()
+    check("flush drains then clears", i2c.fifo == [] and i2c.writes[-1] == (0x02, 0x03),
+          repr(i2c.writes))
+
+
 if __name__ == "__main__":
     test_matrix_configured()
     test_plain_letter()
@@ -342,6 +360,7 @@ if __name__ == "__main__":
     test_modifier_and_key_in_one_call()
     test_releases_skipped()
     test_drain_is_bounded()
+    test_clear_int()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

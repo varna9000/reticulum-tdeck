@@ -202,6 +202,13 @@ class TCA8418:
         """Drain the event FIFO and clear pending interrupts."""
         while self.key_count():
             self._r(_REG_KEY_EVENT_A)
+        self.clear_int()
+
+    def clear_int(self):
+        """De-assert the INT line. get_key() drains the FIFO but leaves the
+        key-event flag set, and the chip holds INT low until the flag is
+        written -- which matters once INT is a wake source: an INT still
+        low at sleep entry wakes the ESP32 straight back up."""
         self._w(_REG_INT_STAT, 0x03)
 
     def key_count(self):
