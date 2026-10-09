@@ -107,6 +107,11 @@ def power_up():
     if BOARD_1V8_EN is not None:        # V1.1/MAX have no 1.8 V gate (tdeck_pro_rev)
         Pin(BOARD_1V8_EN, Pin.OUT).value(1)
     Pin(LORA_EN, Pin.OUT).value(1)
+    # The GPS receiver's LDO enable idles HIGH on a V1.1 (bench 2026-10-09:
+    # GPIO 39 read 1 and the MIA-M10Q was streaming NMEA with nothing driving
+    # it; the V1.0 sheet shows a pull-down). Nothing here reads the GPS, so
+    # hold it off: it would otherwise run through every sleep.
+    Pin(config.GPS_EN, Pin.OUT).value(0)
     if HAS_AUDIO:              # True here only when the config or the saved profile says so
         # The DAC sits in the module slot, behind its own power enable.
         Pin(getattr(config, "AUDIO_EN", 41), Pin.OUT).value(1)

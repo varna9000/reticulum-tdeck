@@ -290,6 +290,10 @@ check("None from before_sleep sleeps as before", p.step() == "timer" and len(lp.
 pro_src = open(os.path.join(ROOT, "board_tdeck_pro.py")).read()
 check("pro: before_sleep vetoes on pending key events", "if keyboard.key_count():" in pro_src and "return False" in pro_src)
 
+print("pro: unused GPS receiver is switched off at boot (source scan)")
+pro_src = open(os.path.join(ROOT, "board_tdeck_pro.py")).read()
+check("pro: GPS_EN driven low in power_up", "Pin(config.GPS_EN, Pin.OUT).value(0)" in pro_src)
+
 if _failures:
     print("\n%d FAILED: %s" % (len(_failures), ", ".join(_failures)))
     sys.exit(1)
