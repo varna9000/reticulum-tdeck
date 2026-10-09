@@ -294,6 +294,15 @@ print("pro: unused GPS receiver is switched off at boot (source scan)")
 pro_src = open(os.path.join(ROOT, "board_tdeck_pro.py")).read()
 check("pro: GPS_EN driven low in power_up", "Pin(config.GPS_EN, Pin.OUT).value(0)" in pro_src)
 
+print("poll cap")
+p, lp, bd, gui, iface, clock, logs = _mk()
+bd.SLEEP_POLL_MS = 300
+clock[0] += power.QUIET_MS
+p.step()
+check("board poll cap used", lp.calls[0][0] == 300, repr(lp.calls))
+v1_src = open(os.path.join(ROOT, "board_tdeck_v1.py")).read()
+check("v1 declares SLEEP_POLL_MS = 300", "SLEEP_POLL_MS = 300" in v1_src)
+
 if _failures:
     print("\n%d FAILED: %s" % (len(_failures), ", ".join(_failures)))
     sys.exit(1)

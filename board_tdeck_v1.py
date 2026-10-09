@@ -184,6 +184,12 @@ _tb_pins = {}
 # Nothing else configures the keyboard INT pad (get_key() polls over I2C);
 # an unconfigured pad reads 0, the wake level, and wakes the chip at once.
 _kbd_int = Pin(config.KBD_INT, Pin.IN, Pin.PULL_UP)
+# The keyboard MCU never drives that INT line (bench 2026-10-09: 0 low
+# samples in 20 s of typing), so a key cannot wake the chip. Sleep in 300 ms
+# slices instead; the keyboard loop polls in between, which still spends
+# ~98 % of the time asleep. The line stays in the table in case a keyboard
+# firmware ever asserts it.
+SLEEP_POLL_MS = 300
 
 
 def _tb_level(gpio):

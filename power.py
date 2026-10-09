@@ -167,8 +167,12 @@ class Power:
             # pressed since the last keyboard poll): let the UI take it and
             # wake the screen rather than sleep through it.
             return self._note("key pending")
+        # A board whose keys cannot wake the chip (the v1: its keyboard MCU
+        # never drives INT) sets SLEEP_POLL_MS so the keyboard loop gets to
+        # poll between short sleeps.
+        cap = getattr(self.board, "SLEEP_POLL_MS", None) or SLEEP_CAP_MS
         try:
-            cause = self.lp.sleep(SLEEP_CAP_MS, pins)
+            cause = self.lp.sleep(cap, pins)
         except Exception as e:
             self.board.after_wake()
             self._backoff_until = self.ticks_ms() + BACKOFF_MS
