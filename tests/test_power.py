@@ -247,12 +247,13 @@ check("no lora interface", p.step() == "lora offline")
 
 p, lp, bd, gui, iface, clock, logs = _mk()
 p.step()
-check("summary before any sleep names the reason", p.summary() == "off: traffic", p.summary())
+check("summary before any sleep names the reason", p.summary() == "off traffic", p.summary())
 p.step()
 check("reason logged once", logs.count("power: no sleep: traffic") == 1, repr(logs))
 clock[0] += power.QUIET_MS
 p.step()
-check("summary counts", p.summary() == "1 (lora 0 key 0 t 1)", p.summary())
+check("summary counts", p.summary() == "1 l0 k0 t1", p.summary())
+check("summary fits a 14-char Radio value", len(p.summary()) <= 14, p.summary())
 
 print("summary remembers the last reason seen while dark")
 p, lp, bd, gui, iface, clock, logs = _mk()
@@ -261,11 +262,16 @@ clock[0] += power.QUIET_MS
 p.step()                                   # dark, blocked by wifi
 gui._screen_on = True
 p.step()                                   # user opened a page to look
-check("screen-on pass does not hide the dark reason", p.summary() == "off: wifi", p.summary())
+check("screen-on pass does not hide the dark reason", p.summary() == "off wifi", p.summary())
 p, lp, bd, gui, iface, clock, logs = _mk()
 gui._screen_on = True
 p.step()
-check("never dark yet", p.summary() == "off: never idle", p.summary())
+check("never dark yet", p.summary() == "off never idle", p.summary())
+p.lora_iface = lambda: None
+gui._screen_on = False
+clock[0] += power.QUIET_MS
+p.step()
+check("long reasons are abbreviated to fit", p.summary() == "off no lora", p.summary())
 
 print("wake input pads are configured as inputs (source scan)")
 pro_src = open(os.path.join(ROOT, "board_tdeck_pro.py")).read()

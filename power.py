@@ -180,16 +180,20 @@ class Power:
         return kind
 
     def summary(self):
-        """One Radio-page value: '12 (lora 9 key 2 t 1)' or 'off: usb'."""
+        """One Radio-page value, at most 14 characters (the Pro's 30-column
+        page leaves that much after the label): '12 l9 k2 t1' or 'off wifi'."""
         c = self.counts
         total = c["lora"] + c["input"] + c["timer"] + c["other"]
         if total == 0:
-            return "off: " + (self.dark_reason or "never idle")
-        s = "%d (lora %d key %d t %d" % (total, c["lora"], c["input"], c["timer"])
+            r = self.dark_reason or "never idle"
+            return "off " + _SHORT_REASON.get(r, r)
+        s = "%d l%d k%d t%d" % (total, c["lora"], c["input"], c["timer"])
         if c["other"]:
-            s += " ? %d" % c["other"]
-        return s + ")"
+            s += " ?%d" % c["other"]
+        return s
 
+# Reasons as shown on the Radio page, where the value has 14 characters.
+_SHORT_REASON = {"screen on": "screen", "ui busy": "busy", "lora offline": "no lora"}
 
 instance = None
 
