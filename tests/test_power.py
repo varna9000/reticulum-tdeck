@@ -127,6 +127,10 @@ class FakeBoard:
         self.before = 0
         self.after = 0
         self.pins = ((5, 1, 1, "lora"), (15, 0, 0, "input"))
+        self.powered = False
+
+    def usb_power(self):
+        return self.powered
 
     def sleep_wake_pins(self):
         return self.pins
@@ -302,6 +306,16 @@ p.step()
 check("board poll cap used", lp.calls[0][0] == 300, repr(lp.calls))
 v1_src = open(os.path.join(ROOT, "board_tdeck_v1.py")).read()
 check("v1 declares SLEEP_POLL_MS = 300", "SLEEP_POLL_MS = 300" in v1_src)
+
+print("board usb_power gate")
+p, lp, bd, gui, iface, clock, logs = _mk()
+clock[0] += power.QUIET_MS
+bd.powered = True
+check("board reports USB power: no sleep even with a silent bus", p.step() == "usb" and lp.calls == [])
+p.sleep_on_usb = True
+check("override still applies", p.step() == "timer")
+check("CONTRACT in test_board lists usb_power", "usb_power" in open(os.path.join(ROOT, "tests", "test_board.py")).read())
+check("POLL_MS short enough for 300 ms sleep slices", power.POLL_MS <= 100, power.POLL_MS)
 
 if _failures:
     print("\n%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

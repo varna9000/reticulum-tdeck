@@ -93,6 +93,10 @@ attach_ui = _impl.attach_ui
 # GPIO wake rewrites it to level-sensitive and lowpower puts it back.
 # before_sleep() / after_wake() bracket each sleep; before_sleep() may
 # return False to veto this pass (input pending that the UI has not seen).
+# usb_power() is True while external power is present, sensed without USB
+# enumeration (charger status on the Pro, the battery ADC on the v1): the
+# OTG frame counter alone cannot see a cable plugged into a sleeping deck.
+usb_power = _impl.usb_power
 sleep_wake_pins = _impl.sleep_wake_pins
 before_sleep = _impl.before_sleep
 after_wake = _impl.after_wake

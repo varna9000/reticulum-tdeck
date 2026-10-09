@@ -347,6 +347,18 @@ def sleep_wake_pins():
     )
 
 
+BQ25896_ADDR = 0x6B
+
+
+def usb_power():
+    """VBUS present, from the charger's REG11 VBUS_GD bit. Instant, and
+    independent of whether the host has enumerated us yet."""
+    try:
+        return bool(i2c.readfrom_mem(BQ25896_ADDR, 0x11, 1)[0] & 0x80)
+    except Exception:
+        return False
+
+
 def before_sleep():
     """None to sleep, False to veto: a key pressed since the last poll is
     still in the TCA8418 FIFO, and the chip re-asserts INT while the FIFO

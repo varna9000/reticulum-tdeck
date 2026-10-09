@@ -13,7 +13,7 @@
 QUIET_MS = 1000        # radio byte counters unchanged for this long
 SLEEP_CAP_MS = 20000   # longest single sleep; due asyncio tasks run after
 BACKOFF_MS = 60000     # after a failed sleep call
-POLL_MS = 250          # how often the loop re-evaluates
+POLL_MS = 100          # how often the loop re-evaluates (awake gap between sleeps)
 
 _FIELDS = ("screen_on", "sleep_blocked", "wifi_on", "lora_online",
            "usb", "sleep_on_usb", "quiet_ms", "backoff_ms")
@@ -152,7 +152,10 @@ class Power:
             sleep_blocked=bool(self.gui._sleep_blocked()),
             wifi_on=bool(self.wifi_on()),
             lora_online=bool(iface is not None and iface.online),
-            usb=bool(self.lp.usb_connected()),
+            # Two signals: the board's power sense (instant, no enumeration
+            # needed -- a cable plugged into a sleeping deck must stop the
+            # next sleep) and the OTG frame counter (a host actually talking).
+            usb=bool(self.board.usb_power() or self.lp.usb_connected()),
             sleep_on_usb=bool(self.sleep_on_usb),
             quiet_ms=self._quiet_ms(iface),
             backoff_ms=self._backoff_ms(),

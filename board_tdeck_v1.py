@@ -208,6 +208,17 @@ def sleep_wake_pins():
     ) + power.opposite_levels(_TB_MOVE, _tb_level, Pin.IRQ_FALLING)
 
 
+def usb_power():
+    """External power, from the battery ADC: with USB in, the sensed rail
+    sits above any lithium cell voltage (the Radio page uses the same 4.3 V
+    rule to print 'USB')."""
+    try:
+        v = battery_voltage()
+    except Exception:
+        return False
+    return v is not None and v >= 4.3
+
+
 def before_sleep():
     pass
 
