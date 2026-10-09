@@ -307,6 +307,20 @@ check("override still applies", p.step() == "timer")
 check("CONTRACT in test_board lists usb_power", "usb_power" in open(os.path.join(ROOT, "tests", "test_board.py")).read())
 check("POLL_MS short enough for 300 ms sleep slices", power.POLL_MS <= 100, power.POLL_MS)
 
+print("summary shows the current blocker, not only history")
+p, lp, bd, gui, iface, clock, logs = _mk()
+clock[0] += power.QUIET_MS
+check("slept once: counts", p.step() == "timer" and p.summary() == "1 l0 k0 t1", p.summary())
+bd.powered = True
+p.step()                                   # dark, now blocked by the cable
+check("blocked after sleeping: shows the blocker", p.summary() == "off usb", p.summary())
+gui._screen_on = True
+p.step()                                   # user looks at the page
+check("looking does not hide it", p.summary() == "off usb", p.summary())
+gui._screen_on = False
+bd.powered = False
+check("unblocked and asleep again: counts", p.step() == "timer" and p.summary() == "2 l0 k0 t2", p.summary())
+
 if _failures:
     print("\n%d FAILED: %s" % (len(_failures), ", ".join(_failures)))
     sys.exit(1)

@@ -101,6 +101,7 @@ class Power:
         self.counts = {k: 0 for k in WAKE_KINDS}
         self.last_reason = None
         self.dark_reason = None           # last reason seen with the screen off
+        self._blocked = False             # the latest dark pass refused to sleep
         self._last_bytes = None
         self._last_change = ticks_ms()
         self._backoff_until = None
@@ -133,6 +134,7 @@ class Power:
             # page to find out turns the screen on, so "screen on" must not
             # overwrite it.
             self.dark_reason = reason
+            self._blocked = True
         if reason != self.last_reason:
             self.last_reason = reason
             self.log("power: no sleep: " + reason)
@@ -179,6 +181,7 @@ class Power:
         kind = classify(cause, pins, self.read_pin, self.lp.WAKE_TIMER, self.lp.WAKE_GPIO)
         self.counts[kind] += 1
         self.last_reason = None
+        self._blocked = False
         if kind == "input":
             self.gui.wake_screen()
         return kind
@@ -188,7 +191,10 @@ class Power:
         page leaves that much after the label): '12 l9 k2 t1' or 'off wifi'."""
         c = self.counts
         total = c["lora"] + c["input"] + c["timer"] + c["other"]
-        if total == 0:
+        if total == 0 or self._blocked:
+            # Nothing yet, or the latest dark pass refused: say why. Counts
+            # alone would read as "still sleeping" to someone who just
+            # plugged a cable in.
             r = self.dark_reason or "never idle"
             return "off " + _SHORT_REASON.get(r, r)
         s = "%d l%d k%d t%d" % (total, c["lora"], c["input"], c["timer"])
