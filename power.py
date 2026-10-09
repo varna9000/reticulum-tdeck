@@ -58,13 +58,6 @@ def may_sleep(s):
     return None
 
 
-def opposite_levels(gpios, read, restore):
-    """Wake-table entries for lines that idle at either level (the v1's
-    trackball quadrature pins): arm each for the opposite of what it reads
-    now, so any movement wakes the chip."""
-    return tuple((g, 0 if read(g) else 1, restore, "input") for g in gpios)
-
-
 WAKE_KINDS = ("lora", "input", "timer", "other")
 
 

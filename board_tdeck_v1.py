@@ -172,40 +172,27 @@ def set_kbd_backlight(on):
 
 
 # --- light sleep -----------------------------------------------------------
-# DIO1 (45) and the keyboard INT (46) are not RTC pins, which is why the
-# wake goes through the lowpower module rather than machine.lightsleep().
-# The trackball's four movement lines idle at whichever level the last
-# detent left them, so each is armed for the opposite of its level at sleep
-# entry; ui.py installs falling-edge ISRs on them and an any-edge ISR on the
-# click (press starts the long-press timer, release decides).
-
-_TB_MOVE = (config.TB_UP, config.TB_DOWN, config.TB_LEFT, config.TB_RIGHT)
-_tb_pins = {}
-# Nothing else configures the keyboard INT pad (get_key() polls over I2C);
-# an unconfigured pad reads 0, the wake level, and wakes the chip at once.
-_kbd_int = Pin(config.KBD_INT, Pin.IN, Pin.PULL_UP)
-# The keyboard MCU never drives that INT line (bench 2026-10-09: 0 low
-# samples in 20 s of typing), so a key cannot wake the chip. Sleep in 300 ms
-# slices instead; the keyboard loop polls in between, which still spends
-# ~98 % of the time asleep. The line stays in the table in case a keyboard
-# firmware ever asserts it.
+# DIO1 (45) is not an RTC pin, which is why the wake goes through the
+# lowpower module rather than machine.lightsleep(). Only two lines can wake
+# this board (bench 2026-10-09, per-line probe):
+#   - DIO1 and the trackball click (GPIO 0, any-edge ISR in ui.py) both hold
+#     a full timer sleep;
+#   - the keyboard MCU never drives its INT line (GPIO 46, a strapping pin
+#     with no usable pull-up) and, armed low, it wakes the chip ~23 ms into
+#     every sleep; it is not in the table and its pad is left alone;
+#   - the trackball movement lines (3, 15, 1, 2) flip on their own at rest,
+#     so arming them for "the opposite level" woke the chip within 10 ms.
+# Keys therefore arrive by polling: SLEEP_POLL_MS keeps each sleep short so
+# the keyboard loop runs in between (still ~75 % of the time asleep with the
+# 100 ms awake gap).
 SLEEP_POLL_MS = 300
 
 
-def _tb_level(gpio):
-    p = _tb_pins.get(gpio)
-    if p is None:
-        p = _tb_pins[gpio] = Pin(gpio)   # no mode change: ui.py owns the pin
-    return p.value()
-
-
 def sleep_wake_pins():
-    import power
     return (
-        (45, 1, Pin.IRQ_RISING, "lora"),                          # LORA_DIO1
-        (config.KBD_INT, 0, 0, "input"),                          # keyboard MCU INT
-        (config.TB_CLICK, 0, Pin.IRQ_FALLING | Pin.IRQ_RISING, "input"),
-    ) + power.opposite_levels(_TB_MOVE, _tb_level, Pin.IRQ_FALLING)
+        (45, 1, Pin.IRQ_RISING, "lora"),                                 # LORA_DIO1
+        (config.TB_CLICK, 0, Pin.IRQ_FALLING | Pin.IRQ_RISING, "input"),  # ball click
+    )
 
 
 def usb_power():

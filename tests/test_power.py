@@ -52,16 +52,6 @@ check("quiet exactly at threshold allows", power.may_sleep(_ok_state(quiet_ms=po
 check("backoff blocks", power.may_sleep(_ok_state(backoff_ms=1)) == "backoff")
 check("first reason wins", power.may_sleep(_ok_state(screen_on=True, usb=True)) == "screen on")
 
-print("opposite_levels")
-levels = {3: 1, 15: 0, 1: 1, 2: 1}
-t = power.opposite_levels((3, 15, 1, 2), lambda g: levels[g], 2)
-check("four entries", len(t) == 4, repr(t))
-check("high line armed low", t[0] == (3, 0, 2, "input"), repr(t[0]))
-check("low line armed high", t[1] == (15, 1, 2, "input"), repr(t[1]))
-check("restore carried", all(e[2] == 2 for e in t))
-check("kind is input", all(e[3] == "input" for e in t))
-check("empty input", power.opposite_levels((), lambda g: 0, 2) == ())
-
 print("board wake tables (source scan)")
 import re
 
@@ -80,7 +70,8 @@ check("pro: KBD_INT wakes low, no restore", "(config.KBD_INT, 0, 0, \"input\")" 
 check("v1 table present", v1 != "")
 check("v1: DIO1 45 restores IRQ_RISING", "(45, 1, Pin.IRQ_RISING, \"lora\")" in v1, v1)
 check("v1: click restores both edges", "Pin.IRQ_FALLING | Pin.IRQ_RISING, \"input\")" in v1, v1)
-check("v1: movement lines via opposite_levels", "opposite_levels(_TB_MOVE, _tb_level, Pin.IRQ_FALLING)" in v1, v1)
+check("v1: no trackball movement lines (they self-toggle at rest)", "opposite_levels" not in v1 and "_TB_MOVE" not in v1, v1)
+check("v1: keyboard INT 46 is not a wake line (glitches low ~23 ms into every sleep)", "config.KBD_INT" not in v1, v1)
 
 print("classify")
 PINS = ((5, 1, 1, "lora"), (15, 0, 0, "input"))
@@ -281,7 +272,6 @@ print("wake input pads are configured as inputs (source scan)")
 pro_src = open(os.path.join(ROOT, "board_tdeck_pro.py")).read()
 v1_src = open(os.path.join(ROOT, "board_tdeck_v1.py")).read()
 check("pro: KBD_INT pad is a pulled-up input", "Pin(config.KBD_INT, Pin.IN, Pin.PULL_UP)" in pro_src)
-check("v1: KBD_INT pad is a pulled-up input", "Pin(config.KBD_INT, Pin.IN, Pin.PULL_UP)" in v1_src)
 
 print("before_sleep veto")
 p, lp, bd, gui, iface, clock, logs = _mk()
