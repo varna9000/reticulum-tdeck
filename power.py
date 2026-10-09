@@ -176,22 +176,27 @@ class Power:
 
     def step(self):
         iface = self.lora_iface()
+        quiet_ms = self._quiet_ms(iface)
         s = State(
             screen_on=bool(self.gui._screen_on),
             sleep_blocked=bool(self.gui._sleep_blocked()),
             wifi_on=bool(self.wifi_on()),
             lora_online=bool(iface is not None and iface.online),
-            usb=False,                    # probed below, only once the free gates pass
+            usb=False,                    # probed below, once the UI-side gates pass
             sleep_on_usb=bool(self.sleep_on_usb),
-            quiet_ms=self._quiet_ms(iface),
+            quiet_ms=QUIET_MS,            # the traffic gate is applied after the probe
             backoff_ms=self._backoff_ms(),
         )
         reason = may_sleep(s)
         if reason is not None:
             return self._note(reason)
         # The USB probe costs a 3 ms stall plus an I2C or ADC read, so it
-        # runs only when everything else already says "sleep".
+        # waits for the screen/UI/WiFi/LoRa gates -- never while the user is
+        # typing. It runs ahead of the sub-second traffic gate so that the
+        # Radio row says "usb" on a cable rather than whichever packet
+        # landed last.
         s.usb = self._usb()
+        s.quiet_ms = quiet_ms
         reason = may_sleep(s)
         if reason is not None:
             return self._note(reason)

@@ -375,10 +375,16 @@ p.step()
 check("screen on: no USB probe", probes[0] == 0, probes[0])
 gui._screen_on = False
 p.step()                                             # traffic (quiet window not yet elapsed)
-check("not quiet: no USB probe", probes[0] == 0, probes[0])
-clock[0] += power.QUIET_MS
+check("dark but not quiet: USB probed anyway, so the row can say usb", probes[0] >= 1, probes[0])
+gui.blocked = True
+n = probes[0]
 p.step()
-check("all cheap gates passed: USB probed", probes[0] >= 1, probes[0])
+check("ui busy: no USB probe", probes[0] == n, probes[0])
+
+print("usb outranks traffic in the row")
+p, lp, bd, gui, iface, clock, logs = _mk()
+bd.powered = True
+check("cable in, inside the quiet window: usb", p.step() == "usb" and p.summary() == "off usb", p.summary())
 
 print("board hook failures back off too")
 p, lp, bd, gui, iface, clock, logs = _mk()
