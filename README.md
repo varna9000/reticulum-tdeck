@@ -177,7 +177,7 @@ Enter download mode by holding **BOOT** while pressing reset. Two quirks of the 
 loader: esptool syncs with it directly (no JTAG detour needed), but the chip tends to land back in
 the loader after esptool closes the port, so **press reset once** after flashing. The filesystem
 carries only `tdeck_pro_config.py`; the radio defaults there are US 915 MHz, so edit `freq_khz` to
-match your mesh. Not yet ported on the Pro: voice messages (no microphone) and touch.
+match your mesh. Voice messages work on the Pro through its PDM microphone; the touch panel is not used.
 
 ### Option C: Manual Setup (Development)
 
