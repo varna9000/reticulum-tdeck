@@ -91,7 +91,8 @@ attach_ui = _impl.attach_ui
 # for the radio's DIO1, "input" for keys and pointing devices. The restore
 # value is the Pin.IRQ_* trigger the line had before (0 = none); ESP-IDF's
 # GPIO wake rewrites it to level-sensitive and lowpower puts it back.
-# before_sleep() / after_wake() bracket each sleep.
+# before_sleep() / after_wake() bracket each sleep; before_sleep() may
+# return False to veto this pass (input pending that the UI has not seen).
 sleep_wake_pins = _impl.sleep_wake_pins
 before_sleep = _impl.before_sleep
 after_wake = _impl.after_wake

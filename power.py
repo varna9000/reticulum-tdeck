@@ -162,7 +162,11 @@ class Power:
             return self._note(reason)
 
         pins = self.board.sleep_wake_pins()
-        self.board.before_sleep()
+        if self.board.before_sleep() is False:
+            # The board saw input it has not handed to the UI yet (a key
+            # pressed since the last keyboard poll): let the UI take it and
+            # wake the screen rather than sleep through it.
+            return self._note("key pending")
         try:
             cause = self.lp.sleep(SLEEP_CAP_MS, pins)
         except Exception as e:

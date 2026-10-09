@@ -343,10 +343,17 @@ def sleep_wake_pins():
 
 
 def before_sleep():
-    # get_key() drains the FIFO but leaves INT low; a low INT at sleep
-    # entry would wake the chip straight back up.
+    """None to sleep, False to veto: a key pressed since the last poll is
+    still in the TCA8418 FIFO, and the chip re-asserts INT while the FIFO
+    holds anything, so the sleep would end at once and the keystroke would
+    be lost. Let the keyboard loop take it instead. With the FIFO empty,
+    clear the stale key-event flag that get_key() leaves behind, or INT
+    stays low and wakes the chip straight back up."""
     if keyboard is not None:
+        if keyboard.key_count():
+            return False
         keyboard.clear_int()
+    return None
 
 
 def after_wake():

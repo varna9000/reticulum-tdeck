@@ -279,6 +279,17 @@ v1_src = open(os.path.join(ROOT, "board_tdeck_v1.py")).read()
 check("pro: KBD_INT pad is a pulled-up input", "Pin(config.KBD_INT, Pin.IN, Pin.PULL_UP)" in pro_src)
 check("v1: KBD_INT pad is a pulled-up input", "Pin(config.KBD_INT, Pin.IN, Pin.PULL_UP)" in v1_src)
 
+print("before_sleep veto")
+p, lp, bd, gui, iface, clock, logs = _mk()
+bd.before_sleep = lambda: False
+clock[0] += power.QUIET_MS
+check("a False from before_sleep skips the sleep", p.step() == "key pending" and lp.calls == [])
+check("after_wake not called on a veto", bd.after == 0)
+bd.before_sleep = lambda: None
+check("None from before_sleep sleeps as before", p.step() == "timer" and len(lp.calls) == 1)
+pro_src = open(os.path.join(ROOT, "board_tdeck_pro.py")).read()
+check("pro: before_sleep vetoes on pending key events", "if keyboard.key_count():" in pro_src and "return False" in pro_src)
+
 if _failures:
     print("\n%d FAILED: %s" % (len(_failures), ", ".join(_failures)))
     sys.exit(1)
