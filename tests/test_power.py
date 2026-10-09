@@ -62,6 +62,26 @@ check("restore carried", all(e[2] == 2 for e in t))
 check("kind is input", all(e[3] == "input" for e in t))
 check("empty input", power.opposite_levels((), lambda g: 0, 2) == ())
 
+print("board wake tables (source scan)")
+import re
+
+
+def _wake_table_src(fname):
+    src = open(os.path.join(ROOT, fname)).read()
+    m = re.search(r"def sleep_wake_pins\(\):(.*?)\n\n\ndef ", src, re.S)
+    return m.group(1) if m else ""
+
+
+pro = _wake_table_src("board_tdeck_pro.py")
+v1 = _wake_table_src("board_tdeck_v1.py")
+check("pro table present", pro != "")
+check("pro: DIO1 restores IRQ_RISING", "(config.LORA_DIO1, 1, Pin.IRQ_RISING, \"lora\")" in pro, pro)
+check("pro: KBD_INT wakes low, no restore", "(config.KBD_INT, 0, 0, \"input\")" in pro, pro)
+check("v1 table present", v1 != "")
+check("v1: DIO1 45 restores IRQ_RISING", "(45, 1, Pin.IRQ_RISING, \"lora\")" in v1, v1)
+check("v1: click restores both edges", "Pin.IRQ_FALLING | Pin.IRQ_RISING, \"input\")" in v1, v1)
+check("v1: movement lines via opposite_levels", "opposite_levels(_TB_MOVE, _tb_level, Pin.IRQ_FALLING)" in v1, v1)
+
 if _failures:
     print("\n%d FAILED: %s" % (len(_failures), ", ".join(_failures)))
     sys.exit(1)

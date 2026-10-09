@@ -169,3 +169,39 @@ def set_kbd_backlight(on):
         if config.DEBUG >= 1:
             print("[Kbd] backlight cmd failed:", e)
         return False
+
+
+# --- light sleep -----------------------------------------------------------
+# DIO1 (45) and the keyboard INT (46) are not RTC pins, which is why the
+# wake goes through the lowpower module rather than machine.lightsleep().
+# The trackball's four movement lines idle at whichever level the last
+# detent left them, so each is armed for the opposite of its level at sleep
+# entry; ui.py installs falling-edge ISRs on them and an any-edge ISR on the
+# click (press starts the long-press timer, release decides).
+
+_TB_MOVE = (config.TB_UP, config.TB_DOWN, config.TB_LEFT, config.TB_RIGHT)
+_tb_pins = {}
+
+
+def _tb_level(gpio):
+    p = _tb_pins.get(gpio)
+    if p is None:
+        p = _tb_pins[gpio] = Pin(gpio)   # no mode change: ui.py owns the pin
+    return p.value()
+
+
+def sleep_wake_pins():
+    import power
+    return (
+        (45, 1, Pin.IRQ_RISING, "lora"),                          # LORA_DIO1
+        (config.KBD_INT, 0, 0, "input"),                          # keyboard MCU INT
+        (config.TB_CLICK, 0, Pin.IRQ_FALLING | Pin.IRQ_RISING, "input"),
+    ) + power.opposite_levels(_TB_MOVE, _tb_level, Pin.IRQ_FALLING)
+
+
+def before_sleep():
+    pass
+
+
+def after_wake():
+    pass

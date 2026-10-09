@@ -85,3 +85,13 @@ battery_percent = _impl.battery_percent
 # Called once with the UI instance, after it is constructed. Boards without a
 # pointing device use it to route their arrow keys into gui.nav_event().
 attach_ui = _impl.attach_ui
+
+# Light sleep (power.py). sleep_wake_pins() lists (gpio, wake_level,
+# restore_trigger, kind) for every line that may wake the ESP32: kind "lora"
+# for the radio's DIO1, "input" for keys and pointing devices. The restore
+# value is the Pin.IRQ_* trigger the line had before (0 = none); ESP-IDF's
+# GPIO wake rewrites it to level-sensitive and lowpower puts it back.
+# before_sleep() / after_wake() bracket each sleep.
+sleep_wake_pins = _impl.sleep_wake_pins
+before_sleep = _impl.before_sleep
+after_wake = _impl.after_wake

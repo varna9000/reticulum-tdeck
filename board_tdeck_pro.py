@@ -322,3 +322,25 @@ def get_key():
             _gui.toggle_kbd_backlight()
         return b'\x00'
     return k
+
+
+# --- light sleep -----------------------------------------------------------
+
+def sleep_wake_pins():
+    """DIO1 wakes high and gets the LoRa driver's rising-edge ISR back; the
+    TCA8418 INT wakes low and had no interrupt of its own."""
+    return (
+        (config.LORA_DIO1, 1, Pin.IRQ_RISING, "lora"),
+        (config.KBD_INT, 0, 0, "input"),
+    )
+
+
+def before_sleep():
+    # get_key() drains the FIFO but leaves INT low; a low INT at sleep
+    # entry would wake the chip straight back up.
+    if keyboard is not None:
+        keyboard.clear_int()
+
+
+def after_wake():
+    pass
