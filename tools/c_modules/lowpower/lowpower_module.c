@@ -7,13 +7,18 @@
 //
 //   lowpower.sleep(ms, pins) -> WAKE_TIMER | WAKE_GPIO | WAKE_OTHER
 //       pins: tuple of (gpio, wake_level, restore_trigger[, ...])
-//   lowpower.usb_connected() -> bool     (a USB host has configured the CDC device)
+//   lowpower.usb_connected() -> bool     (a USB host is sending start-of-frame)
 //
 // The app's console is TinyUSB CDC on the USB OTG controller, not the
 // USB-serial-JTAG peripheral (that one only serves the ROM loader at PID
-// 0x1001), so "is a host attached" is TinyUSB's tud_mounted(): true once a
-// host has enumerated and configured us, false on a plain charger. Bench
-// 2026-10-09: usb_serial_jtag_is_connected() read False with mpremote live.
+// 0x1001; bench 2026-10-09: usb_serial_jtag_is_connected() read False with
+// mpremote live). TinyUSB's own tud_mounted() cannot be referenced from here:
+// the link then pulls ESP-IDF's managed TinyUSB in beside MicroPython's copy
+// (duplicate dcd_int_handler). So the OTG core's frame counter is read
+// directly: an attached, awake host sends a start-of-frame every 1 ms, so a
+// counter that moves across 3 ms means a host is there. A charger, an
+// unplugged cable or a host in suspend all leave it still -- and unlike a
+// "configured" flag it cannot go stale after the cable is pulled.
 //
 // gpio_wakeup_enable() rewrites a pin's interrupt type to level-sensitive
 // and never puts it back. DIO1 carries the LoRa driver's rising-edge ISR:
@@ -27,7 +32,7 @@
 #include "esp_sleep.h"
 #include "esp_err.h"
 #include "driver/gpio.h"
-#include "tusb.h"
+#include "soc/usb_dwc_struct.h"
 
 #define LP_MAX_PINS 8
 #define LP_WAKE_TIMER 0
@@ -113,7 +118,10 @@ static mp_obj_t lp_sleep(mp_obj_t ms_in, mp_obj_t pins_in) {
 static MP_DEFINE_CONST_FUN_OBJ_2(lp_sleep_obj, lp_sleep);
 
 static mp_obj_t lp_usb_connected(void) {
-    return mp_obj_new_bool(tud_mounted());
+    uint32_t a = USB_DWC.dsts_reg.soffn;
+    mp_hal_delay_ms(3);
+    uint32_t b = USB_DWC.dsts_reg.soffn;
+    return mp_obj_new_bool(a != b);
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(lp_usb_connected_obj, lp_usb_connected);
 
