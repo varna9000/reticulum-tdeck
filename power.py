@@ -63,3 +63,139 @@ def opposite_levels(gpios, read, restore):
     trackball quadrature pins): arm each for the opposite of what it reads
     now, so any movement wakes the chip."""
     return tuple((g, 0 if read(g) else 1, restore, "input") for g in gpios)
+
+
+WAKE_KINDS = ("lora", "input", "timer", "other")
+
+
+def classify(cause, pins, read, wake_timer, wake_gpio):
+    """What woke us. Input lines first: a key and a packet together should
+    still light the screen, and urns reads the packet regardless."""
+    if cause == wake_timer:
+        return "timer"
+    if cause != wake_gpio:
+        return "other"
+    for gpio, level, _restore, kind in pins:
+        if kind == "input" and read(gpio) == level:
+            return "input"
+    for gpio, level, _restore, kind in pins:
+        if kind == "lora" and read(gpio) == level:
+            return "lora"
+    return "other"
+
+
+def _pin_level(gpio):
+    from machine import Pin
+    return Pin(gpio).value()
+
+
+class Power:
+    """One sleep policy instance. step() is one pass: decide, maybe sleep,
+    classify the wake. Everything it touches arrives through the
+    constructor so the host tests can drive it with fakes."""
+
+    def __init__(self, gui, board, lowpower, lora_iface, wifi_on, sleep_on_usb,
+                 ticks_ms, log, read_pin=_pin_level):
+        self.gui = gui
+        self.board = board
+        self.lp = lowpower
+        self.lora_iface = lora_iface      # () -> interface or None
+        self.wifi_on = wifi_on            # () -> bool
+        self.sleep_on_usb = sleep_on_usb
+        self.ticks_ms = ticks_ms
+        self.log = log
+        self.read_pin = read_pin
+        self.counts = {k: 0 for k in WAKE_KINDS}
+        self.last_reason = None
+        self._last_bytes = None
+        self._last_change = ticks_ms()
+        self._backoff_until = None
+
+    def _quiet_ms(self, iface):
+        """ms since the radio's byte counters last moved. The first reading
+        is the baseline, not a change: quiet is measured from when we
+        started watching."""
+        now = self.ticks_ms()
+        b = (iface.rxb + iface.txb) if iface is not None else None
+        if self._last_bytes is None:
+            self._last_bytes = b
+        elif b != self._last_bytes:
+            self._last_bytes = b
+            self._last_change = now
+        return now - self._last_change
+
+    def _backoff_ms(self):
+        if self._backoff_until is None:
+            return 0
+        left = self._backoff_until - self.ticks_ms()
+        if left <= 0:
+            self._backoff_until = None
+            return 0
+        return left
+
+    def _note(self, reason):
+        if reason != self.last_reason:
+            self.last_reason = reason
+            self.log("power: no sleep: " + reason)
+        return reason
+
+    def step(self):
+        iface = self.lora_iface()
+        s = State(
+            screen_on=bool(self.gui._screen_on),
+            sleep_blocked=bool(self.gui._sleep_blocked()),
+            wifi_on=bool(self.wifi_on()),
+            lora_online=bool(iface is not None and iface.online),
+            usb=bool(self.lp.usb_connected()),
+            sleep_on_usb=bool(self.sleep_on_usb),
+            quiet_ms=self._quiet_ms(iface),
+            backoff_ms=self._backoff_ms(),
+        )
+        reason = may_sleep(s)
+        if reason is not None:
+            return self._note(reason)
+
+        pins = self.board.sleep_wake_pins()
+        self.board.before_sleep()
+        try:
+            cause = self.lp.sleep(SLEEP_CAP_MS, pins)
+        except Exception as e:
+            self.board.after_wake()
+            self._backoff_until = self.ticks_ms() + BACKOFF_MS
+            self.log("power: sleep failed, backing off: " + str(e))
+            return self._note("backoff")
+        self.board.after_wake()
+
+        kind = classify(cause, pins, self.read_pin, self.lp.WAKE_TIMER, self.lp.WAKE_GPIO)
+        self.counts[kind] += 1
+        self.last_reason = None
+        if kind == "input":
+            self.gui.wake_screen()
+        return kind
+
+    def summary(self):
+        """One Radio-page value: '12 (lora 9 key 2 t 1)' or 'off: usb'."""
+        c = self.counts
+        total = c["lora"] + c["input"] + c["timer"] + c["other"]
+        if total == 0 and self.last_reason:
+            return "off: " + self.last_reason
+        s = "%d (lora %d key %d t %d" % (total, c["lora"], c["input"], c["timer"])
+        if c["other"]:
+            s += " ? %d" % c["other"]
+        return s + ")"
+
+
+instance = None
+
+
+async def loop(p):
+    """Run p.step() forever. A failure inside a pass is logged, never fatal."""
+    import uasyncio as asyncio
+    global instance
+    instance = p
+    while True:
+        await asyncio.sleep_ms(POLL_MS)
+        try:
+            p.step()
+        except Exception as e:
+            p.log("power: " + str(e))

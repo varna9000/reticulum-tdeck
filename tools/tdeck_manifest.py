@@ -130,6 +130,7 @@ else:
     raise SystemExit("TDECK_BOARD must be tdeck_v1 or tdeck_pro, not %r" % _board)
 
 freeze(_root, "ui.py")
+freeze(_root, "power.py")
 freeze(_root, "sound.py")
 freeze(_root, "dtmf.py")
 freeze(_root, "qr.py")

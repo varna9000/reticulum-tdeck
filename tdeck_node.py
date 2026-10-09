@@ -708,12 +708,14 @@ def _save_settings(data):
 
 def _stop_wifi():
     """Deactivate WiFi radio."""
+    global _wifi_enabled
     import network
     wlan = network.WLAN(network.STA_IF)
     wlan.disconnect()
     wlan.active(False)
     settings = _load_settings()
     settings["wifi_enabled"] = False
+    _wifi_enabled = False
     _save_settings(settings)
     if DEBUG >= 1:
         print("[WiFi] Disconnected")
@@ -760,6 +762,7 @@ def wifi_scan():
 
 
 def wifi_connect(ssid, password):
+    global _wifi_enabled
     import network
     wlan = network.WLAN(network.STA_IF)
     # Reset radio state — ESP32 throws "Wifi Internal State Error"
@@ -784,6 +787,7 @@ def wifi_connect(ssid, password):
             settings["wifi_ssid"] = ssid
             settings["wifi_pass"] = password
             settings["wifi_enabled"] = True
+            _wifi_enabled = True
             _save_settings(settings)
             if DEBUG >= 1:
                 print("[WiFi] Connected to", ssid, "IP:", ip)
@@ -802,6 +806,7 @@ def wifi_connect_async(ssid, password):
 
 
 async def _wifi_connect_task(ssid, password):
+    global _wifi_enabled
     import uasyncio as asyncio
     import network
     await asyncio.sleep_ms(50)  # let the UI paint "Connecting..." first
@@ -829,6 +834,7 @@ async def _wifi_connect_task(ssid, password):
                 settings["wifi_ssid"] = ssid
                 settings["wifi_pass"] = password
                 settings["wifi_enabled"] = True
+                _wifi_enabled = True
                 _save_settings(settings)
                 break
             await asyncio.sleep_ms(200)
@@ -937,6 +943,7 @@ def on_lora_config(params):
 _tcp_iface = None  # track separately so rns.run() doesn't double-start it
 _lora_task = None  # track poll_loop task to cancel on restart
 _tcp_task = None
+_wifi_enabled = False  # mirrors settings["wifi_enabled"]; power.py gates on it
 
 
 def tcp_toggle(enabled, host=None, port=None):
@@ -1124,6 +1131,13 @@ def get_radio_stats():
     else:
         _upt = str(_up) + "s"
     rows.append(("uptime", _upt))
+    # ESP32 light sleep: wake counts by cause, or why it is not sleeping
+    try:
+        import power
+        if power.instance is not None:
+            rows.append(("sleep", power.instance.summary()))
+    except ImportError:
+        pass
     # Battery: percent from a coarse LiPo curve, or USB when charging
     _bv = gui.bat_v
     if _bv >= 4.3:
@@ -1759,10 +1773,12 @@ def _auto_connect_wifi():
 async def _auto_connect_wifi_async():
     """Reconnect WiFi from saved settings inside the event loop, non-blocking, so
     a slow/absent AP never hangs boot (the synchronous version bricked boot)."""
+    global _wifi_enabled
     import uasyncio as asyncio
     await asyncio.sleep(0)
     settings = _load_settings()
     wifi_enabled = settings.get("wifi_enabled")
+    _wifi_enabled = (wifi_enabled == True)
     if wifi_enabled == True:
         ssid = settings.get("wifi_ssid")
         password = settings.get("wifi_pass")
@@ -1806,6 +1822,36 @@ async def _auto_start_tcp():
     gc.collect()
 
 
+async def _start_power():
+    """ESP32 light sleep while the screen is off (power.py). Needs the
+    lowpower built-in; on a firmware without it this just logs and returns."""
+    try:
+        import lowpower
+    except ImportError:
+        if DEBUG >= 1:
+            print("[power] lowpower module missing; ESP32 sleep disabled")
+        return
+    import power
+
+    def _lora_iface():
+        for iface in rns.interfaces:
+            if iface.__class__.__name__ == 'LoRaInterface':
+                return iface
+        return None
+
+    def _wifi_on():
+        return _wifi_enabled or _tcp_iface is not None
+
+    def _log(msg):
+        if DEBUG >= 1:
+            print("[power]", msg)
+
+    p = power.Power(gui, board, lowpower, _lora_iface, _wifi_on,
+                    bool(getattr(config, "SLEEP_ON_USB", False)),
+                    time.ticks_ms, _log)
+    await power.loop(p)
+
+
 def main():
     import uasyncio as asyncio
 
@@ -1837,6 +1883,7 @@ def main():
         asyncio.create_task(gui.gui_loop(spi_acquire_display, spi_release_display))
         asyncio.create_task(gui.battery_loop(spi_acquire_display, spi_release_display))
         asyncio.create_task(gui.ticker_loop())
+        asyncio.create_task(_start_power())
         await _original_run()
 
     try:
