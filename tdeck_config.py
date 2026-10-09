@@ -16,6 +16,12 @@ NODE_NAME = "T-Deck-" + binascii.hexlify(machine.unique_id()[-2:]).decode().uppe
 # Above 0 the serial log is chatty enough to cost time on every packet.
 DEBUG = 0
 
+# Let the ESP32 light-sleep while a USB host is attached. Off by default:
+# light sleep drops the USB console for the duration of every sleep, so a
+# deck on the bench would keep vanishing from mpremote. Turn on only to test
+# sleep with the cable in; read the results from Settings > Radio.
+SLEEP_ON_USB = False
+
 # --- Display (ST7789 on shared SPI1) ---
 DISP_SCK  = 40
 DISP_MOSI = 41

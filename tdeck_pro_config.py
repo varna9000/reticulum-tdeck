@@ -24,6 +24,12 @@ NODE_NAME = "TDeckPro-" + binascii.hexlify(machine.unique_id()[-2:]).decode().up
 # 0 = silent (release default), 1 = app prints, 2 = + full Reticulum debug log.
 DEBUG = 0
 
+# Let the ESP32 light-sleep while a USB host is attached. Off by default:
+# light sleep drops the USB console for the duration of every sleep, so a
+# deck on the bench would keep vanishing from mpremote. Turn on only to test
+# sleep with the cable in; read the results from Settings > Radio.
+SLEEP_ON_USB = False
+
 # --- Board revision --------------------------------------------------------
 # LilyGO ships three revisions (V1.0, V1.1, MAX) that differ in a few pins,
 # two of which matter at boot: V1.1/MAX have a panel reset line on GPIO 16 and
