@@ -340,10 +340,13 @@ _kbd_int = Pin(config.KBD_INT, Pin.IN, Pin.PULL_UP)
 
 def sleep_wake_pins():
     """DIO1 wakes high and gets the LoRa driver's rising-edge ISR back; the
-    TCA8418 INT wakes low and had no interrupt of its own."""
+    TCA8418 INT wakes low and had no interrupt of its own. Its kind is
+    "key": the keystroke waits in the controller's FIFO and kbd_loop both
+    swallows it and wakes the screen, provided nobody lit the screen first
+    -- otherwise that key would be acted on (Enter would send a draft)."""
     return (
         (config.LORA_DIO1, 1, Pin.IRQ_RISING, "lora"),
-        (config.KBD_INT, 0, 0, "input"),
+        (config.KBD_INT, 0, 0, "key"),
     )
 
 

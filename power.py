@@ -14,6 +14,17 @@ QUIET_MS = 1000        # radio byte counters unchanged for this long
 SLEEP_CAP_MS = 20000   # longest single sleep; due asyncio tasks run after
 BACKOFF_MS = 60000     # after a failed sleep call
 POLL_MS = 100          # how often the loop re-evaluates (awake gap between sleeps)
+USB_GRACE_MS = 3000    # VBUS seen but no host frames yet: give enumeration this long
+
+
+def _default_ticks_diff(a, b):
+    """time.ticks_diff on the device; the same 2^30 wrap arithmetic on the
+    host so the tests exercise what the device runs."""
+    try:
+        import time
+        return time.ticks_diff(a, b)
+    except AttributeError:
+        return ((a - b + (1 << 29)) & ((1 << 30) - 1)) - (1 << 29)
 
 _FIELDS = ("screen_on", "sleep_blocked", "wifi_on", "lora_online",
            "usb", "sleep_on_usb", "quiet_ms", "backoff_ms")
@@ -69,8 +80,8 @@ def classify(cause, pins, read, wake_timer, wake_gpio):
     if cause != wake_gpio:
         return "other"
     for gpio, level, _restore, kind in pins:
-        if kind == "input" and read(gpio) == level:
-            return "input"
+        if kind in ("input", "key") and read(gpio) == level:
+            return kind
     for gpio, level, _restore, kind in pins:
         if kind == "lora" and read(gpio) == level:
             return "lora"
@@ -88,7 +99,7 @@ class Power:
     constructor so the host tests can drive it with fakes."""
 
     def __init__(self, gui, board, lowpower, lora_iface, wifi_on, sleep_on_usb,
-                 ticks_ms, log, read_pin=_pin_level):
+                 ticks_ms, log, read_pin=_pin_level, ticks_diff=_default_ticks_diff):
         self.gui = gui
         self.board = board
         self.lp = lowpower
@@ -96,6 +107,7 @@ class Power:
         self.wifi_on = wifi_on            # () -> bool
         self.sleep_on_usb = sleep_on_usb
         self.ticks_ms = ticks_ms
+        self.ticks_diff = ticks_diff      # ticks_ms wraps at 2^30: never subtract
         self.log = log
         self.read_pin = read_pin
         self.counts = {k: 0 for k in WAKE_KINDS}
@@ -104,7 +116,8 @@ class Power:
         self._blocked = False             # the latest dark pass refused to sleep
         self._last_bytes = None
         self._last_change = ticks_ms()
-        self._backoff_until = None
+        self._backoff_start = None
+        self._vbus_since = None           # when usb_power() last turned true
 
     def _quiet_ms(self, iface):
         """ms since the radio's byte counters last moved. The first reading
@@ -117,16 +130,37 @@ class Power:
         elif b != self._last_bytes:
             self._last_bytes = b
             self._last_change = now
-        return now - self._last_change
+        return self.ticks_diff(now, self._last_change)
 
     def _backoff_ms(self):
-        if self._backoff_until is None:
+        if self._backoff_start is None:
             return 0
-        left = self._backoff_until - self.ticks_ms()
+        left = BACKOFF_MS - self.ticks_diff(self.ticks_ms(), self._backoff_start)
         if left <= 0:
-            self._backoff_until = None
+            self._backoff_start = None
             return 0
         return left
+
+    def _usb(self):
+        """External power that should keep us awake. Host frames (SOF) are
+        definitive. VBUS alone is either a charger or a host that has not
+        enumerated yet -- it needs a few hundred ms of us being awake, which
+        the 100 ms gap never gives it -- so VBUS gets USB_GRACE_MS of grace
+        from the moment it appears, then counts as a charger and we sleep."""
+        now = self.ticks_ms()
+        vbus = bool(self.board.usb_power())
+        if not vbus:
+            self._vbus_since = None
+        elif self._vbus_since is None:
+            self._vbus_since = now
+        if self.lp.usb_connected():
+            return True                   # frames flowing: a host, whatever VBUS says
+        return vbus and self.ticks_diff(now, self._vbus_since) < USB_GRACE_MS
+
+    def _fail(self, e):
+        self._backoff_start = self.ticks_ms()
+        self.log("power: sleep failed, backing off: " + str(e))
+        return self._note("backoff")
 
     def _note(self, reason):
         if reason != "screen on":
@@ -147,10 +181,7 @@ class Power:
             sleep_blocked=bool(self.gui._sleep_blocked()),
             wifi_on=bool(self.wifi_on()),
             lora_online=bool(iface is not None and iface.online),
-            # Two signals: the board's power sense (instant, no enumeration
-            # needed -- a cable plugged into a sleeping deck must stop the
-            # next sleep) and the OTG frame counter (a host actually talking).
-            usb=bool(self.board.usb_power() or self.lp.usb_connected()),
+            usb=False,                    # probed below, only once the free gates pass
             sleep_on_usb=bool(self.sleep_on_usb),
             quiet_ms=self._quiet_ms(iface),
             backoff_ms=self._backoff_ms(),
@@ -158,28 +189,38 @@ class Power:
         reason = may_sleep(s)
         if reason is not None:
             return self._note(reason)
+        # The USB probe costs a 3 ms stall plus an I2C or ADC read, so it
+        # runs only when everything else already says "sleep".
+        s.usb = self._usb()
+        reason = may_sleep(s)
+        if reason is not None:
+            return self._note(reason)
 
-        pins = self.board.sleep_wake_pins()
-        if self.board.before_sleep() is False:
-            # The board saw input it has not handed to the UI yet (a key
-            # pressed since the last keyboard poll): let the UI take it and
-            # wake the screen rather than sleep through it.
-            return self._note("key pending")
-        # A board whose keys cannot wake the chip (the v1: its keyboard MCU
-        # never drives INT) sets SLEEP_POLL_MS so the keyboard loop gets to
-        # poll between short sleeps.
-        cap = getattr(self.board, "SLEEP_POLL_MS", None) or SLEEP_CAP_MS
         try:
-            cause = self.lp.sleep(cap, pins)
+            pins = self.board.sleep_wake_pins()
+            if self.board.before_sleep() is False:
+                # The board saw input it has not handed to the UI yet (a key
+                # pressed since the last keyboard poll): let the UI take it
+                # and wake the screen rather than sleep through it.
+                return self._note("key pending")
+            # A board whose keys cannot wake the chip (the v1: its keyboard
+            # MCU never drives INT) sets SLEEP_POLL_MS so the keyboard loop
+            # gets to poll between short sleeps.
+            cap = getattr(self.board, "SLEEP_POLL_MS", None) or SLEEP_CAP_MS
+            try:
+                cause = self.lp.sleep(cap, pins)
+            finally:
+                self.board.after_wake()
         except Exception as e:
-            self.board.after_wake()
-            self._backoff_until = self.ticks_ms() + BACKOFF_MS
-            self.log("power: sleep failed, backing off: " + str(e))
-            return self._note("backoff")
-        self.board.after_wake()
+            return self._fail(e)
 
         kind = classify(cause, pins, self.read_pin, self.lp.WAKE_TIMER, self.lp.WAKE_GPIO)
-        self.counts[kind] += 1
+        # "key": the event is queued for the UI (the Pro's TCA8418 FIFO), and
+        # kbd_loop both swallows that first key and wakes the screen -- only
+        # if the screen is still off when it reads it, so this must not wake
+        # it. "input": nothing else will (the v1's click, whose edge was lost
+        # while its interrupt was disabled), so do it here.
+        self.counts["input" if kind == "key" else kind] += 1
         self.last_reason = None
         self._blocked = False
         if kind == "input":
@@ -188,7 +229,7 @@ class Power:
 
     def summary(self):
         """One Radio-page value, at most 14 characters (the Pro's 30-column
-        page leaves that much after the label): '12 l9 k2 t1' or 'off wifi'."""
+        page leaves that much after the label): 'l15k k20 t2k' or 'off wifi'."""
         c = self.counts
         total = c["lora"] + c["input"] + c["timer"] + c["other"]
         if total == 0 or self._blocked:
@@ -197,13 +238,22 @@ class Power:
             # plugged a cable in.
             r = self.dark_reason or "never idle"
             return "off " + _SHORT_REASON.get(r, r)
-        s = "%d l%d k%d t%d" % (total, c["lora"], c["input"], c["timer"])
+        s = "l%s k%s t%s" % (_abbr(c["lora"]), _abbr(c["input"]), _abbr(c["timer"]))
         if c["other"]:
-            s += " ?%d" % c["other"]
+            extra = " ?%s" % _abbr(c["other"])
+            if len(s) + len(extra) <= 14:
+                s += extra
         return s
 
 # Reasons as shown on the Radio page, where the value has 14 characters.
-_SHORT_REASON = {"screen on": "screen", "ui busy": "busy", "lora offline": "no lora"}
+_SHORT_REASON = {"screen on": "screen", "ui busy": "busy", "lora offline": "no lora",
+                 "key pending": "key"}
+
+
+def _abbr(n):
+    """Counts reach tens of thousands a day on a busy mesh: 15000 -> '15k'.
+    Three figures must share 14 characters, so anything past 999 is in k."""
+    return "%dk" % (n // 1000) if n >= 1000 else str(n)
 
 instance = None
 

@@ -66,7 +66,7 @@ pro = _wake_table_src("board_tdeck_pro.py")
 v1 = _wake_table_src("board_tdeck_v1.py")
 check("pro table present", pro != "")
 check("pro: DIO1 restores IRQ_RISING", "(config.LORA_DIO1, 1, Pin.IRQ_RISING, \"lora\")" in pro, pro)
-check("pro: KBD_INT wakes low, no restore", "(config.KBD_INT, 0, 0, \"input\")" in pro, pro)
+check("pro: KBD_INT wakes low, no restore", "(config.KBD_INT, 0, 0, \"key\")" in pro, pro)
 check("v1 table present", v1 != "")
 check("v1: DIO1 45 restores IRQ_RISING", "(45, 1, Pin.IRQ_RISING, \"lora\")" in v1, v1)
 check("v1: click restores both edges", "Pin.IRQ_FALLING | Pin.IRQ_RISING, \"input\")" in v1, v1)
@@ -161,7 +161,7 @@ def _mk(**over):
     bd = FakeBoard(lp)
     gui = FakeGui()
     iface = FakeIface()
-    clock = [10000]
+    clock = [over.pop("t0", 10000)]
     logs = []
     p = power.Power(gui, bd, lp, lambda: iface, lambda: False, False,
                     lambda: clock[0], logs.append, read_pin=bd.read_pin)
@@ -192,6 +192,18 @@ clock[0] += power.QUIET_MS
 lp.result = 1
 lp.levels = {5: 0, 15: 0}
 check("INT wake -> input, screen wakes", p.step() == "input" and gui.woken == 1)
+
+print("keyboard wakes are left to the keyboard loop")
+p, lp, bd, gui, iface, clock, logs = _mk()
+bd.pins = ((5, 1, 1, "lora"), (15, 0, 0, "key"))     # the Pro: the key sits in the TCA8418 FIFO
+clock[0] += power.QUIET_MS
+lp.result = 1
+lp.levels = {5: 0, 15: 0}
+r = p.step()
+check("key wake counted under k", r == "key" and p.counts["input"] == 1, (r, p.counts))
+check("key wake does NOT light the screen itself (kbd_loop must swallow the key)", gui.woken == 0)
+pro_src = open(os.path.join(ROOT, "board_tdeck_pro.py")).read()
+check("pro: KBD_INT entry has kind key", '(config.KBD_INT, 0, 0, "key")' in pro_src)
 
 p, lp, bd, gui, iface, clock, logs = _mk()
 p.step()                         # first reading is the baseline
@@ -247,7 +259,7 @@ p.step()
 check("reason logged once", logs.count("power: no sleep: traffic") == 1, repr(logs))
 clock[0] += power.QUIET_MS
 p.step()
-check("summary counts", p.summary() == "1 l0 k0 t1", p.summary())
+check("summary counts", p.summary() == "l0 k0 t1", p.summary())
 check("summary fits a 14-char Radio value", len(p.summary()) <= 14, p.summary())
 
 print("summary remembers the last reason seen while dark")
@@ -310,7 +322,7 @@ check("POLL_MS short enough for 300 ms sleep slices", power.POLL_MS <= 100, powe
 print("summary shows the current blocker, not only history")
 p, lp, bd, gui, iface, clock, logs = _mk()
 clock[0] += power.QUIET_MS
-check("slept once: counts", p.step() == "timer" and p.summary() == "1 l0 k0 t1", p.summary())
+check("slept once: counts", p.step() == "timer" and p.summary() == "l0 k0 t1", p.summary())
 bd.powered = True
 p.step()                                   # dark, now blocked by the cable
 check("blocked after sleeping: shows the blocker", p.summary() == "off usb", p.summary())
@@ -319,7 +331,73 @@ p.step()                                   # user looks at the page
 check("looking does not hide it", p.summary() == "off usb", p.summary())
 gui._screen_on = False
 bd.powered = False
-check("unblocked and asleep again: counts", p.step() == "timer" and p.summary() == "2 l0 k0 t2", p.summary())
+check("unblocked and asleep again: counts", p.step() == "timer" and p.summary() == "l0 k0 t2", p.summary())
+
+print("ticks_ms wrap")
+p, lp, bd, gui, iface, clock, logs = _mk(t0=(1 << 30) - 400)   # born 400 ms before the wrap
+p.step()                                             # baseline reading
+clock[0] = ((1 << 30) - 400 + power.QUIET_MS) & ((1 << 30) - 1)   # wrapped
+check("quiet window survives the wrap", p.step() == "timer", p.last_reason)
+p, lp, bd, gui, iface, clock, logs = _mk(t0=(1 << 30) - 100)
+p.step()
+clock[0] = ((1 << 30) - 100 + power.QUIET_MS) & ((1 << 30) - 1)
+lp.raise_once = OSError(-1)
+p.step()                                             # backoff set 100 ms before... no: now
+clock[0] = (clock[0] + power.BACKOFF_MS - 1) & ((1 << 30) - 1)
+check("backoff holds across the wrap", p.step() == "backoff")
+clock[0] = (clock[0] + 1) & ((1 << 30) - 1)
+check("backoff expires across the wrap", p.step() == "timer")
+
+print("charger vs host")
+p, lp, bd, gui, iface, clock, logs = _mk()
+clock[0] += power.QUIET_MS
+bd.powered = True                                     # VBUS, but no SOF: charger or a host still enumerating
+check("VBUS without SOF: awake for the grace window", p.step() == "usb")
+clock[0] += power.USB_GRACE_MS - 1
+check("still inside the window", p.step() == "usb")
+clock[0] += 1
+check("after the window a silent VBUS is a charger: sleeps", p.step() == "timer")
+lp.usb = True                                         # the host started talking
+check("SOF seen: no sleep", p.step() == "usb")
+lp.usb = False
+bd.powered = False
+p.step()
+bd.powered = True
+check("VBUS false->true restarts the grace window", p.step() == "usb")
+
+print("usb probe only after the cheap gates pass")
+p, lp, bd, gui, iface, clock, logs = _mk()
+probes = [0]
+lp.usb_connected = lambda: probes.__setitem__(0, probes[0] + 1) or False
+bd.usb_power = lambda: probes.__setitem__(0, probes[0] + 1) or False
+gui._screen_on = True
+p.step()
+check("screen on: no USB probe", probes[0] == 0, probes[0])
+gui._screen_on = False
+p.step()                                             # traffic (quiet window not yet elapsed)
+check("not quiet: no USB probe", probes[0] == 0, probes[0])
+clock[0] += power.QUIET_MS
+p.step()
+check("all cheap gates passed: USB probed", probes[0] >= 1, probes[0])
+
+print("board hook failures back off too")
+p, lp, bd, gui, iface, clock, logs = _mk()
+clock[0] += power.QUIET_MS
+def _boom(): raise OSError(19)
+bd.before_sleep = _boom
+check("before_sleep raising -> backoff", p.step() == "backoff" and lp.calls == [])
+bd.before_sleep = lambda: None
+clock[0] += power.BACKOFF_MS
+check("backoff expired: sleeps", p.step() == "timer")
+
+print("summary stays within 14 chars")
+p, lp, bd, gui, iface, clock, logs = _mk()
+p.counts.update({"lora": 15000, "input": 20, "timer": 2000, "other": 3})
+check("big counts fit", len(p.summary()) <= 14, p.summary())
+check("big counts readable", p.summary().startswith("l15k k20 t2k"), p.summary())
+p.counts.update({"lora": 0, "input": 0, "timer": 0, "other": 0})
+p.dark_reason = "key pending"; p._blocked = True
+check("key pending fits", len(p.summary()) <= 14 and p.summary() == "off key", p.summary())
 
 if _failures:
     print("\n%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

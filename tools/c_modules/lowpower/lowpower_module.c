@@ -39,6 +39,8 @@
 #define LP_WAKE_GPIO 1
 #define LP_WAKE_OTHER 2
 
+static bool rtc_periph_kept = false;
+
 static void lp_restore(size_t n, const int *gpio, const int *restore) {
     for (size_t i = 0; i < n; i++) {
         gpio_wakeup_disable(gpio[i]);
@@ -90,15 +92,18 @@ static mp_obj_t lp_sleep(mp_obj_t ms_in, mp_obj_t pins_in) {
     if (err == ESP_OK && ms > 0) {
         err = esp_sleep_enable_timer_wakeup((uint64_t)ms * 1000);
     }
-    if (err == ESP_OK) {
+    if (err == ESP_OK && !rtc_periph_kept) {
         // Keep the RTC peripheral domain powered. With no RTC wake source
         // armed ESP-IDF switches it off in light sleep, and every RTC-domain
         // pad (GPIO 0-21) loses its drive and pull-ups: on the T-Deck v1 that
         // is GPIO 10, the peripheral power switch, so the display, keyboard
         // and radio browned out on each sleep (bench 2026-10-09, the whole
         // deck flashing), and the floating trackball lines woke the chip at
-        // once. Meshtastic's light sleep does the same.
+        // once. Meshtastic's light sleep does the same. The setting is
+        // reference-counted and global (it also applies to any deep sleep),
+        // so it is taken exactly once for the life of the firmware.
         err = esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
+        rtc_periph_kept = (err == ESP_OK);
     }
     if (err != ESP_OK) {
         lp_restore(armed, gpio, restore);
