@@ -58,11 +58,19 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 PART_CSV = os.path.join(HERE, "board_tdeck", "partitions-tdeck-8MiB.csv")
 
-# (source path relative to repo root, name on the device)
-CONTENTS = [
-    ("tdeck_config.py", "tdeck_config.py"),
-    ("logo.jpg", "logo.jpg"),
-]
+# (source path relative to repo root, name on the device), per board.
+# The Pro keeps its editable config under its own name (board_tdeck_pro.py
+# imports tdeck_pro_config) and has no JPEG splash (HAS_JPEG_SPLASH is False),
+# so logo.jpg would be dead weight there.
+CONTENTS_BY_BOARD = {
+    "tdeck_v1": [
+        ("tdeck_config.py", "tdeck_config.py"),
+        ("logo.jpg", "logo.jpg"),
+    ],
+    "tdeck_pro": [
+        ("tdeck_pro_config.py", "tdeck_pro_config.py"),
+    ],
+}
 # main.py is NOT here any more: tdeck_node.py is frozen as main.py by
 # tools/tdeck_manifest.py so that an app-only update (which carries no
 # filesystem payload, and therefore preserves /rns) also carries the entry
@@ -97,7 +105,9 @@ def parse_partition(csv_path, name="vfs"):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.path.join(HERE, "firmware_build", "vfs.bin"))
+    ap.add_argument("--board", default="tdeck_v1", choices=sorted(CONTENTS_BY_BOARD))
     args = ap.parse_args()
+    contents = CONTENTS_BY_BOARD[args.board]
 
     try:
         from littlefs import LittleFS
@@ -111,7 +121,7 @@ def main():
 
     fs = LittleFS(block_size=BLOCK_SIZE, block_count=block_count)
     total = 0
-    for src_rel, dest in CONTENTS:
+    for src_rel, dest in contents:
         src = os.path.join(ROOT, src_rel)
         if not os.path.exists(src):
             raise SystemExit("missing %s" % src)

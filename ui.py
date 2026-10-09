@@ -438,14 +438,19 @@ class _ShellFont:
     SGR colour needs, and we declare TERM=vt100 so those codes already arrive.
     """
 
-    def __init__(self, modname, fg, bg):
+    def __init__(self, modname, fg, bg, width=SCREEN_W):
         import framebuf
         self._fb = framebuf
         mod = __import__(modname)
         self.name = modname
         self.w = mod.WIDTH
         self.h = mod.HEIGHT
-        self.cols = SCREEN_W // self.w
+        # width: the pixels the grid may use. The v1 keeps the whole panel
+        # (53x16 is documented, and the scroll lane's overlap of the last
+        # 6 px column is tolerated); the Pro reserves the lane, since 40
+        # columns of 6 px would fill its 240 px exactly and the lane then
+        # cuts the last column off.
+        self.cols = width // self.w
         self.rows = (BODY_ROWS * CHAR_H) // self.h   # same 192px body
         # One writable copy of the glyph data; per-slot FrameBuffers are
         # memoryview slices over it, built on first use — shell output touches
@@ -504,6 +509,11 @@ class UI:
         # and _flush() is called once per rendered screen instead. Resolved
         # once here rather than per redraw.
         self._panel_flush = getattr(tft, "flush", None)
+        self._user_redraw = False
+        self._force_full_flush = False
+        # Footer hints name the gesture the board has: CLICK with a ball,
+        # ENT without one (the Pro's keyboard; Enter mirrors the click).
+        self._has_trackball = trackball
 
         # On a 1-bit panel there is no dim: DIM_CYAN and NEON_GREEN both land
         # on the ink side of the shim's luminance threshold (80 and 63 on its
@@ -530,7 +540,14 @@ class UI:
         # the main font; every layout below measures with SW/SH, not 6/12.
         self.sfont = font
         self._small = None
-        if not self._mono:
+        if self._mono:
+            # The selection tint is paper on a 1-bit panel, the same as the
+            # background, so a selected row could not be told apart. Make it
+            # ink instead: the shim draws glyphs on an ink background as
+            # paper, so every selected row -- lists, Setup, chat, browser,
+            # the RRC panels -- comes out inverted, black with white text.
+            self.SEL_BG = 0xFFFF
+        else:
             try:
                 import spleen_6x12
                 self.sfont = spleen_6x12
@@ -908,14 +925,25 @@ class UI:
         self._kbd_bl_lit = on
         return True
 
+    def note_user_input(self):
+        """Record that the next redraw is the user's doing (a key press, a
+        trackball move), not an announce's or a timer's. The e-ink shim
+        saves its whole-panel flash for those redraws; see eink_shim.flush.
+        kbd_loop calls this; tests do too."""
+        self._user_redraw = True
+
     def _flush(self):
         """Push a completed frame to the panel, where the panel needs it.
 
         Every call site sits between spi_acquire_display() and
         spi_release_display(), because on e-ink this is the transfer.
         """
+        user = self._user_redraw
+        full = self._force_full_flush
+        self._user_redraw = False
+        self._force_full_flush = False
         if self._panel_flush is not None:
-            self._panel_flush()
+            self._panel_flush(force_full=full, user=user)
 
     def wake_screen(self, force=False):
         # One guard for every wake source — including the message/announce
@@ -928,6 +956,14 @@ class UI:
             self._screen_on = True
             self.dirty = True
             self._cache = [''] * CACHE_ROWS
+            # The shell keeps its own row cache; without this the rows the
+            # sleep screen painted over stay "already drawn" and the sleep
+            # text survives the wake in the terminal window.
+            self._shell_cache = [''] * len(self._shell_cache)
+            if self._bl is None:
+                # Replacing the sleep screen: a whole-panel change, done as a
+                # full refresh so the sleep text leaves no ghost.
+                self._force_full_flush = True
             if self._kbd_tracks_screen() and self._kbd_bl and not self._kbd_bl_lit:
                 self._drive_kbd_backlight(True)
         self._last_activity = time.ticks_ms()
@@ -939,6 +975,34 @@ class UI:
             self._screen_on = False
             if self._kbd_tracks_screen() and self._kbd_bl_lit:
                 self._drive_kbd_backlight(False)
+            if self._bl is None:
+                self._draw_sleep_screen()
+
+    def _draw_sleep_screen(self):
+        """A panel with no backlight (e-ink) keeps showing whatever was on it,
+        so a sleeping deck looks awake, and the key that wakes it -- which the
+        kbd loop swallows -- looks ignored. Show that it sleeps instead. The
+        full refresh here doubles as the ghost clear for the frame that was
+        up, and the wake redraw is forced full so none of this lingers."""
+        acquire = getattr(self, "_spi_acquire", None)
+        release = getattr(self, "_spi_release", None)
+        if acquire:
+            acquire()
+        try:
+            self.tft.fill(self.BG_DARK)
+            mid = SCREEN_H // 2
+            self._center_text(self.node_name[:COLS], mid - 3 * CHAR_H, self.NEON_CYAN)
+            if _clock_valid():
+                self._center_text(_fmt_clock(), mid - CHAR_H, self.DIM_CYAN)
+            self._center_text("sleeping", mid + CHAR_H, self.NEON_CYAN)
+            self._center_text("press any key", mid + 3 * CHAR_H, self.DIM_CYAN)
+            self._force_full_flush = True
+            self._flush()
+        finally:
+            if release:
+                release()
+        self._cache = [''] * CACHE_ROWS
+        self._shell_cache = [''] * len(self._shell_cache)
 
     def lock(self):
         """Blank the screen and ignore input until the next trackball click.
@@ -1253,8 +1317,17 @@ class UI:
             tx = x + (sw - len(label) * CHAR_W) // 2
             if i == self.node_tab:
                 # In Find the tab runs straight into the band below it.
-                self.tft.fill_rect(x, top, sw, line - top + (1 if self._find else 0), self.TAB_BG)
-                self.tft.text(self.font, label, tx, ly, self.NEON_GREEN, self.TAB_BG)
+                h = line - top + (1 if self._find else 0)
+                if self._mono:
+                    # The 1-bit shim renders TAB_BG and BG_DARK both as paper
+                    # and NEON_GREEN and DIM_CYAN both as ink, so the colour
+                    # scheme below leaves every tab looking the same there.
+                    # Invert the active one instead: paper text on an ink block.
+                    self.tft.fill_rect(x, top, sw, h, self.NEON_CYAN)
+                    self.tft.text(self.font, label, tx, ly, self.BG_DARK, self.NEON_CYAN)
+                else:
+                    self.tft.fill_rect(x, top, sw, h, self.TAB_BG)
+                    self.tft.text(self.font, label, tx, ly, self.NEON_GREEN, self.TAB_BG)
             else:
                 self.tft.text(self.font, label, tx, ly, self.DIM_CYAN, bg)
         if not self._find:
@@ -1562,7 +1635,13 @@ class UI:
                 prefix = pname + "> "
             # Reserve space for suffix on last wrapped line
             suffix = _suffix_map.get(status, "") if is_mine else ""
-            wrapped = self._wrap_text(prefix + text, COLS - len(suffix) if suffix else COLS)
+            width = COLS - len(suffix) if suffix else COLS
+            # A message keeps the line breaks its sender typed: each
+            # paragraph wraps on its own (an empty one is a blank row), the
+            # prefix goes on the first. _wrap_text() wraps one paragraph.
+            wrapped = []
+            for k, para in enumerate(text.replace("\r", "").split("\n")):
+                wrapped.extend(self._wrap_text((prefix if k == 0 else "") + para, width))
             if suffix:
                 wrapped[-1] = wrapped[-1] + suffix
             for j, wl in enumerate(wrapped):
@@ -1642,6 +1721,13 @@ class UI:
 
                 padded = _pad(text)
                 self.tft.text(self.font, self._tb(padded), 0, y, self.BODY_FG, row_bg)
+                if is_highlighted:
+                    # Accent bar in the left margin, as Setup and the node list
+                    # draw. The tinted row background is the only other cue,
+                    # and on the 1-bit panel SEL_BG is paper like BG_DARK, so
+                    # without this the cursor is invisible there and alt+E/X
+                    # appear to do nothing until the view finally scrolls.
+                    self.tft.fill_rect(0, y, 3, CHAR_H, self.NEON_MAG)
                 if is_first:
                     if is_mine:
                         self.tft.text(self.font, text[:4], 0, y, self.NEON_GREEN, row_bg)
@@ -1741,6 +1827,22 @@ class UI:
             self._hint_at(k, rest, (COLS - 1 - len(k) - len(rest) - 2) * CHAR_W)
 
     # --- Image viewer ---
+
+    def _chat_open_cursor_media(self):
+        """Open the image, or play the voice message, on the highlighted
+        chat line: the trackball click and, with an empty composer, Enter."""
+        if self.chat_cursor < 0:
+            return
+        if self.chat_cursor in self._visible_image_lines:
+            mid = self._visible_image_lines[self.chat_cursor]
+            if (self.selected_peer, mid) in self._image_cache:
+                self._enter_image_view(mid)
+        elif self.chat_cursor in self._visible_audio_lines:
+            mid = self._visible_audio_lines[self.chat_cursor]
+            cache_key = (self.selected_peer, mid)
+            if cache_key in self._audio_cache and self.on_audio_play:
+                audio_data, audio_mode = self._audio_cache[cache_key]
+                self.on_audio_play(audio_data, audio_mode)
 
     def _enter_image_view(self, mid):
         """Enter full-screen image view for the message with this id."""
@@ -1864,7 +1966,13 @@ class UI:
                     # Center the decoded image (may be smaller than the screen)
                     _ix = (SCREEN_W - w) // 2 if w < SCREEN_W else 0
                     _iy = (SCREEN_H - h) // 2 if h < SCREEN_H else 0
-                    self.tft.blit_buffer(rgb565, _ix, _iy, w, h)
+                    if self._mono:
+                        # 1-bit panel: dither, dark = ink. The plain blit
+                        # thresholds with the UI's inverted polarity and
+                        # would show a negative with no grey in it.
+                        self.tft.blit_dither(rgb565, _ix, _iy, w, h)
+                    else:
+                        self.tft.blit_buffer(rgb565, _ix, _iy, w, h)
                     del rgb565
                     gc.collect()
             except ImportError:
@@ -2289,10 +2397,13 @@ class UI:
         font file degrades the shell instead of breaking it."""
         self._shell_font = None
         gc.collect()
+        # On a mono panel the grid stops short of the scroll lane; see
+        # _ShellFont.__init__.
+        width = SCREEN_W - SBAR_W - 2 if self._mono else SCREEN_W
         for _ in range(len(_SHELL_FONTS)):
             name = _SHELL_FONTS[self._shell_font_idx]
             try:
-                self._shell_font = _ShellFont(name, self.BODY_FG, self.BG_DARK)
+                self._shell_font = _ShellFont(name, self.BODY_FG, self.BG_DARK, width)
                 break
             except Exception as e:
                 print("shell font", name, "unavailable:", e)
@@ -2423,10 +2534,14 @@ class UI:
             return True
         if ch == 0x1B:   # Esc
             self._find_close()
-        elif ch == 0x08:   # Backspace
+        elif ch == 0x08:   # Backspace: widen the query, or leave when empty
+            # Leaving on an empty field is how every other screen goes back,
+            # and the only Esc either keyboard has is the Pro's alt+Q.
             if self._find_q:
                 self._find_q = self._find_q[:-1]
                 self._find_filter()
+            else:
+                self._find_close()
         elif ch == 0x0D:   # Enter
             self._find_pick()
         elif 0x20 <= ch < 0x7F and len(self._find_q) < 32:
@@ -2609,13 +2724,13 @@ class UI:
         if q:
             n = str(len(res)) + "/" + n
         if self._find_listen == "on":
-            n, keys = "", "Esc=cancel"
+            n, keys = "", "Bsp=cancel"
         elif self._find_listen == "failed":
-            n, keys = "", "0=try again Esc=back"
+            n, keys = "", "0=try again Bsp=back"
         elif self.on_listen_start:
-            keys = "0=listen Ent=add Esc=back"
+            keys = "0=listen Ent=add Bsp=back"
         else:
-            keys = "Ent=add Esc=back"
+            keys = "Ent=add Bsp=back"
         if self._cache[BODY_ROWS] != n + keys:
             self._cache[BODY_ROWS] = n + keys
             y = BODY_Y + (BODY_ROWS - 1) * CHAR_H
@@ -3351,7 +3466,7 @@ class UI:
                 self._state_change_ms = time.ticks_ms()
                 self.dirty = True
             return True
-        elif ch == 0x0D:  # Enter — send message
+        elif ch == 0x0D:  # Enter — send message, or open the media under the cursor
             if len(self.cmd_buf) > 0 and self.selected_peer:
                 text = self.cmd_buf.decode()
                 self.cmd_buf = bytearray()
@@ -3359,6 +3474,12 @@ class UI:
                 if self.on_send:
                     self.on_send(self.selected_peer, text, mid)
                 self.dirty = True
+            elif self.chat_cursor >= 0:
+                # Nothing to send: Enter mirrors the trackball click on the
+                # highlighted line, which is the only click the Pro has here
+                # (alt+w aside). An empty composer never sends, so this
+                # takes nothing away from the v1.
+                self._chat_open_cursor_media()
             return True
         elif ch == 0x1B:  # Escape — back to node list
             if time.ticks_diff(time.ticks_ms(), self._state_change_ms) > 500:
@@ -4319,19 +4440,7 @@ class UI:
             elif self.state == STATE_BROWSER:
                 self._browser_follow_cursor()
             elif self.state == STATE_CHAT:
-                # If cursor is on an image line, open it
-                if self.chat_cursor >= 0 and self.chat_cursor in self._visible_image_lines:
-                    mid = self._visible_image_lines[self.chat_cursor]
-                    cache_key = (self.selected_peer, mid)
-                    if cache_key in self._image_cache:
-                        self._enter_image_view(mid)
-                # If cursor is on a voice line, play it
-                elif self.chat_cursor >= 0 and self.chat_cursor in self._visible_audio_lines:
-                    mid = self._visible_audio_lines[self.chat_cursor]
-                    cache_key = (self.selected_peer, mid)
-                    if cache_key in self._audio_cache and self.on_audio_play:
-                        audio_data, audio_mode = self._audio_cache[cache_key]
-                        self.on_audio_play(audio_data, audio_mode)
+                self._chat_open_cursor_media()
             elif self.state == STATE_SETTINGS:
                 self.handle_key(b'\x0D')
             elif self.state == STATE_RRC_ROOMS:
@@ -4961,6 +5070,10 @@ class UI:
             self.tft.fill_rect(0, NAV_H, SCREEN_W, SCREEN_H - NAV_H, self.BG_DARK)
             self._cache = [''] * CACHE_ROWS  # invalidate all rows
             self._prev_state = self.state
+            # A screen change is where the e-ink shim spends its full
+            # refresh (the ghost-clearing flash); cursor steps and scrolls
+            # never do. See eink_shim.flush.
+            self._force_full_flush = True
 
         self.draw_navbar()
         if self.state == STATE_NODES:
@@ -4999,6 +5112,7 @@ class UI:
                     break
                 if self.locked:
                     continue  # keep draining the I2C queue, drop the keys
+                self.note_user_input()
                 if not self._screen_on:
                     self.wake_screen()
                     # Drain remaining keys — first press only wakes
@@ -5008,6 +5122,9 @@ class UI:
                     break
                 self.wake_screen()
                 self.handle_key(key)
+            if (self._irq_up or self._irq_down or self._irq_left or self._irq_right
+                    or self._irq_click or self._irq_long_click):
+                self.note_user_input()
             self.handle_trackball()
             await asyncio.sleep_ms(20)
 

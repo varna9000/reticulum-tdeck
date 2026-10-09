@@ -132,7 +132,8 @@ from sound import Sound
 sound = Sound()
 if board.HAS_AUDIO:
     try:
-        sound.init()
+        sound.init(*board.SPK_PINS, gain=board.AUDIO_GAIN, pitch=board.AUDIO_PITCH,
+                   port=board.SPK_PORT)
     except Exception as e:
         if DEBUG >= 1:
             print("Sound init failed:", e)
@@ -140,18 +141,22 @@ if board.HAS_AUDIO:
 else:
     sound.enabled = False
 
-# Init microphone (ES7210 on I2C)
+# Init microphone: the v1's ES7210 ADC over I2C, or the Pro's PDM mic.
 if board.HAS_MIC:
     try:
-        from machine import SoftI2C
-        _mic_i2c = SoftI2C(scl=Pin(8), sda=Pin(18), freq=100000)
-        sound.init_mic(_mic_i2c)
-        # Prime the ADC once (~3s, behind the splash) and leave it clocked — it
-        # then stays live indefinitely, so recordings start instantly instead of
-        # paying a ~3s warm-up per recording. stop_recording() keeps the clock on.
-        _mic_ok = sound.prime_mic()
+        if board.MIC_KIND == "pdm":
+            sound.init_pdm_mic(*board.MIC_PINS)
+            _mic_ok = True
+        else:
+            from machine import SoftI2C
+            _mic_i2c = SoftI2C(scl=Pin(8), sda=Pin(18), freq=100000)
+            sound.init_mic(_mic_i2c)
+            # Prime the ADC once (~3s, behind the splash) and leave it clocked — it
+            # then stays live indefinitely, so recordings start instantly instead of
+            # paying a ~3s warm-up per recording. stop_recording() keeps the clock on.
+            _mic_ok = sound.prime_mic()
         if DEBUG >= 1:
-            print("Mic init OK, primed:", _mic_ok)
+            print("Mic init OK (%s), primed: %s" % (board.MIC_KIND, _mic_ok))
     except Exception as e:
         if DEBUG >= 1:
             print("Mic init failed:", e)

@@ -122,8 +122,73 @@ with a display backlight keeps its old behaviour.
 about 700 ms and a full one about 1100 ms. `ui.py` makes 86 `text()` calls to
 paint one screen. The shim therefore accumulates dirty rectangles and only
 talks to the panel on `flush()`, which the app calls once per rendered screen.
-It escalates to a full refresh when the dirty area passes half the panel or
-after 10 consecutive partials, to clear ghosting.
+A full refresh is the whole-panel black/white flash, so the shim spends it
+on a screen change (`ui.py` flushes with `force_full` when the state
+changes), on a sizeable user redraw (`flush(user=True)`, set after a key
+press; at least 1/8 of the panel) that finds a ghost-clearing debt owed
+after 10 partials, and at a hard cap of 40 partials as the backstop. Nothing
+else flashes: a cursor step, a one-line scroll that shifts every row, an
+announce landing in the node list, the navbar clock ticking -- each is one
+quiet partial of the rows that changed, however far apart or large. Area
+alone never decides, because a partial costs the same ~700 ms whatever its
+window and the panel drives only the pixels that differ. Before this, the
+tab count at the top and a new peer near the bottom spanned more than half
+the panel and flashed on every new announce, and later every line scroll
+flashed for the same reason.
+
+**Photos are dithered, not thresholded.** The full-screen image viewer
+(chat attachments, a NomadNet image opened from its placeholder row) decodes
+to RGB565 as on the v1 and then, on a mono panel, hands the buffer to
+`EinkShim.blit_dither`: Floyd-Steinberg on 8-bit luma, dark = ink, in a viper
+inner loop (a few hundred ms for the whole panel). The shim's plain
+`blit_buffer` is the wrong tool for a picture twice over -- no grey, and the
+UI's inverted polarity, so it showed a negative. Inline images inside browser
+pages are still not rendered on the Pro; only the placeholder row and the
+full-screen view.
+
+**Selected rows are inverted.** The selection tint `SEL_BG` is paper on
+the threshold, indistinguishable from the background, so on a mono panel
+`ui.py` sets it to a colour that is ink, and the shim draws glyphs on an ink
+background as paper. Every selected row -- lists, Setup, chat cursor,
+browser cursor, the RRC panels -- is then a black band with white text, and
+the unread pill's digits (white on magenta, both ink before) became legible
+by the same rule. The accent bars the colour UI draws beside a selected row
+are ink-on-ink there and simply vanish.
+
+**Voice messages record through a PDM microphone.** The Pro's mic is a
+two-wire PDM part (MIC_CLOCK 18, MIC_DATA 17), which `machine.I2S` cannot
+read, so `tools/c_modules/pdm_mic` opens I2S port 0 in PDM RX mode through
+ESP-IDF's new driver (`driver/i2s_pdm.h`, the family `machine.I2S` already
+uses, so they coexist) and hands back 16 kHz mono PCM. `sound.py`'s PDM path
+halves that to 8 kHz with a 2-tap average and DC removal in a viper loop and
+feeds the unchanged recording task and Codec2 encoder. Playback moves to I2S
+port 1 on this board (`board.SPK_PORT`), because PDM receive exists on port
+0 only. A PDM mic needs no priming: `prime_mic()` just drains the DMA ring.
+`HAS_MIC` in the config gates all of it.
+
+**Sleep shows a sleep screen.** With no backlight to switch off, a sleeping
+deck kept its last frame and looked awake, and the key that woke it (which
+the keyboard loop swallows) looked ignored, so people pressed it twice.
+`ui.sleep_screen()` on a board without a backlight pin paints a centred
+frame -- node name, clock, "sleeping", "press any key" -- with a full
+refresh (which also clears the ghosting of whatever was up), and
+`wake_screen()` forces the next redraw full so the frame is replaced
+cleanly. Boards with a backlight are untouched.
+
+**The shell keeps its small fonts, one column short.** `ui._ShellFont`
+composites rows into RGB565 pre-swapped for the ST7789, which the shim
+reads in the same big-endian order, so its blit decodes correctly (bright =
+ink). What went wrong on the Pro was width: 40 columns of the 6 px font
+fill its 240 px exactly, and the scroll lane painted over the last column.
+On a mono panel the grid is sized to stop short of the lane (39x22 at
+6x12). The shim's `blit_buffer` is a viper loop for this: a Python
+per-pixel blit of a 240x12 row per changed line made shell output crawl.
+
+**The 1-bit panel has no dim and no tint.** The app marks its active tab and
+its unlit battery segments with colour alone (teal vs dark background, dim vs
+bright text), and on the shim's luminance threshold those pairs land on the
+same side. Such states are drawn inverted on a mono panel instead: `ui.py`
+checks `tft.mono` and paints the active tab as paper text on an ink block.
 
 **The colours are inverted on purpose.** The app is dark themed and paints a
 near-black background with light text. Rendered literally that floods an e-ink
@@ -202,13 +267,101 @@ Three things cost time getting there, all worth knowing:
   comes up on a later retry. The interface's own retry loop handles it, so it
   is noise rather than a fault, but it looks alarming in the log.
 
+## Two config choices: revision and audio (2026-10-09)
+
+`tdeck_pro_config.py` carries two per-deck switches, both read by
+`board_tdeck_pro.py` with safe fallbacks for an older config file:
+
+- **`BOARD_REV`** (`"1.0"` default, or `"1.1"`). The revisions differ in two
+  pins that matter at boot: v1.1 has a real panel reset line on GPIO 16
+  (`DISP_RES`, pulsed by the driver) and no 1.8 V gate (`BOARD_1V8_EN` is
+  None; GPIO 38 is its CST328 touch reset). A v1.1 on the v1.0 map boots to
+  a blank panel -- the report in issue #1. Sources: Meshtastic's
+  `t-deck-pro` and `t-deck-pro-v1_1` variants, and the schematic reading in
+  that issue. v1.1 is untested here; the two decks this was written on are
+  v1.0.
+- **`HAS_AUDIO`** (`"auto"` default). The Pro ships either with the PCM5102A
+  I2S DAC or with the A7682E 4G modem, on the same GPIO 7/8/9 (the modem's
+  RI/ITR/RST). Set True on a DAC unit: `board.SPK_PINS` becomes LilyGO's
+  BCLK 7 / LRC 9 / DOUT 8 and `sound.Sound.init()` takes them. Meshtastic's
+  `PCM5102A_SCK 47 / DIN 17 / LRCK 18` is wrong (47 is the shared MISO), and
+  so was the copy of it this file used to carry. The v1's `sound.py` pins
+  (7/5/6) would land on the Pro's LoRa INT and BUSY, which is why the DAC
+  was off until the pins moved into the board layer. The DAC also sits
+  behind the module slot's power enable, GPIO 41 (`AUDIO_EN`; LilyGO's
+  `BOARD_6609_EN`, which their `test_pcm5102a` example raises first), so
+  `power_up()` raises it when `HAS_AUDIO`. Its speaker is small and
+  near-silent at the v1's chirps (440-660 Hz, amplitude ~2400): a loudness
+  and pitch ladder on hardware showed the same chirps an octave up at 8x the
+  level carry fine, so the board hands `sound.py` `AUDIO_GAIN = 8` and
+  `AUDIO_PITCH = 2` (config-editable) and voice playback is scaled by the
+  gain with saturation. The v1 keeps 1 and 1. Mono is the right format: a
+  mono/stereo/left/right comparison found mono loudest.
+
+LilyGO's "T-Deck Pro (4G / I2S) V1.1 PINMAP" graphic is the best single
+reference for a v1.1 and corrects a few things in this file's older notes:
+there IS a microphone (MIC_DATA 17, MIC_CLOCK 18 -- two wires, so a PDM
+part, which the S3's I2S can read; no driver here yet), the vibration motor
+driver DRV2605 is on IO02 on v1.1, the touch reset moved to IO38, GPIO 45 is
+a "pre-reserved backlight pin" with nothing on it (confirmed: driving it high
+lights nothing), and the audio module supports earphone and speaker.
+
+Both answers are found **once**: on the first boot with the defaults the
+board scans I2C for the revision and, after the panel is up, powers the
+module slot, pulses the modem's power key and sends AT for up to ~12 s
+(LilyGO's factory firmware does the same) with a notice on the panel. The
+result goes to `/tdeck_pro_hw.json` (`tdeck_pro_rev.PROFILE_PATH`) and every
+later boot reads it back in milliseconds. A config value other than `"auto"`
+overrides the saved one; deleting the file re-runs detection. A found modem
+is powered back down (GPIO 41 low), since nothing here drives it.
+
 ## Still unresolved
 
 The CST328 touch controller answers at 0x1A but has no driver; navigation is on
 the keyboard, so nothing needs it. The device at 0x28 is unidentified. Neither
 blocks the messenger.
 
-## Bring-up order
+## Firmware image (2026-10-09)
+
+The Pro now has a frozen-firmware build of its own, the same shape as the v1's:
+
+```bash
+bash tools/build_firmware.sh --pro
+esptool --chip esp32s3 --port /dev/cu.usbmodem* erase-flash
+esptool --chip esp32s3 --port /dev/cu.usbmodem* write-flash 0x0 tools/firmware_build/pro/tdeck_pro_firmware.bin
+```
+
+`--pro` selects the `TDECK_PRO` variant in `tools/board_tdeck/` (quad PSRAM,
+240 MHz, separate build dir), freezes `board_tdeck_pro.py`,
+`tdeck_pro_config.py`, `board_geometry_tdeck_pro.py` as `board_geometry`, a
+generated `board_id.py` (`tdeck_pro`) and the e-ink/TCA8418/BQ27220 drivers
+from `lib/`, and ships a filesystem holding only `tdeck_pro_config.py`.
+Outputs go to `tools/firmware_build/pro/` so v1 and Pro builds never clobber
+each other. Verified on hardware: boots, announces over LoRa, 8 MB PSRAM free,
+USB REPL reachable with the app running.
+
+Two things found the hard way:
+
+- **The UART REPL must be off on the Pro** (`MICROPY_HW_ENABLE_UART_REPL=0`
+  in the variant). UART0 RX is GPIO44, the GPS module's TX. Its stream lands
+  in the stdin ring buffer that USB CDC shares, fills it within a second of
+  boot, and `tud_cdc_rx_cb` refuses to read *anything* -- Ctrl-C included --
+  while the buffer is full. The app never reads stdin, so with the UART REPL
+  on, USB is deaf for as long as the app runs, while the app itself is fine.
+  Measured with the app halted: 400 stray stdin bytes in 3 s (0x1c/0xe0/0xfc,
+  a 38400-baud stream read at 115200). With the REPL on, it drains and echoes
+  them instead, which also corrupts anything pasted into raw REPL.
+- **The loader re-enters itself.** esptool talks to the Pro's USB-serial-JTAG
+  loader directly (unlike the v1), but on this board the chip reliably comes
+  back up in download mode after esptool closes the port, and opening that
+  0x1001 node from any program re-strapped it too (`rst:0x15 ... boot:0x0
+  (DOWNLOAD)` on its console). Press reset once after flashing, and never
+  open the serial node while the PID is 0x1001. The USB PID tells the state:
+  0x1001 loader, 0x4001 MicroPython.
+
+The file-by-file route below still works for development on stock MicroPython.
+
+## Bring-up order (stock MicroPython route)
 
 MicroPython **v1.24.1**, not the latest. `tools/build_firmware.sh` pins that
 version to match `.mpy` version 6, which the precompiled native modules in

@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.join(ROOT, "lib"))
 
 _mp = types.ModuleType("micropython")
 _mp.const = lambda x: x
+_mp.viper = lambda f: f
 sys.modules.setdefault("micropython", _mp)
 
 
@@ -183,6 +184,24 @@ def test_text_inverted():
 
 # --- refresh batching ------------------------------------------------------
 
+def test_text_on_an_ink_background_is_paper():
+    """Bright text on a bright band (a selected row, the unread pill) must
+    come out as paper glyphs on ink, not ink on ink."""
+    print("inverted rows")
+    p, s = new()
+    s.fill(DARK)
+    s.text(font, "A", 0, 0, WHITE, WHITE)          # bright on bright
+    cell = [[s.fb.pixel(x, y) for x in range(8)] for y in range(16)]
+    inked = sum(sum(r) for r in cell)
+    check("the cell is mostly ink (the band)", inked > 64, str(inked))
+    check("and the glyph is paper inside it", inked < 128, str(inked))
+    s.text(font, "A", 8, 0, WHITE, DARK)           # the normal case
+    cell2 = [[s.fb.pixel(8 + x, y) for x in range(8)] for y in range(16)]
+    check("ink on paper is unchanged", 0 < sum(sum(r) for r in cell2) < 64)
+    check("the two are each other's inverse",
+          all(cell[y][x] != cell2[y][x] for y in range(16) for x in range(8)))
+
+
 def test_no_flush_while_drawing():
     print("batching")
     p, s = new()
@@ -210,9 +229,94 @@ def test_large_change_is_full():
     s.flush()
     p.full = 0
     s.fill(DARK)                   # whole panel dirty
-    s.flush()
-    check("a full-screen change uses a full refresh", p.full == 1,
+    s.flush(force_full=True)       # what ui.py does on a screen change
+    check("a screen change is a full refresh", p.full == 1,
           "full=%d rects=%r" % (p.full, p.rects))
+    p.full = 0
+    p.rects = []
+    s.fill(WHITE)                  # whole panel again, but no debt and not forced
+    s.flush(user=True)
+    check("a large user redraw without debt is a quiet partial (a line scroll shifts every row)",
+          p.full == 0 and len(p.rects) == 1, "full=%d rects=%r" % (p.full, p.rects))
+
+
+def test_background_change_never_flashes():
+    """An announce changes the tab count at the top of the node list and
+    appends a row near the bottom. The bounding box of the two spans most
+    of the panel, which used to buy a full refresh -- a black/white flash
+    over a screen the user was reading, for two small changes. A redraw
+    nobody asked for gets one quiet partial of the changed rows, however
+    far apart they are; the flash is saved for a redraw the user caused."""
+    print("background redraws")
+    p, s = new()
+    s.fill(DARK)
+    s.flush()
+    p.full = 0
+    p.rects = []
+    s.text(font, "MSG7", 0, 20, WHITE, DARK)
+    s.text(font, "newbie", 0, 280, WHITE, DARK)
+    s.flush()
+    check("two far-apart changes from the background are one partial",
+          p.full == 0 and len(p.rects) == 1,
+          "full=%d rects=%r" % (p.full, p.rects))
+    check("the partial covers both changes",
+          p.rects and p.rects[0][1] <= 24 and p.rects[0][1] + p.rects[0][3] >= 288,
+          "got %r" % (p.rects,))
+
+    s.fill(WHITE)                   # even a whole-panel background change
+    p.rects = []
+    s.flush()
+    check("a whole-panel background change is still a partial",
+          p.full == 0 and len(p.rects) == 1,
+          "full=%d rects=%r" % (p.full, p.rects))
+
+
+def test_owed_full_refresh_waits_for_the_user():
+    """The ghosting budget still exists, but spending it must not flash a
+    screen nobody touched: once it is used up, background redraws keep
+    going as partials and the full refresh happens on the next redraw the
+    user causes, which is when they are changing the screen anyway."""
+    p, s = new()
+    s.fill(DARK)
+    s.flush()
+    p.full = 0
+    p.rects = []
+    for i in range(eink_shim._FAST_REFRESH_LIMIT + 3):
+        s.text(font, chr(ord("a") + i), 0, 0, WHITE, DARK)
+        s.flush()
+    check("an exhausted budget does not flash from the background",
+          p.full == 0, "full=%d partials=%d" % (p.full, len(p.rects)))
+    n = len(p.rects)
+    s.text(font, "k", 0, 0, WHITE, DARK)
+    s.flush(user=True)
+    check("a cursor-sized user redraw does not pay the debt (no flash per keypress)",
+          p.full == 0 and len(p.rects) == n + 1,
+          "full=%d partials=%d" % (p.full, len(p.rects)))
+    s.fill_rect(0, 40, 240, 120, WHITE)           # a page's worth changes
+    s.flush(user=True)
+    check("the owed full refresh lands on the next sizeable user redraw",
+          p.full == 1 and len(p.rects) == n + 1,
+          "full=%d partials=%d" % (p.full, len(p.rects)))
+    p.full = 0
+    s.fill_rect(0, 40, 240, 120, DARK)
+    s.flush(user=True)
+    check("and is owed only once", p.full == 0 and len(p.rects) == n + 2,
+          "full=%d partials=%d" % (p.full, len(p.rects)))
+
+
+def test_unattended_panel_still_clears_ghosting():
+    """A deck left on the desk ticks its clock once a minute and may never
+    see a key press. Ghosting cannot be left to accumulate forever, so a
+    much larger hard cap forces the full refresh even from the background."""
+    p, s = new()
+    s.fill(DARK)
+    s.flush()
+    p.full = 0
+    for i in range(eink_shim._FAST_REFRESH_HARD_LIMIT + 1):
+        s.text(font, chr(ord("a") + i % 26), 0, 0, WHITE, DARK)
+        s.flush()
+    check("the hard cap forces one full refresh unattended", p.full == 1,
+          "full=%d" % p.full)
 
 
 def test_fast_refresh_budget():
@@ -226,9 +330,11 @@ def test_fast_refresh_budget():
     # actually performed, which is what ghosting accumulates from.
     for i in range(12):
         s.text(font, chr(ord("a") + i), 0, 0, WHITE, DARK)
-        s.flush()
-    check("ghosting budget forces a full refresh within 11 partials",
-          p.full >= 1,
+        s.flush(user=True)
+    s.fill_rect(0, 40, 240, 120, WHITE)           # then a page change
+    s.flush(user=True)
+    check("ghosting budget forces a full refresh on the next page-sized redraw",
+          p.full == 1,
           "full=%d partials=%d" % (p.full, len(p.rects)))
 
 
@@ -293,6 +399,68 @@ def test_refresh_narrows_to_the_rows_that_moved():
           "got %r (full=%d)" % (p.rects, p.full))
 
 
+def _rgb565(r, g, b):
+    return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
+
+
+def _ink_fraction(p, s, x, y, w, h):
+    n = 0
+    for yy in range(y, y + h):
+        for xx in range(x, x + w):
+            n += s.fb.pixel(xx, yy)
+    return n / float(w * h)
+
+
+def _flat(w, h, color):
+    return bytes([color >> 8, color & 0xFF]) * (w * h)
+
+
+def test_dither_keeps_the_tone_and_the_right_polarity():
+    """blit_dither is for photographs: dark is ink (not the UI's inverted
+    rule), white is paper, and a mid grey comes out about half ink spread
+    through the area rather than all one or all the other."""
+    print("dithering")
+    p, s = new()
+    s.fill(DARK)
+    s.blit_dither(_flat(32, 16, _rgb565(255, 255, 255)), 8, 8, 32, 16)
+    check("white is paper", _ink_fraction(p, s, 8, 8, 32, 16) == 0.0)
+    s.blit_dither(_flat(32, 16, _rgb565(0, 0, 0)), 8, 8, 32, 16)
+    check("black is ink", _ink_fraction(p, s, 8, 8, 32, 16) == 1.0)
+    s.blit_dither(_flat(32, 16, _rgb565(128, 128, 128)), 8, 8, 32, 16)
+    f = _ink_fraction(p, s, 8, 8, 32, 16)
+    check("mid grey is about half ink", 0.4 <= f <= 0.6, "ink fraction %.2f" % f)
+    row = [s.fb.pixel(xx, 12) for xx in range(8, 40)]
+    check("and mixed within a row, not banded", 0 in row and 1 in row, str(row))
+    s.blit_dither(_flat(32, 16, _rgb565(64, 64, 64)), 8, 8, 32, 16)
+    f = _ink_fraction(p, s, 8, 8, 32, 16)
+    check("a dark grey is mostly ink", 0.65 <= f <= 0.85, "ink fraction %.2f" % f)
+    check("pixels outside the image are untouched",
+          s.fb.pixel(7, 8) == 0 and s.fb.pixel(40, 8) == 0 and s.fb.pixel(8, 24) == 0)
+    s.flush()
+    check("the dithered area reaches the panel", p.full == 1)
+
+
+def test_blit_buffer_thresholds_big_endian_rgb565():
+    """The shell compositor stores big-endian RGB565 (pre-swapped for the
+    ST7789); the blit must read it that way, bright as ink, and clip."""
+    p, s = new()
+    s.fill(DARK)
+    row = bytes([0xC6, 0x18] * 4 + [0x08, 0x21] * 4)     # BODY_FG x4, BG_DARK x4
+    s.blit_buffer(row, 0, 0, 8, 1)
+    check("bright pixels are ink", all(s.fb.pixel(x, 0) == 1 for x in range(4)))
+    check("dark pixels are paper", all(s.fb.pixel(x, 0) == 0 for x in range(4, 8)))
+    s.blit_buffer(bytes([0xFF, 0xFF] * 16), 232, 0, 16, 1)
+    check("a blit over the edge is clipped", s.fb.pixel(239, 0) == 1 and s.fb.pixel(0, 1) == 0)
+
+
+def test_dither_clips_to_the_panel():
+    p, s = new()
+    s.fill(DARK)
+    s.blit_dither(_flat(16, 16, _rgb565(0, 0, 0)), 232, 312, 16, 16)
+    check("an image over the edge is clipped, not wrapped",
+          s.fb.pixel(239, 319) == 1 and s.fb.pixel(0, 0) == 0)
+
+
 def test_first_flush_is_full():
     """Nothing has been pushed yet, so what the panel holds is unknown and
     there is nothing to diff against."""
@@ -318,13 +486,20 @@ if __name__ == "__main__":
     test_text_glyph()
     test_text_offset_x()
     test_text_inverted()
+    test_text_on_an_ink_background_is_paper()
     test_no_flush_while_drawing()
     test_small_change_is_partial()
     test_large_change_is_full()
+    test_background_change_never_flashes()
+    test_owed_full_refresh_waits_for_the_user()
+    test_unattended_panel_still_clears_ghosting()
     test_fast_refresh_budget()
     test_dirty_rect_union()
     test_redraw_of_identical_content_is_skipped()
     test_refresh_narrows_to_the_rows_that_moved()
+    test_dither_keeps_the_tone_and_the_right_polarity()
+    test_blit_buffer_thresholds_big_endian_rgb565()
+    test_dither_clips_to_the_panel()
     test_first_flush_is_full()
     test_flush_noop_when_clean()
     print()

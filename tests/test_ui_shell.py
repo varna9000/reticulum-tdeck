@@ -77,6 +77,53 @@ def _type(g, s):
         g.handle_key(bytes([c]) if isinstance(c, int) else c.encode())
 
 
+def test_mono_panel_uses_the_text_grid_for_the_shell():
+    """On a mono panel the shell grid stops short of the scroll lane: 40
+    columns of 6 px would fill the Pro's 240 px exactly and the lane painted
+    over the last column. The colour build keeps the full width."""
+    class MonoTFT(FakeTFT):
+        mono = True
+    g = ui.UI(MonoTFT(), object(), lambda: b"\x00", node_name="t", trackball=False)
+    g._screen_on = True
+    sf = g._set_shell_font()
+    c = _mkui()
+    cf = c._set_shell_font()
+    if sf is None or cf is None:
+        print("skip test_mono_panel_uses_the_text_grid_for_the_shell (no font module on host)")
+        return
+    assert sf.cols == (ui.SCREEN_W - ui.SBAR_W - 2) // sf.w, sf.cols
+    assert cf.cols == ui.SCREEN_W // cf.w, cf.cols
+    assert sf.cols < cf.cols
+    print("ok test_mono_panel_uses_the_text_grid_for_the_shell")
+
+
+def test_shell_repaints_after_the_sleep_screen():
+    """On a panel without a backlight, sleep paints a sleep screen over the
+    terminal. The shell's own row cache must be dropped on wake, or the rows
+    are deemed already drawn and the sleep text stays in the window."""
+    class MonoTFT(FakeTFT):
+        mono = True
+    g = ui.UI(MonoTFT(), object(), lambda: b"\x00", node_name="t", trackball=False)
+    g._screen_on = True
+    g._panel_flush = lambda force_full=False, user=False: None
+    import terminal
+    g._set_shell_font()
+    g._terminal = terminal.Terminal(cols=ui.COLS)
+    g._terminal.feed(b"hello from the pty\r\n")
+    g.state = ui.STATE_SHELL
+    g.draw()
+    g.tft.calls = []
+    g.draw()
+    assert not [c for c in g.tft.calls if c[0] == "text" and "hello" in str(c[1])], "cached row redrawn"
+    g.sleep_screen()
+    g.wake_screen()
+    g.tft.calls = []
+    g.draw()
+    assert [c for c in g.tft.calls if c[0] == "text" and "hello" in str(c[1])], \
+        "the terminal row was not repainted after the sleep screen"
+    print("ok test_shell_repaints_after_the_sleep_screen")
+
+
 def test_trackball_cycles_into_ssh_tab():
     # Regression: the trackball must reach the SSH tab (was capped at MSG/NET).
     # Since the RRC tab landed it must carry on through that one too, so this

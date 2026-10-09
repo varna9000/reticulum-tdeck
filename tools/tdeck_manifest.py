@@ -93,14 +93,41 @@ freeze(_root, "tdeck_config.py")
 
 # --- Board layer ---
 # tdeck_node.py no longer hardwires the T-Deck v1: board.py picks a hardware
-# module from board_id.py. Only the v1 board module is frozen here, because
-# this firmware IS the v1 firmware -- board_tdeck_pro.py is deployed onto a
-# stock MicroPython Pro from the filesystem instead. board_id.py is frozen at
-# its checked-in value ("tdeck_v1") and, like tdeck_config.py, a filesystem
-# copy still shadows it.
+# module from board_id.py. Which board module gets frozen is chosen by the
+# TDECK_BOARD env var that build_firmware.sh exports ("tdeck_v1" by default,
+# "tdeck_pro" for `build_firmware.sh --pro`), so one manifest serves both
+# images and neither carries the other's hardware layer.
+#
+# v1: board_id.py is frozen at its checked-in value ("tdeck_v1") and, like
+# tdeck_config.py, a filesystem copy still shadows it.
+#
+# Pro: board_id.py is generated into the stage dir with BOARD = "tdeck_pro",
+# the Pro config is frozen as the fallback tdeck_config.py is on the v1, the
+# e-ink/keyboard/fuel-gauge drivers come along from lib/, and
+# board_geometry_tdeck_pro.py is staged under the name ui.py imports
+# (board_geometry) -- exactly what tools/deploy_pro.sh does on the filesystem.
+_board = os.environ.get("TDECK_BOARD", "tdeck_v1")
 freeze(_root, "board.py")
-freeze(_root, "board_id.py")
-freeze(_root, "board_tdeck_v1.py")
+if _board == "tdeck_pro":
+    with open(_stage + "/board_id.py", "w") as _f:
+        _f.write('# Generated at build time by tdeck_manifest.py -- see board.py.\n'
+                 'BOARD = "tdeck_pro"\n')
+    freeze(_stage, "board_id.py")
+    freeze(_root, "board_tdeck_pro.py")
+    freeze(_root, "tdeck_pro_rev.py")
+    freeze(_root, "tdeck_pro_config.py")
+    shutil.copyfile(_root + "/board_geometry_tdeck_pro.py",
+                    _stage + "/board_geometry.py")
+    freeze(_stage, "board_geometry.py")
+    freeze(_root + "/lib", "eink_gdeq031t10.py")
+    freeze(_root + "/lib", "eink_shim.py")
+    freeze(_root + "/lib", "tca8418.py")
+    freeze(_root + "/lib", "bq27220.py")
+elif _board == "tdeck_v1":
+    freeze(_root, "board_id.py")
+    freeze(_root, "board_tdeck_v1.py")
+else:
+    raise SystemExit("TDECK_BOARD must be tdeck_v1 or tdeck_pro, not %r" % _board)
 
 freeze(_root, "ui.py")
 freeze(_root, "sound.py")

@@ -1,6 +1,10 @@
 # T-Deck I2S Notification Tones + Voice Playback
-# MAX98357A amplifier on BCK=7, WS=5, DOUT=6
-# Soft tones with fade-in/fade-out envelope
+# Soft tones with fade-in/fade-out envelope.
+#
+# The I2S pins come from the board (board.SPK_PINS): the v1's MAX98357A sits
+# on BCK=7, WS=5, DOUT=6, the Pro's PCM5102A on BCLK=7, LRCK=9, DOUT=8. The
+# v1 numbers stay as init()'s defaults, so nothing that already calls init()
+# bare changes behaviour.
 
 import struct
 import math
@@ -15,10 +19,49 @@ _RATE = 8000  # 8kHz sample rate
 _BITS = 16
 
 
+try:
+    ptr16                     # a viper type name, resolved by the compiler
+except NameError:
+    # Host tests: 16-bit word indexing over the buffer, which is what viper's
+    # ptr16 does on the device. Never reached there.
+    ptr16 = lambda b: memoryview(b).cast("H")
+
+
+@micropython.viper
+def _pdm_to_8k(dst, src, n: int, dc: int) -> int:
+    """Decimate 16 kHz mono PCM (2n samples in src) to 8 kHz (n samples in
+    dst) with a 2-tap average and IIR DC removal. Returns the DC estimate
+    in the top 16 bits and the chunk's |peak| in the low 16."""
+    d = ptr16(dst)
+    s = ptr16(src)
+    pk = 0
+    for i in range(n):
+        a = int(s[2 * i])
+        b = int(s[2 * i + 1])
+        if a >= 0x8000:
+            a -= 0x10000
+        if b >= 0x8000:
+            b -= 0x10000
+        x = (a + b) >> 1
+        dc = (dc * 31 + x) >> 5
+        x -= dc
+        if x > 32767:
+            x = 32767
+        elif x < -32768:
+            x = -32768
+        d[i] = x & 0xFFFF
+        if x < 0:
+            x = -x
+        if x > pk:
+            pk = x
+    return ((dc & 0xFFFF) << 16) | pk
+
+
 @micropython.viper
 def _scale_pcm(dst, src, n: int, factor: int):
-    """Fixed-point attenuation of 16-bit LE signed PCM: out = in*factor>>8.
-    factor 0..256 (256 = unity) — attenuation only, cannot clip."""
+    """Fixed-point scaling of 16-bit LE signed PCM: out = in*factor>>8,
+    saturated. factor 256 = unity; below attenuates, above (a board gain)
+    amplifies and clips at full scale rather than wrapping."""
     d = ptr16(dst)
     s = ptr16(src)
     for i in range(n):
@@ -26,6 +69,10 @@ def _scale_pcm(dst, src, n: int, factor: int):
         if x >= 0x8000:
             x -= 0x10000
         x = (x * factor) >> 8
+        if x > 32767:
+            x = 32767
+        elif x < -32768:
+            x = -32768
         d[i] = x & 0xFFFF
 
 
@@ -36,21 +83,36 @@ class Sound:
         self.volume = 8       # 0-10, default 8
         self._pcm_scratch = None  # reusable buffer for volume-scaled playback
         self._i2s = None
+        self.gain = 1
+        self.pitch = 1
         self._rx_buf = None
         self._tx_buf = None
         self._ann_buf = None
         self._es7210 = None
         self._i2s_mic = None
+        self._pdm = None          # the pdm_mic module, once init_pdm_mic() ran
         self._mclk = None
         self._recording = False
 
-    def init(self):
-        """Initialize I2S and pre-compute tone buffers."""
+    def init(self, bck=_BCK, ws=_WS, dout=_DOUT, gain=1, pitch=1, port=0):
+        """Initialize I2S on the given pins and pre-compute tone buffers.
+
+        gain multiplies every level (tones and PCM playback) and pitch every
+        tone frequency; both come from the board (board.AUDIO_GAIN/PITCH).
+        The v1's MAX98357A amplifier takes the tones as written. The Pro's
+        PCM5102A feeds a small speaker that is near-silent at the stock
+        440-660 Hz chirps and level: it needs them an octave up and several
+        times louder (heard on hardware, 2026-10-09).
+        """
+        self.gain = gain
+        self.pitch = pitch
+        # port: the Pro plays on I2S 1, because its PDM microphone needs
+        # port 0 (the S3's only PDM receiver); the v1 plays on 0.
         self._i2s = I2S(
-            0,
-            sck=Pin(_BCK),
-            ws=Pin(_WS),
-            sd=Pin(_DOUT),
+            port,
+            sck=Pin(bck),
+            ws=Pin(ws),
+            sd=Pin(dout),
             mode=I2S.TX,
             bits=_BITS,
             format=I2S.MONO,
@@ -62,12 +124,17 @@ class Sound:
     def _regen_tones(self):
         """(Re)build the notification tone buffers at the current volume."""
         v = self.volume
+        g = self.gain
+        p = self.pitch
+        # Levels are per-board (gain) and never past full scale.
+        def amp(a):
+            return min(30000, a * g * v // 10)
         # RX: gentle two-tone chirp (soft ding)
-        self._rx_buf = self._gen_chirp(660, 880, 120, 4000 * v // 10)
+        self._rx_buf = self._gen_chirp(660 * p, 880 * p, 120, amp(4000))
         # TX: short soft blip
-        self._tx_buf = self._gen_tone(440, 80, 3000 * v // 10)
+        self._tx_buf = self._gen_tone(440 * p, 80, amp(3000))
         # Announce: short rising chirp
-        self._ann_buf = self._gen_chirp(440, 660, 100, 3000 * v // 10)
+        self._ann_buf = self._gen_chirp(440 * p, 660 * p, 100, amp(3000))
 
     def set_volume(self, v):
         """Set playback volume 0-10 (0 = mute, 10 = full) and rebuild tones."""
@@ -134,14 +201,14 @@ class Sound:
         """Play raw 16-bit LE signed PCM at 8kHz mono, attenuated by volume."""
         if not (self.enabled and self._i2s and pcm_bytes) or self.volume == 0:
             return
-        if self.volume >= 10:
+        if self.volume >= 10 and self.gain == 1:
             self._i2s.write(pcm_bytes)
             return
         n = len(pcm_bytes)
         if self._pcm_scratch is None or len(self._pcm_scratch) < n:
             self._pcm_scratch = bytearray(n)
         mv = memoryview(self._pcm_scratch)[:n]
-        _scale_pcm(mv, pcm_bytes, n // 2, self.volume * 256 // 10)
+        _scale_pcm(mv, pcm_bytes, n // 2, self.volume * 256 * self.gain // 10)
         self._i2s.write(mv)
 
     def init_mic(self, i2c):
@@ -165,6 +232,20 @@ class Sound:
         self._mic_out = None   # pre-allocated output buffer
         self._mic_peak = 0     # |peak| of the most recent chunk (for a VU meter)
         self._capturing = False  # False during the warm-up, True once capturing
+
+    def init_pdm_mic(self, clk, data):
+        """Initialize a PDM microphone (T-Deck Pro: MIC_CLOCK 18, MIC_DATA 17)
+        through the pdm_mic built-in module. The hardware filter delivers 16-bit
+        mono PCM at 16 kHz; read_mic_chunk() halves that to the 8 kHz Codec2
+        wants. No ADC to prime: a PDM mic is live as soon as it is clocked."""
+        import pdm_mic
+        pdm_mic.init(clk, data, 16000)
+        self._pdm = pdm_mic
+        self._mic_dc = 0
+        self._mic_raw = None
+        self._mic_out = None
+        self._mic_peak = 0
+        self._capturing = False
 
     @property
     def is_capturing(self):
@@ -196,6 +277,15 @@ class Sound:
         return mx - mn
 
     def prime_mic(self, abort=None):
+        if self._pdm is not None:
+            # Drop whatever sat in the DMA ring before the user pressed record
+            # (up to ~250 ms of stale audio), then capture. Nothing to warm.
+            raw = self._mic_raw if self._mic_raw else bytearray(4096)
+            self._pdm.readinto(raw)
+            return True
+        return self._prime_es7210(abort)
+
+    def _prime_es7210(self, abort=None):
         """Bring the ES7210 to a live, producing state and LEAVE it running.
 
         Measured behaviour: from cold the ADC produces audio only after ~3s
@@ -282,6 +372,8 @@ class Sound:
         Pattern is [L,R,0,0] repeating — valid L at stride 4.
         Applies DC offset removal. Returns pre-allocated 8kHz mono 16-bit PCM.
         Uses pre-allocated buffers to avoid GC pauses during recording."""
+        if self._pdm is not None:
+            return self._read_pdm_chunk(out_samples)
         if not self._i2s_mic:
             return None
         # Use pre-allocated buffers if available, else allocate (standalone use)
@@ -300,6 +392,26 @@ class Sound:
             elif s < -32768: s = -32768
             struct.pack_into("<h", out, i * 2, s)
         self._mic_dc = dc
+        return out
+
+    def _read_pdm_chunk(self, out_samples):
+        """16 kHz mono from the PDM filter -> 8 kHz mono: average each pair
+        of samples (a 2-tap low-pass, enough for speech), remove DC. The
+        pre-allocated buffers are sized for the ES7210 path (8 B per output
+        sample); this path needs 4 B, so it reads into a slice."""
+        raw = self._mic_raw if self._mic_raw else bytearray(out_samples * 4)
+        out = self._mic_out if self._mic_out else bytearray(out_samples * 2)
+        need = out_samples * 4
+        mv = memoryview(raw)[:need]
+        got = 0
+        while got < need:
+            n = self._pdm.readinto(mv[got:])
+            if not n:
+                return None
+            got += n
+        packed = _pdm_to_8k(out, raw, out_samples, self._mic_dc)
+        self._mic_dc = (packed >> 16) if (packed >> 16) < 0x8000 else (packed >> 16) - 0x10000
+        self._mic_peak = packed & 0xFFFF
         return out
 
     def deinit(self):

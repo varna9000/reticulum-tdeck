@@ -144,6 +144,41 @@ The T-Deck must be in **download mode** to flash: short GPIO0 to GND while press
 
 Frozen modules execute directly from flash ROM — zero RAM overhead, instant imports. The two user-editable files (`main.py` and `tdeck_config.py`) are on the filesystem so users can modify pin configs, radio parameters, or app behavior without rebuilding firmware.
 
+#### T-Deck Pro (e-ink)
+
+Two things to set in `tdeck_pro_config.py` before building (it stays editable on the device too):
+
+- `BOARD_REV`: `"auto"` (default) detects the revision at boot over I2C the way LilyGO documents it (a DRV2605 at 0x5A is V1.1, an XL9555 at 0x20 is MAX); set `"1.0"`, `"1.1"` or `"max"` to override. The revisions differ in the panel reset line and the 1.8 V gate; a V1.1 on the V1.0 map can boot to a blank panel.
+- `HAS_AUDIO`: `"auto"` (default) finds out on the first boot whether the module slot holds the PCM5102A audio DAC or the A7682E 4G modem, the way LilyGO's factory firmware does (power the slot, send AT for up to ~12 s; silence means the DAC), shows a notice on the panel meanwhile, and saves the answer together with the revision in `/tdeck_pro_hw.json` so no later boot probes again. `True` or `False` overrides it. Delete that file to detect again. The two modules share GPIO 7/8/9, which is why this is decided before the DAC is driven.
+
+The Pro has no trackball; its **alt** key (sticky, tap it then the letter within 1.5 s) carries the navigation the v1 does with the ball:
+
+| Gesture | Pro keys |
+|---|---|
+| Up / down (cursor, scroll) | alt+E / alt+X (bare e / x also work on list screens) |
+| Left / right (tabs, paging) | alt+S / alt+F (bare b cycles tabs) |
+| Click (open, select) | alt+W, or Enter where the screen has no text field |
+| Back | Backspace on an empty field |
+| Keyboard backlight | alt+B |
+
+The Pro gets its own image: `bash tools/build_firmware.sh --pro` writes
+`tools/firmware_build/pro/tdeck_pro_firmware.bin` (full, 4 MB) and `tdeck_pro_update.bin` (app
+only). It is a separate build variant — quad PSRAM instead of the v1's octal, the e-ink, TCA8418
+keyboard and BQ27220 fuel-gauge drivers frozen in, `board_id` preset to `tdeck_pro`, and **no UART
+REPL**: UART0's RX pin is the Pro's GPS TX, and the GPS stream fills the stdin buffer the USB port
+shares, which leaves USB deaf to Ctrl-C while the app runs. Flash it exactly like the v1 image:
+
+```bash
+esptool --chip esp32s3 --port /dev/cu.usbmodem* erase-flash
+esptool --chip esp32s3 --port /dev/cu.usbmodem* write-flash 0x0 tools/firmware_build/pro/tdeck_pro_firmware.bin
+```
+
+Enter download mode by holding **BOOT** while pressing reset. Two quirks of the Pro's USB-serial-JTAG
+loader: esptool syncs with it directly (no JTAG detour needed), but the chip tends to land back in
+the loader after esptool closes the port, so **press reset once** after flashing. The filesystem
+carries only `tdeck_pro_config.py`; the radio defaults there are US 915 MHz, so edit `freq_khz` to
+match your mesh. Not yet ported on the Pro: voice messages (no microphone) and touch.
+
 ### Option C: Manual Setup (Development)
 
 For development or if you prefer stock MicroPython without a custom firmware build.
@@ -253,7 +288,7 @@ re-appears on the next announce. When the peer list fills up (16 entries) the
 **least-recently-seen** peer that is not favorited is evicted — never the one you're actively
 chatting with.
 
-**Find** (`m`, on any tab) searches every address of that tab's kind the node has heard — LXMF peers on MSG, NomadNet nodes on NET, hubs on RRC, listeners on RNSH — not just the 16 in the list, but the whole announce cache (up to 768 identities). Type part of a display name (`deej`) or the start of an address (`b90d`); matches list newest first with their hash prefix and age, so two with similar names can be told apart. Move with the trackball, and click or press Enter to add the pick to the tab's list and select it; opening it (chat, page, hub, shell) is the usual click away, so nothing connects by surprise. To add something whose announce hasn't reached you — say an address posted as a QR code online — type all 32 hex characters: it is added as `?`, a path request goes out, and the name fills in when the answer arrives instead of hours later at its next announce. Messages typed to a `?` peer are queued and sent once a path is known. On RRC and RNSH the screen also shows your identity hash, for a hub operator or a listener's `-a`.
+**Find** (`m`, on any tab) searches every address of that tab's kind the node has heard — LXMF peers on MSG, NomadNet nodes on NET, hubs on RRC, listeners on RNSH — not just the 16 in the list, but the whole announce cache (up to 768 identities). Type part of a display name (`deej`) or the start of an address (`b90d`); matches list newest first with their hash prefix and age, so two with similar names can be told apart. Move with the trackball, and click or press Enter to add the pick to the tab's list and select it; opening it (chat, page, hub, shell) is the usual click away, so nothing connects by surprise. Backspace on an empty query goes back to the list. To add something whose announce hasn't reached you — say an address posted as a QR code online — type all 32 hex characters: it is added as `?`, a path request goes out, and the name fills in when the answer arrives instead of hours later at its next announce. Messages typed to a `?` peer are queued and sent once a path is known. On RRC and RNSH the screen also shows your identity hash, for a hub operator or a listener's `-a`.
 
 The footer's right side shows a compact status for the **selected entry** — hop count, last RSSI, and last-seen age (`2h -87dB 5m`), learned from announces. Pinging sends a probe to the peer's `urns.probe` destination and shows the round-trip time (`ping: 2.4s`); peers must run uP-reticulum with the probe responder enabled to answer.
 
@@ -323,7 +358,7 @@ Rooms are IRC-style multi-user chat over Reticulum. Sessions are **on-demand**: 
 
 Both screens work the same way, and neither binds a letter key:
 
-**click** opens the list that screen is about · **click again** acts on the highlighted row · **backspace** closes it
+**click** (or **Enter**, the only way on the T-Deck Pro) opens the list that screen is about · **click again** or **Enter** acts on the highlighted row · **backspace** closes it
 
 | Action | Input |
 |---|---|
@@ -352,10 +387,11 @@ On the **T-Deck Pro**, which has no trackball, `Alt`+`W` is the click.
 |---|---|
 | Type message | Keyboard |
 | Send message | Enter |
-| Navigate messages | Trackball up/down (moves highlight cursor) |
-| Page through history | Trackball left/right |
-| View image | Click trackball on a highlighted `[image]` line |
-| Record voice | Press `0` (empty input) |
+| Navigate messages | Trackball up/down (moves highlight cursor); Pro: alt+E / alt+X |
+| Page through history | Trackball left/right; Pro: alt+S / alt+F |
+| View image | Click trackball on a highlighted `[image]` line; Pro: alt+W |
+| Record voice | Press `0` (empty input); on the Pro `sym`+`0` |
+| Open image / play voice on the cursor line | Trackball click, or Enter with an empty input |
 | Back to node list | Backspace (empty input) or Escape |
 
 The message input scrolls with a `<` marker so long messages stay visible as

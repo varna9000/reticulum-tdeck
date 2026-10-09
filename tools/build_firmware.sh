@@ -8,8 +8,10 @@
 # Usage:
 #   cd tools && bash build_firmware.sh          # C driver + frozen app
 #   cd tools && bash build_firmware.sh --no-freeze  # C driver only
+#   cd tools && bash build_firmware.sh --pro    # T-Deck Pro (quad PSRAM, e-ink)
 #
 # Output: bootloader.bin, partition-table.bin, micropython.bin in firmware_build/
+# (firmware_build/pro/ for --pro, as tdeck_pro_firmware.bin / tdeck_pro_update.bin)
 # Flash with: bash flash_tdeck.sh
 
 set -e
@@ -24,11 +26,29 @@ ST7789_REPO="https://github.com/russhughes/st7789_mpy.git"
 BOARD="ESP32_GENERIC_S3"
 VARIANT="SPIRAM_OCT"
 FREEZE=1
+# Which hardware layer tdeck_manifest.py freezes and which files build_vfs.py
+# ships. The Pro build is a separate variant (own build dir, quad PSRAM --
+# see board_tdeck/mpconfigvariant_TDECK_PRO.cmake) and its outputs land in
+# firmware_build/pro/ so a v1 build never clobbers them, or vice versa.
+export TDECK_BOARD="tdeck_v1"
+OUT_DIR="$SCRIPT_DIR/firmware_build"
+IMG_NAME="tdeck"
 
-if [ "$1" = "--no-freeze" ]; then
-    FREEZE=0
-    echo "=== Building WITHOUT frozen modules ==="
-fi
+for arg in "$@"; do
+    case "$arg" in
+        --no-freeze)
+            FREEZE=0
+            echo "=== Building WITHOUT frozen modules ===" ;;
+        --pro)
+            VARIANT="TDECK_PRO"
+            TDECK_BOARD="tdeck_pro"
+            OUT_DIR="$SCRIPT_DIR/firmware_build/pro"
+            IMG_NAME="tdeck_pro"
+            echo "=== Building for the T-Deck Pro ===" ;;
+        *)
+            echo "unknown option: $arg"; exit 1 ;;
+    esac
+done
 
 echo "=== Build dir: $BUILD_DIR ==="
 echo "=== T-Deck root: $TDECK_ROOT ==="
@@ -166,11 +186,15 @@ make $MAKE_ARGS -j$(sysctl -n hw.ncpu 2>/dev/null || nproc) all 2>&1 | tail -20
 BUILD_OUT="$BUILD_DIR/micropython/ports/esp32/build-${BOARD}-${VARIANT}"
 
 if [ -f "$BUILD_OUT/micropython.bin" ]; then
-    cp "$BUILD_OUT/micropython.bin"                "$BUILD_DIR/"
-    cp "$BUILD_OUT/bootloader/bootloader.bin"      "$BUILD_DIR/"
-    cp "$BUILD_OUT/partition_table/partition-table.bin" "$BUILD_DIR/"
+    mkdir -p "$OUT_DIR"
+    cp "$BUILD_OUT/micropython.bin"                "$OUT_DIR/"
+    cp "$BUILD_OUT/bootloader/bootloader.bin"      "$OUT_DIR/"
+    cp "$BUILD_OUT/partition_table/partition-table.bin" "$OUT_DIR/"
+    # The app-only update image (M5Launcher OTA slot / JTAG slot flash) is
+    # byte-identical to the app image; releases ship it under this name.
+    cp "$BUILD_OUT/micropython.bin" "$OUT_DIR/${IMG_NAME}_update.bin"
 
-    APP_SIZE=$(stat -f%z "$BUILD_DIR/micropython.bin" 2>/dev/null || stat -c%s "$BUILD_DIR/micropython.bin")
+    APP_SIZE=$(stat -f%z "$OUT_DIR/micropython.bin" 2>/dev/null || stat -c%s "$OUT_DIR/micropython.bin")
 
     # --- Step 5: VFS image + single-flash merge ---
     # Optional: without littlefs-python you still get the three-part flash,
@@ -179,7 +203,7 @@ if [ -f "$BUILD_OUT/micropython.bin" ]; then
     if python3 -c "import littlefs" 2>/dev/null; then
         echo ""
         echo "=== Building VFS image ==="
-        python3 "$SCRIPT_DIR/build_vfs.py" --out "$BUILD_DIR/vfs.bin"
+        python3 "$SCRIPT_DIR/build_vfs.py" --board "$TDECK_BOARD" --out "$OUT_DIR/vfs.bin"
 
         # Offsets come from the partition table; keep them in step with
         # board_tdeck/partitions-tdeck-8MiB.csv if that table ever moves.
@@ -188,12 +212,12 @@ import sys; sys.path.insert(0, '$SCRIPT_DIR')
 from build_vfs import parse_partition, PART_CSV
 print(hex(parse_partition(PART_CSV)[0]))")
         echo "=== Merging single-flash image (vfs @ $VFS_OFF) ==="
-        python3 -m esptool --chip esp32s3 merge_bin -o "$BUILD_DIR/tdeck_firmware.bin" \
+        python3 -m esptool --chip esp32s3 merge_bin -o "$OUT_DIR/${IMG_NAME}_firmware.bin" \
             --flash_mode dio --flash_size 8MB --flash_freq 80m \
-            0x0 "$BUILD_DIR/bootloader.bin" \
-            0x8000 "$BUILD_DIR/partition-table.bin" \
-            0x10000 "$BUILD_DIR/micropython.bin" \
-            "$VFS_OFF" "$BUILD_DIR/vfs.bin" 2>&1 | tail -2
+            0x0 "$OUT_DIR/bootloader.bin" \
+            0x8000 "$OUT_DIR/partition-table.bin" \
+            0x10000 "$OUT_DIR/micropython.bin" \
+            "$VFS_OFF" "$OUT_DIR/vfs.bin" 2>&1 | tail -2
         MERGED=1
     else
         echo ""
@@ -204,20 +228,21 @@ print(hex(parse_partition(PART_CSV)[0]))")
     echo "=== SUCCESS ==="
     echo "App size: $((APP_SIZE / 1024)) KB"
     echo ""
-    echo "Output files in $BUILD_DIR/:"
+    echo "Output files in $OUT_DIR/:"
     echo "  bootloader.bin      (0x0)"
     echo "  partition-table.bin (0x8000)"
     echo "  micropython.bin     (0x10000)"
+    echo "  ${IMG_NAME}_update.bin  (app-only, same bytes as micropython.bin)"
     if [ -n "$MERGED" ]; then
         echo "  vfs.bin             ($VFS_OFF)"
-        echo "  tdeck_firmware.bin  (0x0, single-flash, 8MB)"
+        echo "  ${IMG_NAME}_firmware.bin  (0x0, single-flash)"
     fi
     echo ""
     echo "Flash with:"
     echo "  bash $SCRIPT_DIR/flash_tdeck.sh [PORT]"
     if [ -n "$MERGED" ]; then
         echo "or, wiping the filesystem (backs out /rns identity too):"
-        echo "  esptool --chip esp32s3 write-flash 0x0 $BUILD_DIR/tdeck_firmware.bin"
+        echo "  esptool --chip esp32s3 write-flash 0x0 $OUT_DIR/${IMG_NAME}_firmware.bin"
     fi
     if [ "$FREEZE" = "1" ]; then
         echo ""

@@ -46,6 +46,30 @@ def check(cond, name, detail=""):
         _failures.append(name)
 
 
+def test_pages_wrap_to_the_panels_columns():
+    """The Pro's panel is 30 columns, the v1's 40. A page wrapped to 40
+    on the Pro loses the right third of every line off the panel edge, so
+    the wrap width has to be the UI's COLS, read when the page renders."""
+    page = "the quick brown fox jumps over the lazy dog " * 3
+    saved = sys.modules.get("ui")
+    try:
+        sys.modules["ui"] = types.SimpleNamespace(COLS=30)
+        lines, _links = nomad_browser._render_page(page)
+        widest = max(sum(len(sp[1]) for sp in row) for row in lines)
+        check(widest <= 30 and widest > 20, "a page wraps to a 30-column panel",
+              "widest row %d" % widest)
+        sys.modules["ui"] = types.SimpleNamespace(COLS=40)
+        lines, _links = nomad_browser._render_page(page)
+        widest = max(sum(len(sp[1]) for sp in row) for row in lines)
+        check(widest <= 40 and widest > 30, "and to a 40-column one",
+              "widest row %d" % widest)
+    finally:
+        if saved is None:
+            sys.modules.pop("ui", None)
+        else:
+            sys.modules["ui"] = saved
+
+
 def test_fetch_image_request_includes_key():
     captured = {}
 

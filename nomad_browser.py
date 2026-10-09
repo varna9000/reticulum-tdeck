@@ -213,6 +213,20 @@ def browser_exit():
     _gui.browser_status = None
 
 
+def _render_page(text):
+    """Wrap a micron page to the panel's columns: 40 on the v1's 320 px,
+    30 on the Pro's 240 px. ui.COLS is read here, at render time, rather
+    than imported at module load, so the host tests of this file do not
+    drag in the display stack and can swap the width."""
+    import micron
+    try:
+        import ui
+        width = ui.COLS
+    except ImportError:
+        width = 40
+    return micron.render(text, width)
+
+
 def _status(text):
     _gui.browser_status = text
     _gui.dirty = True
@@ -322,8 +336,7 @@ async def _fetch(dest_hash, path, push, keep_pos=False):
     if not isinstance(data, str):
         _status("unsupported response")
         return
-    import micron
-    lines, links = micron.render(data, 40)
+    lines, links = _render_page(data)
     del data
     gc.collect()
 

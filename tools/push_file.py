@@ -29,7 +29,10 @@ import os
 import subprocess
 import sys
 
-MPREMOTE = os.path.expanduser("~/.local/bin/mpremote")
+# Prefer the mpremote on PATH (brew installs to /opt/homebrew/bin); fall back
+# to the pip --user location this script was written against.
+import shutil
+MPREMOTE = shutil.which("mpremote") or os.path.expanduser("~/.local/bin/mpremote")
 CHUNK = 4096          # raw bytes per chunk; ~5.5KB once base64'd
 ATTEMPTS = 6
 

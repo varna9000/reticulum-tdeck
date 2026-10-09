@@ -40,6 +40,18 @@ config = _impl.config
 # Traits the app branches on.
 HAS_TRACKBALL = _impl.HAS_TRACKBALL
 HAS_AUDIO = _impl.HAS_AUDIO
+# (bck, ws, dout) for sound.Sound.init() where HAS_AUDIO; None otherwise.
+SPK_PINS = _impl.SPK_PINS
+# Tone level and pitch multipliers for this board's speaker (1 and 1 = the
+# tones as written, which the v1's amplifier wants; the Pro needs more).
+AUDIO_GAIN = _impl.AUDIO_GAIN
+AUDIO_PITCH = _impl.AUDIO_PITCH
+# I2S port for playback (the Pro's PDM mic needs port 0, so it plays on 1).
+SPK_PORT = _impl.SPK_PORT
+# Microphone: "es7210" (v1, over I2C + I2S) or "pdm" (Pro, MIC_PINS =
+# (clk, data)); None where HAS_MIC is False.
+MIC_KIND = _impl.MIC_KIND
+MIC_PINS = _impl.MIC_PINS
 HAS_MIC = _impl.HAS_MIC
 HAS_JPEG_SPLASH = _impl.HAS_JPEG_SPLASH
 # True where the panel is 1-bit. "Dimmed" is not a shade there, so anything

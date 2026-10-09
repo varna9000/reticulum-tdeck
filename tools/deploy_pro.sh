@@ -98,6 +98,7 @@ add "$FW/peripherals/adc_reader.py" "lib/adc_reader.py"
 add "$SRC/tdeck_pro_config.py"         "tdeck_pro_config.py"
 add "$SRC/board.py"                    "board.py"
 add "$SRC/board_tdeck_pro.py"          "board_tdeck_pro.py"
+add "$SRC/tdeck_pro_rev.py"            "tdeck_pro_rev.py"
 add "$SRC/board_geometry_tdeck_pro.py" "board_geometry.py"
 add "$FW/lora_boards.py"               "lora_boards.py"
 

@@ -78,11 +78,15 @@ class FakePanel(FakeTFT):
     def __init__(self):
         FakeTFT.__init__(self)
         self.flushes = 0
+        self.users = []        # the `user` flag of every flush, in order
+        self.fulls = []        # the `force_full` flag of every flush
         self.acquired = None   # set by the harness, read at flush time
 
-    def flush(self):
+    def flush(self, force_full=False, user=False):
         self.flushes += 1
         self.log.append("flush@%s" % self.acquired)
+        self.users.append(user)
+        self.fulls.append(force_full)
 
 
 def _mkui(tft):
@@ -121,6 +125,51 @@ def test_tft_without_flush():
     g._flush()  # must be a no-op, not an AttributeError
     check("_flush() is inert on a plain TFT", True)
     check("the flush hook resolved to None", g._panel_flush is None)
+
+
+def test_flush_says_whether_the_user_caused_it():
+    """The shim saves full refreshes (the black/white flash) for redraws
+    the user caused. It can only know that if the UI tells it: a redraw
+    after a key press flushes with user=True, one from an announce or a
+    timer with user=False."""
+    print("flush carries who caused the redraw")
+    tft = FakePanel()
+    g = _mkui(tft)
+    g.draw()
+    g._flush()
+    check("the initial screen is not a user redraw", tft.users == [False],
+          str(tft.users))
+
+    g.dirty = True                      # an announce, a clock tick
+    g.draw()
+    g._flush()
+    check("a background redraw flushes with user=False", tft.users[-1] is False,
+          str(tft.users))
+
+    g.note_user_input()                 # what kbd_loop does after a key
+    g.dirty = True
+    g.draw()
+    g._flush()
+    check("a redraw after a key press flushes with user=True", tft.users[-1] is True,
+          str(tft.users))
+
+    g.dirty = True
+    g.draw()
+    g._flush()
+    check("the key press is spent by one flush", tft.users[-1] is False,
+          str(tft.users))
+
+    check("the first screen is forced full, nothing since",
+          tft.fulls == [True, False, False, False], str(tft.fulls))
+    g.state = ui.STATE_SETTINGS           # a screen change
+    g.dirty = True
+    g.draw()
+    g._flush()
+    check("a screen change flushes with force_full", tft.fulls[-1] is True, str(tft.fulls))
+    g.dirty = True
+    g.draw()
+    g._flush()
+    check("and only that once", tft.fulls[-1] is False, str(tft.fulls))
 
 
 def test_flush_is_inside_the_spi_window():
@@ -180,6 +229,7 @@ if __name__ == "__main__":
     test_no_flush_while_drawing()
     test_flush_pushes_once()
     test_tft_without_flush()
+    test_flush_says_whether_the_user_caused_it()
     test_flush_is_inside_the_spi_window()
     print()
     if _failures:

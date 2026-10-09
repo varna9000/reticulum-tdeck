@@ -24,17 +24,29 @@ NODE_NAME = "TDeckPro-" + binascii.hexlify(machine.unique_id()[-2:]).decode().up
 # 0 = silent (release default), 1 = app prints, 2 = + full Reticulum debug log.
 DEBUG = 0
 
+# --- Board revision --------------------------------------------------------
+# LilyGO ships three revisions (V1.0, V1.1, MAX) that differ in a few pins,
+# two of which matter at boot: V1.1/MAX have a panel reset line on GPIO 16 and
+# no 1.8 V gate on GPIO 38 (that pin is their touch reset). On the wrong map a
+# deck can boot to a blank panel.
+#
+# "auto" detects the revision on the first boot from the I2C bus, the way
+# LilyGO documents it (a DRV2605 at 0x5A means V1.1, an XL9555 at 0x20 means
+# MAX), and saves it in /tdeck_pro_hw.json with the audio answer below.
+# Set "1.0", "1.1" or "max" to override. See tdeck_pro_rev.py.
+BOARD_REV = "auto"
+
 # --- Power gates -----------------------------------------------------------
 # Both must be driven high before the radio or the panel will answer. This is
 # the single most common reason a correct pin map still reads back nothing.
-BOARD_1V8_EN = 38
+# The 1.8 V gate (GPIO 38, V1.0 only) is resolved from BOARD_REV in
+# board_tdeck_pro.py, as is the panel reset line.
 LORA_EN      = 46
 
 # --- Display (GDEQ031T10 e-ink on shared SPI1) -----------------------------
 DISP_CS   = 34
 DISP_DC   = 35
 DISP_BUSY = 37
-DISP_RES  = -1     # no dedicated reset line; panel resets over command
 DISP_SCK  = 36
 # CONFIRMED on hardware 2026-08-28: the panel is on MOSI 33, shared with the
 # radio, and Meshtastic's PIN_EINK_MOSI 47 define is wrong. Driving the panel
@@ -96,13 +108,43 @@ SDCARD_CS     = 48
 BQ27220_DESIGN_CAPACITY = 1400
 BQ27220_ADDR = 0x55  # CONFIRMED present
 
-# --- Audio (deferred) ------------------------------------------------------
-# PCM5102A I2S DAC. Codec2 voice messaging is not ported: the Pro has no
-# ES7210 microphone ADC, and PCM5102A_SCK collides with pin 47, which the
-# LoRa/e-ink bus already contends for.
-PCM5102A_SCK  = 47
-PCM5102A_DIN  = 17
-PCM5102A_LRCK = 18
+# --- Audio -----------------------------------------------------------------
+# The Pro comes in two versions on the same three GPIOs: the PCM5102A I2S DAC
+# (notification tones, voice playback) or the A7682E 4G modem. "auto" finds
+# out on the FIRST boot the way LilyGO's factory firmware does -- power the
+# slot, pulse the modem's power key, send AT for up to ~12 s; silence means
+# the DAC -- and saves the answer (with the revision) in /tdeck_pro_hw.json,
+# so later boots skip the probe. True/False overrides it; delete that file
+# to detect again. Driving these pins as I2S on a modem unit would fight the
+# modem's RI/ITR/RST lines, hence the care. Pin numbers are from
+# LilyGO's README and their V1.1 pinmap (I2S_BCLK/DOUT/LRC); Meshtastic's
+# 47/17/18 are wrong -- 47 is the LoRa/e-ink MISO and 17/18 are the board's
+# microphone (MIC_DATA 17, MIC_CLOCK 18, a 2-wire part, so PDM) -- see
+# HAS_MIC below.
+HAS_AUDIO = "auto"
+I2S_BCLK  = 7
+I2S_DOUT  = 8
+I2S_LRCK  = 9
+# The module slot's power enable (LilyGO's BOARD_6609_EN, Meshtastic's
+# MODEM_POWER_EN): their test_pcm5102a example raises it before playing, and
+# the DAC is silent without it. Raised at boot when HAS_AUDIO.
+AUDIO_EN  = 41
+# The modem's pins, used only by the first-boot probe (A7682E RXD/TXD are
+# named from the modem's side: the ESP transmits on 10 and listens on 11).
+MODEM_PWRKEY = 40
+MODEM_RXD    = 10
+MODEM_TXD    = 11
+# The module's speaker is small: the app's notification tones are played
+# AUDIO_GAIN times louder and AUDIO_PITCH times higher (2 = one octave up)
+# than on the v1, or they are inaudible on it.
+# Voice playback gets the gain too (clipped at full scale, never wrapped).
+AUDIO_GAIN  = 8
+AUDIO_PITCH = 2
+# The PDM microphone (MIC_CLOCK / MIC_DATA on LilyGO's V1.1 pinmap) makes
+# Codec2 voice messages possible; it is read through the pdm_mic built-in.
+HAS_MIC  = True
+MIC_CLK  = 18
+MIC_DATA = 17
 
 # --- LoRa radio config -----------------------------------------------------
 # Board wiring comes from the "tdeck_pro_sx1262" preset in lora_boards.py;

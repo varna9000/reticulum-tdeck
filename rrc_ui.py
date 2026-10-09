@@ -268,7 +268,7 @@ def _draw_footer(ui):
     # name, and backspace owns the exit. One gesture, one key, both named.
     if ui._cache[FOOT_SLOT] != "\x02rooms":
         ui._cache[FOOT_SLOT] = "\x02rooms"
-        ui._draw_hints((("BKSP", "exit"), ("CLICK", "rooms")))
+        ui._draw_hints((("BKSP", "exit"), (_click_key(ui), "rooms")))
 
 
 # There is no modifier key on this hardware, and that is settled, not
@@ -314,6 +314,12 @@ def handle_key(ui, ch, key):
         if ch == 27 or ch == 8:
             panel_close(ui)
             return True
+        if ch == 13:
+            # Enter mirrors the click, as it does on the node list: the Pro
+            # has no ball, and its alt+w click is not a gesture anyone
+            # finds from a footer that says (CLICK).
+            panel_click(ui)
+            return True
         return True              # panel holds focus; keys do not compose
     if ui._rrc_prompt:
         return _handle_prompt_key(ui, ch, key)
@@ -326,6 +332,11 @@ def handle_key(ui, ch, key):
         # without it a stray byte on arrival tears the hub link straight
         # back down. esc is kept for completeness; this keyboard does not
         # send it (ui.py:2640).
+        if ch == 13:
+            # Enter opens the picker the console's footer promises for a
+            # click; nothing else claims Enter on a screen with no text field.
+            panel_toggle(ui, "rooms")
+            return True
         if (ch == 8 or ch == 27) and _settled(ui):
             if ui.on_rrc_disconnect:
                 ui.on_rrc_disconnect()
@@ -642,6 +653,12 @@ def _panel_scrollbar(ui, total):
         ui.tft.fill_rect(PANEL_X + PANEL_W - 6, bar_y, 4, bar_h, ui.NEON_CYAN)
 
 
+def _click_key(ui):
+    """The key a hint names for the select gesture: the ball's CLICK where
+    there is one, else ENT -- Enter mirrors the click everywhere here."""
+    return "CLICK" if getattr(ui, "_has_trackball", True) else "ENT"
+
+
 def _panel_foot(ui, action):
     """Footer band: how to leave on the left, what a click does on the right,
     in the footer hint style -- (BKSP)close ... (CLICK)mention.
@@ -655,8 +672,8 @@ def _panel_foot(ui, action):
     foot_y = PANEL_Y + PANEL_H - 22
     ui.tft.fill_rect(PANEL_X + 2, foot_y, PANEL_W - 4, 20, ui.SEL_BG)
     _panel_hint(ui, "BKSP", "close", _PANEL_TEXT_X, foot_y + 2)
-    x = PANEL_X + PANEL_W - 8 - (len(action) + 7) * CHAR_W
-    _panel_hint(ui, "CLICK", action, x, foot_y + 2)
+    x = PANEL_X + PANEL_W - 8 - (len(action) + len(_click_key(ui)) + 2) * CHAR_W
+    _panel_hint(ui, _click_key(ui), action, x, foot_y + 2)
 
 
 def _panel_hint(ui, key, rest, x, y):

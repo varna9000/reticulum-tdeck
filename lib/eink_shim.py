@@ -18,7 +18,16 @@
 #    is inverted: bright source colours become ink, dark ones become paper.
 
 import framebuf
+import micropython
 from micropython import const
+
+try:
+    ptr8                      # viper type names, resolved by the compiler
+except NameError:
+    # Host tests: a bytearray and an array('i') index the way ptr8 and
+    # ptr32 over them do, so the casts can be identities there. Harmless on
+    # the device: the viper compiler recognises the names before any lookup.
+    ptr8 = ptr32 = lambda x: x
 
 _INK = const(1)      # set bit in the framebuffer means black
 _PAPER = const(0)
@@ -27,12 +36,28 @@ _PAPER = const(0)
 # app's various greys land on paper rather than smearing the page.
 _LUM_THRESHOLD = const(60)
 
-# Consecutive partial refreshes before a full one is forced to clear ghosting.
-# Matches the limit Meshtastic uses for this panel.
+# Consecutive partial refreshes before a full one is owed to clear ghosting.
+# Matches the limit Meshtastic uses for this panel. Owed, not forced: the
+# full refresh is a black/white flash of the whole panel, so flush() pays
+# the debt on the next redraw the user caused (they are changing the screen
+# anyway) and never from a background redraw -- an announce landing in the
+# node list, the navbar clock ticking -- which would flash a screen someone
+# is reading. The hard limit is the backstop for a deck nobody touches: the
+# clock alone is a partial a minute, and ghosting cannot run forever.
 _FAST_REFRESH_LIMIT = const(10)
+_FAST_REFRESH_HARD_LIMIT = const(40)
 
-# Dirty area beyond which a full refresh is cheaper than several partials.
-_FULL_REFRESH_PIXELS = const(38400)   # half the 240x320 panel
+# When the ghosting debt is owed, a user-caused redraw pays it only if it is
+# already a sizeable one -- a page or screen change, not a cursor step or a
+# one-line scroll. A cursor step changes two rows (7680 px); this is a bit
+# more. The area alone never buys a full refresh: a partial update costs the
+# same ~700 ms whatever its window, the panel drives only the pixels that
+# differ from its previous frame, and a line scroll that shifts the whole
+# body is still a quiet partial rather than a flash on every keypress. The
+# flash that clears ghosting lands on a screen change (ui.py flushes those
+# with force_full) or on the owed-and-sizeable rule, and the hard cap is the
+# backstop.
+_OWED_MIN_PIXELS = const(9600)        # 1/8 of the 240x320 panel
 
 
 def _lum(color):
@@ -62,6 +87,7 @@ class EinkShim:
         self._dx0 = self._dy0 = self._dx1 = self._dy1 = 0
         self._dirty = False
         self._partials = 0
+        self._full_owed = False
 
         # Copy of the framebuffer as the panel last saw it. The dirty rectangle
         # records where drawing happened, not where pixels changed, and ui.py
@@ -119,8 +145,12 @@ class EinkShim:
         if font.WIDTH != 8:
             raise ValueError("eink_shim supports 8px fonts only")
 
-        fg = _INK if _lum(color) > _LUM_THRESHOLD else _PAPER
         bg = _INK if _lum(background) > _LUM_THRESHOLD else _PAPER
+        # Glyphs on an ink background are always paper: the app's bright
+        # text on a bright band (a selected row, the unread pill, a micron
+        # heading bar) would otherwise vanish ink-on-ink. This is what makes
+        # a selected row read as inverted on the panel.
+        fg = _PAPER if bg == _INK else (_INK if _lum(color) > _LUM_THRESHOLD else _PAPER)
         h = font.HEIGHT
         first = font.FIRST
         last = font.LAST
@@ -163,8 +193,8 @@ class EinkShim:
         Same MAP/OFFSETS/WIDTHS/BITMAPS layout as st7789py.write. ui.py calls
         this once, so this stays a straightforward per-pixel loop.
         """
-        ink = _INK if _lum(fg) > _LUM_THRESHOLD else _PAPER
         paper = _INK if _lum(bg) > _LUM_THRESHOLD else _PAPER
+        ink = _PAPER if paper == _INK else (_INK if _lum(fg) > _LUM_THRESHOLD else _PAPER)
         h = font.HEIGHT
         start_x = x
 
@@ -196,21 +226,54 @@ class EinkShim:
     def blit_buffer(self, buffer, x, y, width, height):
         """Threshold an RGB565 buffer into the mono framebuffer.
 
-        Used for the JPEG splash. Two bytes per pixel, big-endian, matching
-        what tjpgd hands back.
+        Two bytes per pixel, big-endian: what tjpgd hands back and what the
+        shell's row compositor stores (it pre-swaps for the ST7789, which
+        reads the same order). Same inverted polarity as text(): bright is
+        ink. The loop is viper -- the shell blits a 240x12 row per changed
+        line, and a Python per-pixel loop made a burst of output crawl.
         """
-        i = 0
-        for row in range(height):
-            py = y + row
-            if py >= self.height:
-                break
-            for col in range(width):
-                px = x + col
-                if px < self.width:
-                    color = (buffer[i] << 8) | buffer[i + 1]
-                    self.fb.pixel(px, py,
-                                  _INK if _lum(color) > _LUM_THRESHOLD else _PAPER)
-                i += 2
+        if x < 0 or y < 0:
+            return
+        if x + width > self.width:
+            width = self.width - x
+        if y + height > self.height:
+            height = self.height - y
+        if width <= 0 or height <= 0:
+            return
+        from array import array
+        geom = array("i", (self._stride, x, y, width, height))
+        _blit_threshold(buffer, self._buf, geom)
+        self._mark(x, y, width, height)
+
+    def blit_dither(self, buffer, x, y, width, height):
+        """Floyd-Steinberg an RGB565 buffer into the mono framebuffer.
+
+        For photographs, where blit_buffer's threshold is wrong twice over:
+        it has no grey, and it inverts (bright becomes ink), which is the
+        rule the UI's dark theme wants and a picture does not. Here dark
+        pixels are ink and the error of every rounding is pushed onto the
+        neighbours (7/16 right, 3/16 below-left, 5/16 below, 1/16
+        below-right), which is what keeps the average tone of an area.
+
+        The pixel loop runs as viper native code: 76,800 pixels through the
+        bytecode interpreter is several seconds, a few hundred ms this way.
+        The image is clipped to the panel; it is expected to be placed on it
+        whole, which is how the viewer centres a scaled decode.
+        """
+        if x < 0 or y < 0:
+            return
+        if x + width > self.width:
+            width = self.width - x
+        if y + height > self.height:
+            height = self.height - y
+        if width <= 0 or height <= 0:
+            return
+        from array import array
+        # Two error rows of width+2 ints each, a one-pixel guard on both
+        # sides so the diffusion needs no edge tests.
+        err = array("i", bytes(4 * 2 * (width + 2)))
+        geom = array("i", (self._stride, x, y, width, height))
+        _dither(buffer, self._buf, err, geom)
         self._mark(x, y, width, height)
 
     # --- panel control -----------------------------------------------------
@@ -241,13 +304,21 @@ class EinkShim:
             return None
         return first, last
 
-    def flush(self, force_full=False):
+    def flush(self, force_full=False, user=False):
         """Push pending changes to the panel. This is the only slow call.
 
-        Chooses a full refresh when the changed area is large, when the fast
-        refresh budget is spent, or when asked. Otherwise refreshes just the
-        rows that actually differ from what is on the panel -- which is often
-        none of them, and then this returns without touching the hardware.
+        `user` says the redraw was caused by a key press (ui.py tracks that);
+        anything else -- an announce, a received message, the clock -- is a
+        background redraw. Refreshes just the rows that actually differ from
+        what is on the panel, which is often none of them, and then this
+        returns without touching the hardware.
+
+        A full refresh (the whole-panel flash) happens when asked (ui.py asks
+        on a screen change), on the first push, or on a sizeable user redraw
+        that finds a ghosting debt owed. Everything else -- a cursor step, a
+        scroll, a background redraw however large -- is a quiet partial that
+        at most notes the debt. The hard limit is the backstop for a panel
+        that sees nothing but small partials.
         """
         if not self._dirty and not force_full:
             return
@@ -262,10 +333,13 @@ class EinkShim:
             y0, y1 = rows
 
         area = (x1 - x0) * (y1 - y0)
-        if force_full or area >= _FULL_REFRESH_PIXELS or \
-                not self._shown_valid or \
-                self._partials >= _FAST_REFRESH_LIMIT:
+        if self._partials >= _FAST_REFRESH_LIMIT:
+            self._full_owed = True
+        if force_full or not self._shown_valid or \
+                self._partials >= _FAST_REFRESH_HARD_LIMIT or \
+                (user and self._full_owed and area >= _OWED_MIN_PIXELS):
             self._partials = 0
+            self._full_owed = False
             self._p.flush()
         else:
             self._partials += 1
@@ -285,3 +359,86 @@ class EinkShim:
     def sleep_mode(self, value):
         if value:
             self._p.hibernate()
+
+
+@micropython.viper
+def _blit_threshold(src: ptr8, fb: ptr8, geom: ptr32):
+    """Inner loop of EinkShim.blit_buffer: luminance threshold, bright = ink.
+    geom = (stride, x, y, w, h). The source rows are w pixels wide even when
+    the blit was clipped on the right, so unused source bytes are skipped."""
+    stride = geom[0]
+    x0 = geom[1]
+    y0 = geom[2]
+    w = geom[3]
+    h = geom[4]
+    si = 0
+    for row in range(h):
+        fo = (y0 + row) * stride
+        px = x0
+        for i in range(w):
+            c = (src[si] << 8) | src[si + 1]
+            si += 2
+            lum = (((c >> 11) & 0x1F) << 1) + ((c >> 5) & 0x3F) + ((c & 0x1F) << 1)
+            bi = fo + (px >> 3)
+            mask = 0x80 >> (px & 7)
+            if lum > 60:
+                fb[bi] = fb[bi] | mask
+            else:
+                fb[bi] = fb[bi] & (mask ^ 0xFF)
+            px += 1
+
+
+@micropython.viper
+def _dither(src: ptr8, fb: ptr8, err: ptr32, geom: ptr32):
+    """Inner loop of EinkShim.blit_dither. geom = (stride, x, y, w, h).
+
+    src: RGB565 big-endian, w*h pixels. fb: the MONO_HLSB framebuffer, bit
+    7 of a byte is its leftmost pixel, a set bit is ink. err: 2*(w+2) ints,
+    the current and the next row's accumulated error, index i+1 for pixel i.
+    """
+    stride = geom[0]
+    x0 = geom[1]
+    y0 = geom[2]
+    w = geom[3]
+    h = geom[4]
+    span = w + 2
+    si = 0
+    for row in range(h):
+        cur = (row & 1) * span
+        nxt = span - cur
+        for i in range(span):
+            err[nxt + i] = 0
+        fo = (y0 + row) * stride
+        px = x0
+        for i in range(w):
+            c = (src[si] << 8) | src[si + 1]
+            si += 2
+            # 8-bit luma, Rec.601 weights. Each 5/6-bit channel is widened
+            # by replicating its top bits, so full white is 255 exactly and
+            # carries no error -- a plain shift leaves it at 250, and that
+            # 2% deficit accumulates into stray ink across a white area.
+            r = (c >> 11) & 0x1F
+            gg = (c >> 5) & 0x3F
+            b = c & 0x1F
+            g = (((r << 3) | (r >> 2)) * 77 + ((gg << 2) | (gg >> 4)) * 151
+                 + ((b << 3) | (b >> 2)) * 28) >> 8
+            v = g + err[cur + i + 1]
+            bi = fo + (px >> 3)
+            mask = 0x80 >> (px & 7)
+            if v < 128:
+                fb[bi] = fb[bi] | mask          # ink
+                e = v
+            else:
+                fb[bi] = fb[bi] & (mask ^ 0xFF)  # paper
+                e = v - 255
+            # Written out in full: viper does not do augmented assignment
+            # through a pointer subscript.
+            k = cur + i + 2
+            err[k] = err[k] + ((e * 7) >> 4)
+            k = nxt + i
+            err[k] = err[k] + ((e * 3) >> 4)
+            k = nxt + i + 1
+            err[k] = err[k] + ((e * 5) >> 4)
+            k = nxt + i + 2
+            err[k] = err[k] + (e >> 4)
+            px += 1

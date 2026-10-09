@@ -16,7 +16,7 @@ from machine import Pin, SPI, I2C
 
 import tdeck_pro_config as config
 from tdeck_pro_config import (
-    BOARD_1V8_EN, LORA_EN,
+    LORA_EN,
     DISP_CS, DISP_DC, DISP_BUSY,
     LORA_SCK, LORA_MOSI, LORA_MISO,
     I2C_SDA, I2C_SCL, KBD_ADDR, KBD_BL_PIN,
@@ -27,6 +27,24 @@ import bq27220
 import eink_gdeq031t10
 import eink_shim
 import tca8418
+import tdeck_pro_rev
+
+# --- revision --------------------------------------------------------------
+# Resolved first, from an I2C scan with nothing powered (the DRV2605 that
+# marks a V1.1 answers regardless), because what differs includes a power
+# gate. config.BOARD_REV is "auto" or an override; see tdeck_pro_rev.py.
+i2c = I2C(0, sda=Pin(I2C_SDA), scl=Pin(I2C_SCL), freq=100000)
+# Detection runs once: the result lives in tdeck_pro_rev.PROFILE_PATH and is
+# read back on later boots. A config value other than "auto" overrides it.
+_profile = tdeck_pro_rev.load_profile()
+_rev_setting = getattr(config, "BOARD_REV", "auto")
+if _profile is not None and str(_rev_setting).strip().lower() == "auto":
+    BOARD_REV = _profile["rev"]
+else:
+    BOARD_REV = tdeck_pro_rev.resolve(_rev_setting, i2c.scan())
+BOARD_1V8_EN, DISP_RES = tdeck_pro_rev.pins(BOARD_REV)
+print("[board] T-Deck Pro V%s (BOARD_REV=%s%s)" % (
+    BOARD_REV, _rev_setting, ", saved" if _profile is not None else ""))
 
 # The panel tolerates a fast bus but gains nothing from one: a refresh is
 # ~700 ms, so the transfer is never the bottleneck. Keep it conservative.
@@ -40,8 +58,36 @@ _SPI_LORA = 10_000_000
 # 0, 1, 2, 3 and 15; on this board GPIO 3 is the SX1262 chip select. Construct
 # the UI without trackball=False and the radio silently never works.
 HAS_TRACKBALL   = False   # no pointing device; arrows live on the alt layer
-HAS_AUDIO       = False   # PCM5102A DAC present, driver not ported
-HAS_MIC         = False   # no ES7210, so no Codec2 voice either
+# The Pro ships in two versions that share GPIO 7/8/9: one with the PCM5102A
+# I2S DAC, one with the A7682E 4G modem (its RI/ITR/RST lines). Driving those
+# pins as I2S on a modem unit would fight the modem, so the DAC is opt-in from
+# the config file, and absent there (an older config) means off. The pins are
+# LilyGO's README numbers -- Meshtastic's variant.h says 47/17/18, which puts
+# the bit clock on LoRa MISO and is wrong, like its e-ink MOSI.
+# HAS_AUDIO: True/False from the config, or "auto" -- then the saved profile,
+# or (first boot only) a modem probe once the panel is up, see below.
+_audio_setting = tdeck_pro_rev.audio_setting(getattr(config, "HAS_AUDIO", "auto"))
+HAS_AUDIO       = None    # resolved just below, or after the display is up
+if _audio_setting == "auto" and _profile is not None and _profile.get("audio") is not None:
+    HAS_AUDIO = _profile["audio"]
+elif _audio_setting == "auto":
+    HAS_AUDIO = None           # decided after the display is up
+else:
+    HAS_AUDIO = _audio_setting
+SPK_PINS        = None    # set once HAS_AUDIO is final (after the display is up)
+# The DAC's small speaker is near-silent at the stock chirps (440-660 Hz,
+# amplitude ~2400): an octave up and 8x the level is what it took to hear
+# them (ladder test on hardware, 2026-10-09). Editable in the config file.
+AUDIO_GAIN      = getattr(config, "AUDIO_GAIN", 8)
+AUDIO_PITCH     = getattr(config, "AUDIO_PITCH", 2)
+# A two-wire PDM microphone on MIC_CLOCK 18 / MIC_DATA 17 (LilyGO's V1.1
+# pinmap; Meshtastic's variant.h mislabels these as DAC pins). Read through
+# the pdm_mic built-in module on I2S port 0, which is why playback is on 1.
+HAS_MIC         = bool(getattr(config, "HAS_MIC", False))
+MIC_KIND        = "pdm" if HAS_MIC else None
+MIC_PINS        = ((getattr(config, "MIC_CLK", 18), getattr(config, "MIC_DATA", 17))
+                   if HAS_MIC else None)
+SPK_PORT        = 1
 HAS_JPEG_SPLASH = False   # blit_buffer here is a per-pixel Python loop
 MONO_DISPLAY    = True    # 1-bit panel: "dimmed" cannot be shown as a shade
 
@@ -58,8 +104,12 @@ def power_up():
     peripheral is touched. A correct pin map with these left low looks exactly
     like a wiring fault.
     """
-    Pin(BOARD_1V8_EN, Pin.OUT).value(1)
+    if BOARD_1V8_EN is not None:        # V1.1/MAX have no 1.8 V gate (tdeck_pro_rev)
+        Pin(BOARD_1V8_EN, Pin.OUT).value(1)
     Pin(LORA_EN, Pin.OUT).value(1)
+    if HAS_AUDIO:              # True here only when the config or the saved profile says so
+        # The DAC sits in the module slot, behind its own power enable.
+        Pin(getattr(config, "AUDIO_EN", 41), Pin.OUT).value(1)
     time.sleep_ms(100)
 
 
@@ -70,6 +120,9 @@ spi = SPI(1, baudrate=_SPI_LORA, **_SPI_PINS)
 _disp_cs = Pin(DISP_CS, Pin.OUT, value=1)
 _disp_dc = Pin(DISP_DC, Pin.OUT, value=1)
 _disp_busy = Pin(DISP_BUSY, Pin.IN)
+# V1.1/MAX have a real panel reset line (tdeck_pro_rev.pins); the driver
+# pulses it on init. V1.0 has none and resets the panel over a command.
+_disp_rst = Pin(DISP_RES, Pin.OUT, value=1) if DISP_RES >= 0 else None
 
 
 def spi_acquire_display():
@@ -93,10 +146,62 @@ def spi_release_lora():
 # --- display ---------------------------------------------------------------
 
 panel = eink_gdeq031t10.GDEQ031T10(
-    spi, _disp_cs, _disp_dc, _disp_busy,
+    spi, _disp_cs, _disp_dc, _disp_busy, rst=_disp_rst,
     acquire=spi_acquire_display, release=spi_release_display)
 
 tft = eink_shim.EinkShim(panel)
+
+
+def _first_boot_audio_probe():
+    """First boot with HAS_AUDIO = "auto" and no saved answer: ask the
+    module slot whether a modem lives there. Shown on the panel because it
+    takes up to ~12 s, and done exactly once (the answer is saved)."""
+    import spleen_8x16 as _font
+
+    def _centered(lines, y0):
+        for i, line in enumerate(lines):
+            x = (tft.width - len(line) * _font.WIDTH) // 2
+            tft.text(_font, line, x, y0 + i * (_font.HEIGHT + 4), 0xFFFF, 0x0000)
+
+    tft.fill(0x0000)
+    _centered(("T-Deck Pro V" + BOARD_REV, "", "First boot", "",
+               "Detecting 4G / audio", "module (~10 s)..."), 100)
+    tft.flush(force_full=True)
+    from machine import UART
+    slot_en = Pin(getattr(config, "AUDIO_EN", 41), Pin.OUT, value=1)   # powers either module
+    pwrkey = Pin(getattr(config, "MODEM_PWRKEY", 40), Pin.OUT, value=1)
+    uart = UART(1, baudrate=115200, tx=getattr(config, "MODEM_RXD", 10),
+                rx=getattr(config, "MODEM_TXD", 11))
+    try:
+        modem = tdeck_pro_rev.probe_modem(uart, pwrkey, time.sleep_ms, time.ticks_ms,
+                                          time.ticks_diff)
+    finally:
+        uart.deinit()
+    if modem:
+        slot_en.value(0)       # a modem nobody uses should not drain the pack
+    print("[board] first boot: modem %s -> audio %s" % ("answered" if modem else "silent",
+                                                       not modem))
+    _centered(("4G modem found" if modem else "Audio module found",
+               "Saved; not asked again"), 220)
+    tft.flush()
+    time.sleep_ms(1500)
+    return not modem
+
+
+if HAS_AUDIO is None:
+    HAS_AUDIO = _first_boot_audio_probe()
+if _profile is None or (_profile.get("audio") is None and _audio_setting == "auto"):
+    try:
+        tdeck_pro_rev.save_profile(BOARD_REV, HAS_AUDIO if _audio_setting == "auto" else None)
+    except Exception as _e:
+        print("[board] could not save the hardware profile:", _e)
+
+SPK_PINS = ((getattr(config, "I2S_BCLK", 7), getattr(config, "I2S_LRCK", 9),
+             getattr(config, "I2S_DOUT", 8)) if HAS_AUDIO else None)
+if HAS_AUDIO:
+    # Raised in power_up() when the config said so outright; a probed answer
+    # arrives only now.
+    Pin(getattr(config, "AUDIO_EN", 41), Pin.OUT).value(1)
 
 # No backlight to drive. ui.set_backlight(board.bl) then becomes a no-op and
 # the screen-timeout path just stops redrawing, which on e-ink leaves the last
@@ -119,7 +224,6 @@ def flush():
 _kbd_bl = Pin(KBD_BL_PIN, Pin.OUT, value=0)
 keyboard = None
 
-i2c = I2C(0, sda=Pin(I2C_SDA), scl=Pin(I2C_SCL), freq=100000)
 if KBD_ADDR in i2c.scan():
     keyboard = tca8418.TCA8418(i2c, KBD_ADDR, bl_pin=_kbd_bl)
 else:

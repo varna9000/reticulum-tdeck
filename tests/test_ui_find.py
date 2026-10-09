@@ -215,6 +215,22 @@ def test_esc_closes_find():
     assert g.state == ui.STATE_NODES
 
 
+def test_backspace_on_empty_query_closes_find():
+    """Every other screen leaves on backspace with nothing to delete, and
+    neither keyboard has a plain Esc (the v1 none at all, the Pro alt+Q),
+    so Find has to as well: first widen the query, then leave."""
+    g = _mkui()
+    g.handle_key(b"m")
+    _type(g, "ra")
+    g.handle_key(b"\x08")
+    assert g._find and g._find_q == "r"
+    g.handle_key(b"\x08")
+    assert g._find and g._find_q == ""
+    g.handle_key(b"\x08")
+    assert not g._find
+    assert g.state == ui.STATE_NODES
+
+
 def test_switching_tab_closes_find():
     g = _mkui()
     g.handle_key(b"m")
@@ -797,7 +813,7 @@ def test_listening_panel_shows_progress():
     g.handle_key(b"0")
     out = _draw(g).drawn()
     assert "Listening" in out
-    assert "Esc=cancel" in out
+    assert "Bsp=cancel" in out
     g.listen_progress(12)
     assert "digits heard: 12" in _draw(g).drawn()
 

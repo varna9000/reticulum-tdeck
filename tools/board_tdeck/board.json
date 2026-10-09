@@ -19,6 +19,7 @@
     "vendor": "Espressif",
     "variants": {
         "SPIRAM_OCT": "Support for Octal-SPIRAM",
-        "FLASH_4M": "4MiB flash"
+        "FLASH_4M": "4MiB flash",
+        "TDECK_PRO": "LilyGO T-Deck Pro (quad PSRAM, e-ink)"
     }
 }

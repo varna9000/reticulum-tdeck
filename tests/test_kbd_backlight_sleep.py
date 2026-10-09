@@ -237,7 +237,51 @@ def test_boot_restore_refused_write_leaves_state_honest():
     check("state untouched", d.gui._kbd_bl is False and d.gui._kbd_bl_lit is False)
 
 
+def test_sleep_shows_a_sleep_screen_without_a_display_backlight():
+    """An e-ink panel keeps its last frame when the deck sleeps, so the deck
+    looks awake and the waking key press looks ignored. Without a backlight
+    to switch off, sleep paints a sleep screen with a full refresh, and the
+    wake redraw is forced full to replace it cleanly."""
+    print("sleep screen on a panel without a backlight")
+
+    class Panel(FakeTFT):
+        def __init__(self):
+            self.texts = []
+            self.flushes = []
+
+        def text(self, font, s, x, y, fg, bg=None):
+            self.texts.append(s if isinstance(s, str) else bytes(s).decode("latin-1"))
+
+        def flush(self, force_full=False, user=False):
+            self.flushes.append(force_full)
+
+    d = Deck(display_backlight=False)
+    d.gui.tft = p = Panel()
+    d.gui._panel_flush = p.flush
+    d.gui.node_name = "milen"
+    d.gui._screen_on = True
+    spi = []
+    d.gui._spi_acquire = lambda: spi.append("acquire")
+    d.gui._spi_release = lambda: spi.append("release")
+    d.gui.sleep_screen()
+    check("the sleep screen names the node", "milen" in p.texts, str(p.texts))
+    check("and says how to wake it", "press any key" in p.texts, str(p.texts))
+    check("it is pushed with one full refresh", p.flushes == [True], str(p.flushes))
+    check("inside the SPI window", spi == ["acquire", "release"], str(spi))
+    d.gui.wake_screen()
+    check("waking marks the next redraw dirty and full",
+          d.gui.dirty and d.gui._force_full_flush is True)
+
+    lit = Deck(display_backlight=True)
+    lit.gui.tft = q = Panel()
+    lit.gui._panel_flush = None
+    lit.gui._screen_on = True
+    lit.gui.sleep_screen()
+    check("a board with a backlight just switches it off", q.texts == [], str(q.texts))
+
+
 if __name__ == "__main__":
+    test_sleep_shows_a_sleep_screen_without_a_display_backlight()
     test_light_follows_sleep_without_a_display_backlight()
     test_an_explicit_off_survives_a_wake()
     test_sleep_never_writes_settings()

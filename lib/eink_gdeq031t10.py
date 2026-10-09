@@ -270,6 +270,17 @@ class GDEQ031T10:
             self._cmd(_PARTIAL_OUT)
             # Keep the previous-frame buffer in step, otherwise the next
             # partial update diffs against a stale frame and leaves artefacts.
+            #
+            # The refresh leaves the panel needing its panel-setting re-init
+            # before it accepts another RAM write (_update_part clears
+            # _init_done for exactly this reason; GxEPD2 re-inits before every
+            # buffer write). Without it this 0x10 write is silently dropped:
+            # the panel then believes a row that just lost the selection bar
+            # never changed, and the next partial leaves the old bar standing.
+            # That was the trail behind the node-list cursor, seen on
+            # hardware 2026-10-09 and gone with this re-init.
+            if not self._init_done:
+                self._init_display()
             self._cmd(_PARTIAL_IN)
             self._write_region(_WRITE_PREV, x, y, w, h)
             self._cmd(_PARTIAL_OUT)

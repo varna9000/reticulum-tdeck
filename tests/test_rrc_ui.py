@@ -245,6 +245,54 @@ def test_typing_who_opens_the_panel_instead_of_asking_the_hub():
     print("ok test_typing_who_opens_the_panel_instead_of_asking_the_hub")
 
 
+def test_enter_acts_on_the_panel_row_like_a_click():
+    """The T-Deck Pro has no trackball. Its keyboard maps alt+w to a click,
+    but a panel whose footer says (CLICK) over a keyboard with no ball reads
+    as unusable, so Enter has to act on the highlighted row too -- the same
+    rule the node list has had all along (ui.py: Enter mirrors the click)."""
+    g = make_ui()
+    g.state = U.STATE_RRC_ROOMS
+    import rrc_ui
+    rrc_ui.panel_toggle(g, "rooms")
+    rrc_ui.handle_key(g, 13, b"\r")
+    assert g._rrc_prompt is True, "Enter on the action row must open the prompt"
+    assert g._rrc_panel is False, "and close the panel behind it"
+    print("ok test_enter_acts_on_the_panel_row_like_a_click")
+
+
+def test_enter_on_the_room_console_opens_the_picker():
+    """Same gesture as the click the console footer promises; the console
+    has no text field, so nothing else claims Enter there."""
+    g = make_ui()
+    g.state = U.STATE_RRC_ROOMS
+    import rrc_ui
+    rrc_ui.handle_key(g, 13, b"\r")
+    assert g._rrc_panel is True and g._rrc_panel_kind == "rooms"
+    print("ok test_enter_on_the_room_console_opens_the_picker")
+
+
+def test_panel_footer_names_enter_without_a_trackball():
+    """The hint must name a key the board has: CLICK with a ball, ENT
+    without one."""
+    import rrc_ui
+    from test_ui_shell import FakeTFT
+
+    def hints(trackball):
+        g = U.UI(FakeTFT(), object(), lambda: b"\x00", node_name="t",
+                 trackball=trackball)
+        g._screen_on = True
+        g.state = U.STATE_RRC_ROOMS
+        rrc_ui.panel_toggle(g, "rooms")
+        rrc_ui.draw_panel(g)
+        return [c[1] for c in g.tft.calls if c[0] == "text"]
+
+    with_ball = hints(True)
+    assert "CLICK" in with_ball and "ENT" not in with_ball, with_ball
+    no_ball = hints(False)
+    assert "ENT" in no_ball and "CLICK" not in no_ball, no_ball
+    print("ok test_panel_footer_names_enter_without_a_trackball")
+
+
 def test_who_is_matched_exactly_not_as_a_prefix():
     """'/whois bob' is a hub command and must still reach the hub."""
     import rrc_ui

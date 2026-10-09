@@ -20,6 +20,12 @@ from tdeck_config import (
 # What tdeck_node.py has to branch on. Everything else it reaches for by name.
 HAS_TRACKBALL   = True    # ui.py claims GPIO 0/1/2/3/15 for the trackball ISRs
 HAS_AUDIO       = True    # MAX98357A I2S speaker
+SPK_PINS        = (config.SPK_BCK, config.SPK_WS, config.SPK_DOUT)
+AUDIO_GAIN      = 1       # the MAX98357A takes the tones as written
+AUDIO_PITCH     = 1
+SPK_PORT        = 0
+MIC_KIND        = "es7210"
+MIC_PINS        = None    # the ES7210 is configured over I2C, pins in sound.py
 HAS_MIC         = True    # ES7210 I2S ADC, and therefore Codec2 voice
 HAS_JPEG_SPLASH = True    # blit_buffer is a fast C path on a real TFT
 MONO_DISPLAY    = False   # colour TFT: dimmed elements read as dimmed
