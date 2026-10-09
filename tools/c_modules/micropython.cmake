@@ -10,3 +10,5 @@ include(${CMAKE_CURRENT_LIST_DIR}/webp_fast/micropython.cmake)
 include(${CMAKE_CURRENT_LIST_DIR}/codec2_fast/micropython.cmake)
 # PDM microphone capture for the T-Deck Pro (no-op on a v1: never imported there).
 include(${CMAKE_CURRENT_LIST_DIR}/pdm_mic/micropython.cmake)
+# Light sleep with wake on a LoRa packet / keypress (both boards).
+include(${CMAKE_CURRENT_LIST_DIR}/lowpower/micropython.cmake)
