@@ -151,6 +151,8 @@ Two things to set in `tdeck_pro_config.py` before building (it stays editable on
 - `BOARD_REV`: `"auto"` (default) detects the revision at boot over I2C the way LilyGO documents it (a DRV2605 at 0x5A is V1.1, an XL9555 at 0x20 is MAX); set `"1.0"`, `"1.1"` or `"max"` to override. The revisions differ in the panel reset line and the 1.8 V gate; a V1.1 on the V1.0 map can boot to a blank panel.
 - `HAS_AUDIO`: `"auto"` (default) finds out on the first boot whether the module slot holds the PCM5102A audio DAC or the A7682E 4G modem, the way LilyGO's factory firmware does (power the slot, send AT for up to ~12 s; silence means the DAC), shows a notice on the panel meanwhile, and saves the answer together with the revision in `/tdeck_pro_hw.json` so no later boot probes again. `True` or `False` overrides it. Delete that file to detect again. The two modules share GPIO 7/8/9, which is why this is decided before the DAC is driven.
 
+The colour UI is drawn unchanged and converted for the 1-bit panel on the way out: every colour becomes ink or paper by luminance, with the mapping inverted (the app paints light text on dark backgrounds, which on paper would flood the panel with ink), selected rows and the active tab are shown inverted since there is no highlight shade, and images are dithered (see Image Viewing). Full refreshes happen only on screen changes; everything else is a quiet partial update.
+
 The Pro has no trackball; its **alt** key (sticky, tap it then the letter within 1.5 s) carries the navigation the v1 does with the ball:
 
 | Gesture | Pro keys |
@@ -421,6 +423,8 @@ Setup additionally offers a **keyboard backlight** toggle (persisted across boot
 When a peer sends an image — LXMF `FIELD_IMAGE` (MeshChat's image button, Sideband), or an image carried in `FIELD_FILE_ATTACHMENTS` (MeshChat's file attachment button), which is promoted to a viewable image — it appears as `[image NNk]` in magenta in the chat. Use the trackball to highlight the image line — the hint bar changes to `[click=view]`. Click to open a full-screen view scaled to 320x240. Press any key to return to chat.
 
 JPEG and WebP are decoded on-device using the native `tjpgd_fast` (TJpgDec) and `webp_fast` modules with nearest-neighbor scaling. The decoder is chosen from the payload's magic bytes, never from the type string the sender declared — senders label images by MIME subtype, so the same JPEG arrives as `"jpeg"` from MeshChat and `"jpg"` from Sideband. Formats with no decoder on board (PNG, GIF) still show a marker naming the format, and the viewer says so instead of failing blankly. Up to 3 recent images are cached in RAM; older images appear dimmed with a strikethrough to indicate they've been evicted.
+
+On the T-Deck Pro the decoded image is Floyd-Steinberg dithered down to the e-ink panel's one bit per pixel, so photographs keep their tones as a grain of black and white dots rather than collapsing into silhouettes; the dither runs as a viper-compiled loop, so a full-screen image lands in well under a second before the panel's own refresh.
 
 ### Address by Sound (DTMF)
 
