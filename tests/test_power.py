@@ -267,6 +267,12 @@ gui._screen_on = True
 p.step()
 check("never dark yet", p.summary() == "off: never idle", p.summary())
 
+print("wake input pads are configured as inputs (source scan)")
+pro_src = open(os.path.join(ROOT, "board_tdeck_pro.py")).read()
+v1_src = open(os.path.join(ROOT, "board_tdeck_v1.py")).read()
+check("pro: KBD_INT pad is a pulled-up input", "Pin(config.KBD_INT, Pin.IN, Pin.PULL_UP)" in pro_src)
+check("v1: KBD_INT pad is a pulled-up input", "Pin(config.KBD_INT, Pin.IN, Pin.PULL_UP)" in v1_src)
+
 if _failures:
     print("\n%d FAILED: %s" % (len(_failures), ", ".join(_failures)))
     sys.exit(1)

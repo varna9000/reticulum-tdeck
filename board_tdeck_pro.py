@@ -325,6 +325,13 @@ def get_key():
 
 
 # --- light sleep -----------------------------------------------------------
+# The keyboard INT line is polled by nobody (get_key() works over I2C), so
+# until here nothing configured its pad. An ESP32-S3 pad left at reset has
+# its input buffer disabled and reads 0 -- the "key pressed" level -- which
+# woke the chip the instant it slept and lit the screen (bench 2026-10-09).
+# The board carries a pull-up on KEY_INT; the internal one is belt and braces.
+_kbd_int = Pin(config.KBD_INT, Pin.IN, Pin.PULL_UP)
+
 
 def sleep_wake_pins():
     """DIO1 wakes high and gets the LoRa driver's rising-edge ISR back; the

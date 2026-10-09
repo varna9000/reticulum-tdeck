@@ -181,6 +181,9 @@ def set_kbd_backlight(on):
 
 _TB_MOVE = (config.TB_UP, config.TB_DOWN, config.TB_LEFT, config.TB_RIGHT)
 _tb_pins = {}
+# Nothing else configures the keyboard INT pad (get_key() polls over I2C);
+# an unconfigured pad reads 0, the wake level, and wakes the chip at once.
+_kbd_int = Pin(config.KBD_INT, Pin.IN, Pin.PULL_UP)
 
 
 def _tb_level(gpio):
