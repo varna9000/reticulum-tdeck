@@ -7,7 +7,13 @@
 //
 //   lowpower.sleep(ms, pins) -> WAKE_TIMER | WAKE_GPIO | WAKE_OTHER
 //       pins: tuple of (gpio, wake_level, restore_trigger[, ...])
-//   lowpower.usb_connected() -> bool     (a USB host is sending SOF packets)
+//   lowpower.usb_connected() -> bool     (a USB host has configured the CDC device)
+//
+// The app's console is TinyUSB CDC on the USB OTG controller, not the
+// USB-serial-JTAG peripheral (that one only serves the ROM loader at PID
+// 0x1001), so "is a host attached" is TinyUSB's tud_mounted(): true once a
+// host has enumerated and configured us, false on a plain charger. Bench
+// 2026-10-09: usb_serial_jtag_is_connected() read False with mpremote live.
 //
 // gpio_wakeup_enable() rewrites a pin's interrupt type to level-sensitive
 // and never puts it back. DIO1 carries the LoRa driver's rising-edge ISR:
@@ -21,7 +27,7 @@
 #include "esp_sleep.h"
 #include "esp_err.h"
 #include "driver/gpio.h"
-#include "driver/usb_serial_jtag.h"
+#include "tusb.h"
 
 #define LP_MAX_PINS 8
 #define LP_WAKE_TIMER 0
@@ -107,7 +113,7 @@ static mp_obj_t lp_sleep(mp_obj_t ms_in, mp_obj_t pins_in) {
 static MP_DEFINE_CONST_FUN_OBJ_2(lp_sleep_obj, lp_sleep);
 
 static mp_obj_t lp_usb_connected(void) {
-    return mp_obj_new_bool(usb_serial_jtag_is_connected());
+    return mp_obj_new_bool(tud_mounted());
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(lp_usb_connected_obj, lp_usb_connected);
 

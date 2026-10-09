@@ -254,6 +254,19 @@ clock[0] += power.QUIET_MS
 p.step()
 check("summary counts", p.summary() == "1 (lora 0 key 0 t 1)", p.summary())
 
+print("summary remembers the last reason seen while dark")
+p, lp, bd, gui, iface, clock, logs = _mk()
+p.wifi_on = lambda: True
+clock[0] += power.QUIET_MS
+p.step()                                   # dark, blocked by wifi
+gui._screen_on = True
+p.step()                                   # user opened a page to look
+check("screen-on pass does not hide the dark reason", p.summary() == "off: wifi", p.summary())
+p, lp, bd, gui, iface, clock, logs = _mk()
+gui._screen_on = True
+p.step()
+check("never dark yet", p.summary() == "off: never idle", p.summary())
+
 if _failures:
     print("\n%d FAILED: %s" % (len(_failures), ", ".join(_failures)))
     sys.exit(1)

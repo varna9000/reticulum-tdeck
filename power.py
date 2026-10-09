@@ -107,6 +107,7 @@ class Power:
         self.read_pin = read_pin
         self.counts = {k: 0 for k in WAKE_KINDS}
         self.last_reason = None
+        self.dark_reason = None           # last reason seen with the screen off
         self._last_bytes = None
         self._last_change = ticks_ms()
         self._backoff_until = None
@@ -134,6 +135,11 @@ class Power:
         return left
 
     def _note(self, reason):
+        if reason != "screen on":
+            # What stopped a dark deck from sleeping. Looking at the Radio
+            # page to find out turns the screen on, so "screen on" must not
+            # overwrite it.
+            self.dark_reason = reason
         if reason != self.last_reason:
             self.last_reason = reason
             self.log("power: no sleep: " + reason)
@@ -177,8 +183,8 @@ class Power:
         """One Radio-page value: '12 (lora 9 key 2 t 1)' or 'off: usb'."""
         c = self.counts
         total = c["lora"] + c["input"] + c["timer"] + c["other"]
-        if total == 0 and self.last_reason:
-            return "off: " + self.last_reason
+        if total == 0:
+            return "off: " + (self.dark_reason or "never idle")
         s = "%d (lora %d key %d t %d" % (total, c["lora"], c["input"], c["timer"])
         if c["other"]:
             s += " ? %d" % c["other"]
