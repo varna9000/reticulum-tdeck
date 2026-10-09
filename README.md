@@ -543,11 +543,18 @@ Connecting to WiFi or a TCP server no longer freezes the UI — the screen shows
 
 All settings (WiFi credentials, TCP host/port, node name, TCP enabled state, volume, keyboard backlight, auto-announce, sleep timeout) are saved to `/rns/settings.json` and restored on boot. If WiFi and TCP were enabled when the device was last used, they reconnect automatically on startup.
 
-### Screen Power-Off
+### Power
 
-The screen turns off automatically after a configurable inactivity timeout (10 s default; set to 30 s / 60 s / never under Setup → Sleep) to save battery, and never sleeps while a page transfer, audio playback, a voice recording or a DTMF listen is in progress. Any keypress or trackball event wakes the screen; whether an incoming message or peer announce also wakes it follows the Setup → Wake policy (messages only by default). The first input after wake is consumed (not processed) to prevent accidental actions. All SPI display writes are skipped while the screen is off, freeing the bus for LoRa.
+Everything the firmware does to make a charge last:
 
-While the screen is off, on battery and in LoRa-only mode (WiFi/TCP switched off in Setup), the ESP32 itself light-sleeps between events: a received LoRa packet wakes it in about a millisecond, so nothing is missed and announces still go out on schedule; a keypress (Pro) or the trackball click (v1) wakes it too, and the v1 additionally wakes every 300 ms to poll its keyboard. Idle draw drops from roughly 84 mA to the mid-30s on the Pro. Sleep is held off while WiFi is enabled in the saved settings (even with no AP in range), while a USB host is attached (so the console keeps working; a plain charger only pauses it for a few seconds), and while a transfer, playback, recording or DTMF listen runs. Setup → Radio shows a `sleep` row: `l12 k2 t5` counts wakes by cause (LoRa, key, timer), `off usb` / `off wifi` names what is currently preventing sleep. `SLEEP_ON_USB = True` in the config file allows sleeping with a cable in, for bench work only — the USB console drops during every sleep.
+- **Screen timeout.** The display turns off after 10 s of inactivity (30 s / 60 s / never under Setup → Sleep). It never sleeps while a page transfer, audio playback, a voice recording or a DTMF listen is in progress. On the T-Deck v1 that cuts the backlight; on the Pro the e-ink keeps its last frame for free, so a "sleeping" screen is painted instead and the keyboard backlight follows the screen.
+- **Wake policy.** Any keypress or trackball event wakes the screen. Whether an incoming message or a peer announce also wakes it follows Setup → Wake (messages only by default, or all, or never).
+- **Safe first key.** The key that wakes the screen is consumed, not acted on, so waking a deck with Enter never sends the draft in the composer.
+- **CPU light sleep.** While the screen is off, on battery and in LoRa-only mode (WiFi/TCP off in Setup), the ESP32 itself sleeps between events. A received LoRa packet wakes it in about a millisecond, so nothing is missed and announces still go out on schedule. A keypress wakes the Pro; the trackball click wakes the v1, whose keyboard cannot raise an interrupt, so the v1 also wakes every 300 ms to poll it. Idle draw on the Pro falls from about 84 mA to the mid-30s, roughly 2.4× the standby time.
+- **What keeps it awake.** WiFi enabled in the saved settings (even with no access point in range), a USB host on the cable (so the console keeps working; a plain charger only pauses sleep for a few seconds), and anything the screen timeout also waits for. Sleep never interrupts a transfer, playback, recording or DTMF listen.
+- **Sleep diagnostics.** Setup → Radio shows a `sleep` row: `l12 k2 t5` counts wakes by cause (LoRa packet, key, timer); `off usb`, `off wifi` and so on name what is currently preventing sleep. `SLEEP_ON_USB = True` in the config file allows sleeping with a cable in, for bench work only, since the USB console drops during every sleep.
+- **Unused hardware off.** The Pro's GPS receiver, which the firmware does not read, is held powered down from boot; its enable line idles on by itself on V1.1 boards.
+- **Display bus.** All SPI display writes are skipped while the screen is off, freeing the shared bus for the radio.
 
 ### Screen Lock
 
