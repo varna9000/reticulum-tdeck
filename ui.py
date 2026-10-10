@@ -225,6 +225,69 @@ def _pad(s, width=COLS):
     return s + ' ' * (width - len(s))
 
 
+try:
+    import micropython
+    _HOST = False
+except ImportError:                  # host tests
+    _HOST = True
+
+
+def _viewer_layout(native, sw, sh, rotate):
+    """Target size and orientation for the full-screen viewer.
+
+    native: (w, h) of the image or None. sw, sh: the area available. rotate:
+    None to decide, or True/False as the user toggled with `r`. Returns (tw,
+    th, rotated), tw x th being the size to decode to BEFORE rotation. The
+    decoders stretch to the exact size they are given, so the fit preserves
+    aspect and never enlarges. Rotation is chosen when the image's
+    orientation differs from the panel's and the turn shows more picture
+    -- a landscape photo on the Pro's portrait panel is 240x180 upright and
+    far larger turned -- and never for a small image that fits either way."""
+    if not native:
+        return sw, sh, False
+    nw, nh = native
+
+    def fit(bw, bh):
+        sc = min(bw / nw, bh / nh, 1.0)
+        return max(1, int(nw * sc)), max(1, int(nh * sc))
+
+    up = fit(sw, sh)
+    turned = fit(sh, sw)
+    if rotate is None:
+        rotate = turned[0] * turned[1] > up[0] * up[1]
+    if rotate:
+        return turned[0], turned[1], True
+    return up[0], up[1], False
+
+
+if _HOST:
+    def _rotate90_px(src, dst, w, h):
+        s = memoryview(src).cast("H")
+        d = memoryview(dst).cast("H")
+        for y in range(h):
+            dx = h - 1 - y
+            for x in range(w):
+                d[x * h + dx] = s[y * w + x]
+else:
+    @micropython.viper
+    def _rotate90_px(src: ptr16, dst: ptr16, w: int, h: int):
+        # Clockwise: source (x, y) -> destination (h-1-y, x), h-wide rows.
+        # 76,800 pixels in bytecode would take seconds; viper, tens of ms.
+        for y in range(h):
+            dx = h - 1 - y
+            si = y * w
+            for x in range(w):
+                dst[x * h + dx] = src[si + x]
+
+
+def _rotate90(buf, w, h):
+    """A w x h RGB565 buffer rotated 90 degrees clockwise: h wide, w tall.
+    Pixels are copied as 16-bit words, so byte order does not matter."""
+    out = bytearray(len(buf))
+    _rotate90_px(buf, out, w, h)
+    return out
+
+
 def _img_native_size(data):
     """(width, height) from a WebP or JPEG header, or None if unparseable.
 
@@ -766,6 +829,7 @@ class UI:
         self._image_cache_order = []  # LRU order of (peer_hash, msg_id) keys
         self._viewing_image = None  # jpeg_bytes currently displayed
         self._image_drawn = False  # True once JPEG has been blitted
+        self._image_rotate = None  # viewer orientation: None = decide, else the r toggle
         self._visible_image_lines = {}  # display_row -> msg_id (populated by draw_chat)
         self._visible_msg_lines = {}    # display_row -> msg_id for ALL messages
 
@@ -1853,6 +1917,7 @@ class UI:
             return  # image expired from cache
         self._viewing_image = jpeg_data
         self._image_drawn = False
+        self._image_rotate = None
         self._prev_image_state = self.state
         self.state = STATE_IMAGE
         self._state_change_ms = time.ticks_ms()
@@ -1863,6 +1928,7 @@ class UI:
         Returns to whatever state we came from (the browser)."""
         self._viewing_image = data
         self._image_drawn = False
+        self._image_rotate = None
         self._prev_image_state = self.state
         self.state = STATE_IMAGE
         self._state_change_ms = time.ticks_ms()
@@ -1938,7 +2004,10 @@ class UI:
                       y, fg, 0x0000)
 
     def draw_image(self, spi_acquire_display, spi_release_display):
-        """Render full-screen image: decode+scale to 320x240 in C, blit."""
+        """Render the full-screen image: fit to the panel (aspect kept, never
+        enlarged), turned 90 degrees when that shows more of it, decoded and
+        scaled in C, then blitted (dithered on a 1-bit panel). A bar along
+        the very bottom line names the keys."""
         if self._image_drawn or self._viewing_image is None:
             return
         gc.collect()
@@ -1961,12 +2030,18 @@ class UI:
                     self._center_text(_fmt + " is not supported", 104, self.NEON_MAG)
                     self._center_text("JPEG and WebP only", 128, self.DIM_CYAN)
                 else:
-                    # Decode and scale to screen size in native C
-                    w, h, rgb565 = _dec.decode(data, SCREEN_W, SCREEN_H)
+                    tw, th, rotated = _viewer_layout(
+                        _img_native_size(data), SCREEN_W, SCREEN_H - CHAR_H,
+                        self._image_rotate)
+                    w, h, rgb565 = _dec.decode(data, tw, th)
+                    if rotated:
+                        rgb565 = _rotate90(rgb565, w, h)
+                        w, h = h, w
                     self.tft.fill(0x0000)
-                    # Center the decoded image (may be smaller than the screen)
+                    # Centre on the panel above the hint bar.
                     _ix = (SCREEN_W - w) // 2 if w < SCREEN_W else 0
-                    _iy = (SCREEN_H - h) // 2 if h < SCREEN_H else 0
+                    _ih = SCREEN_H - CHAR_H
+                    _iy = (_ih - h) // 2 if h < _ih else 0
                     if self._mono:
                         # 1-bit panel: dither, dark = ink. The plain blit
                         # thresholds with the UI's inverted polarity and
@@ -1983,10 +2058,16 @@ class UI:
             except Exception:
                 self.tft.fill(0x0000)
                 self._center_text("Image decode error", 112, self.NEON_MAG)
-            # Hint bar at the bottom — on the error screens too, or nothing on
-            # display tells the user how to get back to the chat.
-            self.tft.fill_rect(0, SCREEN_H - 18, SCREEN_W, 18, 0x0000)
-            self._center_text("any key = back", SCREEN_H - 17, self.DIM_CYAN)
+            # Hint bar on the very bottom line — on the error screens too, or
+            # nothing on display tells the user how to get back. Black with
+            # white text: on the 1-bit panel the shim inverts luminance, so
+            # the bar is filled bright (ink) and glyphs on ink come out paper.
+            _bar_bg = 0xFFFF if self._mono else 0x0000
+            _by = SCREEN_H - CHAR_H
+            self.tft.fill_rect(0, _by, SCREEN_W, CHAR_H, _bar_bg)
+            _hint = "r = rotate   any key = back"
+            self.tft.text(self.font, _hint, max(0, (SCREEN_W - len(_hint) * CHAR_W) // 2),
+                          _by, 0xFFFF, _bar_bg)
         finally:
             self._flush()
             spi_release_display()
@@ -2245,7 +2326,17 @@ class UI:
             return False
 
         if self.state == STATE_IMAGE:
-            # Any key closes the image, e and x included.
+            if ch == ord('r'):
+                # Turn the picture the other way and repaint; the current
+                # orientation is whatever the last draw decided.
+                _native = _img_native_size(self._viewing_image or b"")
+                _cur = _viewer_layout(_native, SCREEN_W, SCREEN_H - CHAR_H,
+                                      self._image_rotate)[2]
+                self._image_rotate = not _cur
+                self._image_drawn = False
+                self.dirty = True
+                return True
+            # Any other key closes the image, e and x included.
             self._exit_image_view()
             return True
 
