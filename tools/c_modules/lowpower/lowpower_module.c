@@ -32,6 +32,8 @@
 #include "esp_sleep.h"
 #include "esp_err.h"
 #include "driver/gpio.h"
+#include "hal/gpio_ll.h"
+#include "soc/gpio_struct.h"
 #include "soc/usb_dwc_struct.h"
 
 #define LP_MAX_PINS 8
@@ -46,6 +48,17 @@ static void lp_restore(size_t n, const int *gpio, const int *restore) {
         gpio_wakeup_disable(gpio[i]);
         gpio_set_intr_type(gpio[i], (gpio_int_type_t)restore[i]);
         if (restore[i] != GPIO_INTR_DISABLE) {
+            // The GPIO block keeps latching edges while the interrupt is
+            // disabled, and a level wake itself leaves the status set. Clear
+            // it before re-enabling, or the pin's ISR fires at once on every
+            // wake: on the v1 the trackball's falling-edge ISRs then counted
+            // phantom nudges and the screen lit for no one (bench
+            // 2026-10-10, "wakes up but no new message").
+            if (gpio[i] < 32) {
+                gpio_ll_clear_intr_status(&GPIO, 1u << gpio[i]);
+            } else {
+                gpio_ll_clear_intr_status_high(&GPIO, 1u << (gpio[i] - 32));
+            }
             gpio_intr_enable(gpio[i]);
         }
     }
