@@ -154,6 +154,9 @@ MIC_DATA = 17
 # The CST328 touch panel (TOUCH_INT / TOUCH_RST above). False keeps the chip
 # in reset and the UI keyboard-only; the panel then draws nothing.
 HAS_TOUCH = True
+# A click from the vibration motor (DRV2605) for every accepted touch; on a
+# board without the chip the keyboard light blinks instead. False = neither.
+HAS_HAPTICS = True
 
 # --- LoRa radio config -----------------------------------------------------
 # Board wiring comes from the "tdeck_pro_sx1262" preset in lora_boards.py;

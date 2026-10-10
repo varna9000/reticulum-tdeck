@@ -25,10 +25,12 @@ from tdeck_pro_config import (
 
 import bq27220
 import cst328
+import drv2605
 import eink_gdeq031t10
 import eink_shim
 import tca8418
 import tdeck_pro_rev
+import supervise
 
 # --- revision --------------------------------------------------------------
 # Resolved first, from an I2C scan with nothing powered (the DRV2605 that
@@ -259,6 +261,25 @@ else:
     Pin(_TOUCH_RST, Pin.OUT, value=0)
 _touch_reported = False
 
+# Feedback for an accepted touch: the motor where there is one (the chip's
+# presence is what marks a V1.1), else a 50 ms blink of the keyboard light.
+# PIN_VIBRATION is the driver's enable (probed 2026-10-11: held low, the
+# motor is silent). It stays low while the screen is dark, since an enabled
+# driver idles at a current the sleep work cannot afford; _service_touch
+# raises it with the screen.
+HAS_HAPTICS = bool(getattr(config, "HAS_HAPTICS", True))
+haptic = None
+if HAS_TOUCH and HAS_HAPTICS and drv2605.DRV2605_ADDR in i2c.scan():
+    haptic = drv2605.DRV2605(i2c, en_gpio=config.PIN_VIBRATION)
+    if haptic.ok:
+        haptic.enable(False)
+    else:
+        haptic = None
+else:
+    Pin(config.PIN_VIBRATION, Pin.OUT, value=0)
+_blink_until = None
+_touch_ctl = None
+
 
 # --- battery -----------------------------------------------------------
 
@@ -323,29 +344,55 @@ def attach_ui(gui):
     _gui = gui
 
 
-def _touch_handler(ev):
-    """Where touch events go. The gesture layer (the next piece of the
-    touch work) replaces this; until then a touch only keeps the screen
-    awake and, at DEBUG >= 2, shows up on the console.
+def _touch_feedback():
+    """An accepted touch: say so now, the panel will catch up in ~700 ms."""
+    global _blink_until
+    if haptic is not None:
+        haptic.click()
+    elif HAS_HAPTICS and _gui is not None and _blink_until is None:
+        # Flip the keyboard light for 50 ms, whatever it is showing, without
+        # going through the UI's setting (that path persists the preference).
+        set_kbd_backlight(not _gui._kbd_bl_lit)
+        _blink_until = time.ticks_add(time.ticks_ms(), 50)
 
-    Awake means the inactivity clock, which only wake_screen() stamps (the
+
+def _touch_handler(ev):
+    """One driver event: stamp activity, then let the controller turn it
+    into gestures and act on them.
+
+    Activity is the inactivity clock, which only wake_screen() stamps (the
     key loop calls it for every key too). The screen is already on when a
     finger is down, so this lights nothing and it respects the lock. An UP
     is left out on purpose: the driver also sends one to close a stroke as
     the screen goes dark, and that must not turn it back on."""
     if _gui is not None and ev[0] != cst328.UP:
         _gui.wake_screen(why="touch")
+    if _touch_ctl is not None:
+        _touch_ctl.event(ev)
     if config.DEBUG >= 2:
         print("[touch]", ev)
 
 
 def _service_touch():
     """One pass, from get_key(). The driver keeps its own reset in step
-    with the screen (off while dark, pulsed and retried when it lights)
-    and hands back whatever the finger did since the last pass."""
-    global _touch_reported
+    with the screen; the controller stamps layout changes and runs the
+    long-press clock before this pass's events arrive."""
+    global _touch_reported, _touch_ctl, _blink_until
     if touch is None or _gui is None:
         return
+    if _touch_ctl is None:
+        # Imported here, not at the top: touch_ui pulls in ui.py, and this
+        # module is imported before the app has brought the radio and the
+        # panel up. The first pass with a UI attached is early enough.
+        import touch_ui
+        _touch_ctl = touch_ui.Controller(_gui, feedback=_touch_feedback, report=supervise.report)
+    now = time.ticks_ms()
+    if _blink_until is not None and time.ticks_diff(now, _blink_until) >= 0:
+        _blink_until = None
+        set_kbd_backlight(_gui._kbd_bl_lit)
+    if haptic is not None and haptic.enabled != _gui._screen_on:
+        haptic.enable(_gui._screen_on)
+    _touch_ctl.service(now)
     for ev in touch.service(_gui._screen_on):
         _touch_handler(ev)
     if touch.gave_up and not _touch_reported:
@@ -370,6 +417,8 @@ def _get_key():
     k = keyboard.get_key()
     if not k:
         return b'\x00'
+    if _touch_ctl is not None:
+        _touch_ctl.key(time.ticks_ms())     # thumbs are on the keys: no taps for 300 ms
     nav = _NAV.get(k[0])
     if nav is not None:
         if _gui is not None:

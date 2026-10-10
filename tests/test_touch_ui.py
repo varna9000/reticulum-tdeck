@@ -636,6 +636,41 @@ def test_rrc():
           touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is False)
 
 
+# --- Task 8: glue and image --------------------------------------------------
+
+def _src(rel):
+    return open(os.path.join(ROOT, rel)).read()
+
+
+def test_image_carries_the_touch_modules():
+    print("image")
+    man = _src("tools/tdeck_manifest.py")
+    pro = man.split('_board == "tdeck_pro"')[1].split('elif _board')[0]
+    for f, where in (("touch_gestures.py", "_root"), ("touch_ui.py", "_root"), ("drv2605.py", '_root + "/lib"')):
+        check("%s frozen for the Pro only" % f,
+              'freeze(%s, "%s")' % (where, f) in pro and man.count('"%s"' % f) == 1, f)
+    dep = _src("tools/deploy_pro.sh")
+    for f in ("touch_gestures.py", "touch_ui.py", "drv2605.py"):
+        check("%s in deploy_pro.sh" % f, f in dep)
+
+
+def test_board_glue_wiring():
+    src = _src("board_tdeck_pro.py")
+    handler = src.split("def _touch_handler(ev):")[1].split("\ndef ")[0]
+    check("events reach the controller", "_touch_ctl.event(ev)" in handler)
+    check("activity is still stamped on DOWN and MOVE", '_gui.wake_screen(why="touch")' in handler and "cst328.UP" in handler)
+    service = src.split("def _service_touch():")[1].split("\ndef ")[0]
+    check("the controller is serviced before this pass's events",
+          service.index("_touch_ctl.service(") < service.index("touch.service("))
+    getkey = src.split("def _get_key():")[1].split("\ndef ")[0]
+    check("keys are reported to the recogniser", "_touch_ctl.key(" in getkey)
+    check("the motor driver is enabled only while the screen is lit",
+          "haptic.enable(_gui._screen_on)" in service or "haptic.enable(" in service)
+    check("the driver gets its enable pin (GPIO 2, probed)", "en_gpio=config.PIN_VIBRATION" in src)
+    check("feedback never touches the saved backlight preference",
+          "on_kbd_backlight" not in src.split("def _touch_feedback():")[1].split("\ndef ")[0])
+
+
 if __name__ == "__main__":
     test_geometry_is_the_pros()
     test_hint_zones_follow_the_hints()
@@ -664,6 +699,8 @@ if __name__ == "__main__":
     test_find()
     test_shell()
     test_rrc()
+    test_image_carries_the_touch_modules()
+    test_board_glue_wiring()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

@@ -53,7 +53,8 @@ echo "== clearing stale root copies of /lib modules =="
 # push may have left behind.
 run exec "
 import os
-stale = ('eink_gdeq031t10.py', 'eink_shim.py', 'tca8418.py', 'cst328.py', 'spleen_8x16.py',
+stale = ('eink_gdeq031t10.py', 'eink_shim.py', 'tca8418.py', 'cst328.py', 'drv2605.py',
+         'spleen_8x16.py',
          'bq27220.py', 'adc_reader.py', 'shell_4x6.py', 'shell_5x8.py',
          'shell_6x10.py', 'shell_6x12.py')
 for f in stale:
@@ -87,7 +88,7 @@ done
 # announce is silently dropped. txb stays 0.
 for f in "$SRC"/lib/lora/*.py; do add "$f" "lora/$(basename "$f")"; done
 
-for f in eink_gdeq031t10.py eink_shim.py tca8418.py cst328.py bq27220.py spleen_8x16.py; do
+for f in eink_gdeq031t10.py eink_shim.py tca8418.py cst328.py drv2605.py bq27220.py spleen_8x16.py; do
     add "$SRC/lib/$f" "lib/$f"
 done
 for f in "$SRC"/lib/shell_*.py; do add "$f" "lib/$(basename "$f")"; done
@@ -99,6 +100,8 @@ add "$SRC/tdeck_pro_config.py"         "tdeck_pro_config.py"
 add "$SRC/board.py"                    "board.py"
 add "$SRC/board_tdeck_pro.py"          "board_tdeck_pro.py"
 add "$SRC/tdeck_pro_rev.py"            "tdeck_pro_rev.py"
+add "$SRC/touch_gestures.py"           "touch_gestures.py"
+add "$SRC/touch_ui.py"                 "touch_ui.py"
 add "$SRC/board_geometry_tdeck_pro.py" "board_geometry.py"
 add "$FW/lora_boards.py"               "lora_boards.py"
 
