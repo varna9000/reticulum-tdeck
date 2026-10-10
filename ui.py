@@ -1507,6 +1507,8 @@ class UI:
                 self._draw_row_cached(ci, "", y, self.NEON_CYAN)
 
     def draw_node_list(self):
+        if _pro is not None:
+            return _pro.draw_node_list(self)
         self._draw_tab_bar()
         _rows = BODY_ROWS - 1
         if self._find:
