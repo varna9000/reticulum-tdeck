@@ -488,6 +488,154 @@ def test_image_viewer():
     check("a drag does nothing", touch_ui.handle(g, (DRAG, 100, 100, 2, 200000), 0) is False)
 
 
+# --- Task 6: setup, find, shell, rrc -----------------------------------------
+
+def test_setup():
+    print("setup")
+    g = mkui(ui.STATE_SETTINGS)
+    g._settings_page = ui._SET_MAIN
+    g._settings_idx = 0
+    seen = keys_pressed(g)
+    tap(g, 100, row_y(4))
+    settle(g)
+    check("tap row 4 selects it", g._settings_idx == 4 and seen == [], "%d %r" % (g._settings_idx, seen))
+    tap(g, 100, row_y(4))
+    settle(g)
+    check("tap it again activates it (Enter)", seen == [b'\r'], repr(seen))
+    adj = []
+    g._settings_adjust = lambda d: adj.append(d)
+    check("swipe right on the selected row steps it up",
+          touch_ui.handle(g, (SWIPE, 60, row_y(4), 1, 200000), 0) is True)
+    settle(g)
+    check("...by +1", adj == [1], repr(adj))
+    check("a swipe on another row does nothing",
+          touch_ui.handle(g, (SWIPE, 60, row_y(9), 1, 200000), 0) is False)
+    del seen[:]
+    check("edge swipe goes back", touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is True and seen == [b'\x1b'], repr(seen))
+    del seen[:]
+    g._settings_page = g._TEXT_ENTRY_PAGES[0]
+    check("on a text-entry page back does nothing (it would discard the entry)",
+          touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is False and seen == [], repr(seen))
+    g = mkui(ui.STATE_SETTINGS)
+    g._settings_page = ui._SET_MAIN
+    g._settings_idx = ui._SET_MAIN_LAST
+    top = max(0, g._settings_idx - (ui.BODY_ROWS - 1) + 1)
+    tap(g, 100, row_y(0))
+    settle(g)
+    check("the main list is windowed from the selection, as it is drawn",
+          g._settings_idx == top, "%d vs %d" % (g._settings_idx, top))
+
+
+def test_find():
+    print("find")
+    g = with_peers(3)
+    g._find = True
+    g._find_res = [("n%d" % i, bytes([i]) * 16) for i in range(5)]
+    g._find_sel = 0
+    g._find_scroll = 0
+    picked = []
+    g._find_pick = lambda: picked.append(g._find_sel)
+    fy = ui.BODY_Y + 2 * ui.CHAR_H + ui.CHAR_H // 2          # the first result row
+    tap(g, 100, fy + 2 * ui.CHAR_H)
+    settle(g)
+    check("tap result 2 selects it", g._find_sel == 2 and picked == [], "%d %r" % (g._find_sel, picked))
+    tap(g, 100, fy + 2 * ui.CHAR_H)
+    settle(g)
+    check("tap again picks it", picked == [2], repr(picked))
+    check("the tab bar is inert while Find is open", tap(g, 200, ui.BODY_Y + 4) is False and g.node_tab == ui.TAB_MSG)
+    check("edge swipe closes Find", touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is True and g._find is False)
+
+
+def test_shell():
+    print("shell")
+    g = mkui(ui.STATE_SHELL)
+    g._shell_menu = False
+    scrolled = []
+    g._shell_scroll = lambda d: scrolled.append(d)
+    check("finger down scrolls back toward older output",
+          touch_ui.handle(g, (DRAG, 100, 100, 2, 200000), 0) is True and scrolled == [2], repr(scrolled))
+    opened = []
+    g._shell_menu_open = lambda: opened.append(1)
+    check("a long press opens the control menu", touch_ui.handle(g, (LONG, 100, 100, 0, 200000), 0) is True)
+    settle(g)
+    check("...through the click path", opened == [1], repr(opened))
+    check("a tap on the terminal does nothing", tap(g, 100, 150) is False)
+    check("back does not leave a live shell", touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is False)
+    g._shell_menu = True
+    g._shell_menu_idx = 0
+    sent = []
+    g._shell_menu_exec = lambda: sent.append(g._shell_menu_idx)
+    tap(g, 100, row_y(2))
+    settle(g)
+    check("menu: tap item 2 selects it", g._shell_menu_idx == 2 and sent == [], "%d %r" % (g._shell_menu_idx, sent))
+    tap(g, 100, row_y(2))
+    settle(g)
+    check("menu: tap again sends it", sent == [2], repr(sent))
+    check("menu: back closes it", touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is True and g._shell_menu is False)
+    g._shell_menu = True
+    last = len(ui._SHELL_CTRL_ITEMS)
+    if last < ui.BODY_ROWS - 1:
+        check("menu: a tap below the last item closes it", tap(g, 100, row_y(last)) is True and g._shell_menu is False)
+
+
+def test_rrc():
+    print("rrc")
+    import rrc_ui
+    g = mkui(ui.STATE_RRC_ROOMS)
+    g._rrc_panel = False
+    g._rrc_prompt = False
+    toggled = []
+    orig = rrc_ui.panel_toggle
+    rrc_ui.panel_toggle = lambda u, kind: toggled.append(kind)
+    try:
+        check("header tap toggles the room picker", tap(g, 30, ui.BODY_Y + 4) is True)
+        settle(g)
+        check("...through the click path", toggled == ["rooms"], repr(toggled))
+    finally:
+        rrc_ui.panel_toggle = orig
+    g._rrc_panel = True
+    g._rrc_panel_kind = "rooms"
+    g._rrc_rooms = [("mesh", "chatter"), ("ops", "operators"), ("bg", "bg")]
+    g._rrc_list_seen = True
+    g._rrc_panel_idx = 0
+    g._rrc_panel_scroll = 0
+    clicked = []
+    orig_click = rrc_ui.panel_click
+    rrc_ui.panel_click = lambda u: clicked.append(u._rrc_panel_idx)
+    try:
+        py = rrc_ui.PANEL_Y + 22 + 2 * ui.CHAR_H + ui.CHAR_H // 2
+        px = rrc_ui.PANEL_X + 40
+        tap(g, px, py)
+        settle(g)
+        check("panel: tap row 2 selects it", g._rrc_panel_idx == 2 and clicked == [], "%d %r" % (g._rrc_panel_idx, clicked))
+        tap(g, px, py)
+        settle(g)
+        check("panel: tap again acts on it", clicked == [2], repr(clicked))
+    finally:
+        rrc_ui.panel_click = orig_click
+    check("panel: a tap outside the box closes it",
+          tap(g, 120, rrc_ui.PANEL_Y + rrc_ui.PANEL_H + 20) is True and g._rrc_panel is False)
+    g._rrc_panel = True
+    check("panel: back closes it", touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is True and g._rrc_panel is False)
+    g = mkui(ui.STATE_RRC_CHAT)
+    g._rrc_panel = False
+    g._rrc_prompt = False
+    g._rrc_input = "half a line"
+    check("room with a draft: back does nothing", touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is False)
+    g._rrc_input = ""
+    keys = []
+    orig_hk = rrc_ui.handle_key
+    rrc_ui.handle_key = lambda u, ch, key: keys.append(ch) or True
+    try:
+        check("room with an empty composer: back is Backspace",
+              touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is True and keys == [8], repr(keys))
+    finally:
+        rrc_ui.handle_key = orig_hk
+    g._rrc_prompt = True
+    check("while the join prompt is up, back does nothing",
+          touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is False)
+
+
 if __name__ == "__main__":
     test_geometry_is_the_pros()
     test_hint_zones_follow_the_hints()
@@ -512,6 +660,10 @@ if __name__ == "__main__":
     test_recording()
     test_browser()
     test_image_viewer()
+    test_setup()
+    test_find()
+    test_shell()
+    test_rrc()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

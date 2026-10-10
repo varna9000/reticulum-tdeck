@@ -17,6 +17,16 @@ _FOOT_SNAP = 8           # a footer tap this close to a hint goes to it
 _PAGE = _u.BODY_ROWS - 2
 
 
+def _panel(ui):
+    """(module, rows) for an open RRC panel, else (None, None)."""
+    if not (ui._rrc_panel and ui.state in (_u.STATE_RRC_ROOMS, _u.STATE_RRC_CHAT)):
+        return None, None
+    import rrc_ui
+    return rrc_ui, (rrc_ui.PANEL_X, rrc_ui.PANEL_X + rrc_ui.PANEL_W, rrc_ui.PANEL_Y + 22,
+                    rrc_ui.PANEL_ROWS, ui._rrc_panel_scroll, ui._rrc_panel_idx,
+                    rrc_ui._panel_len(ui))
+
+
 def _lists(ui):
     """(index attr, scroll attr, keys) for the node-list tab that is up."""
     t = ui.node_tab
@@ -56,7 +66,13 @@ def _rows(ui):
     st = ui.state
     y0 = _u.BODY_Y + _u.CHAR_H
     full = (0, _u.SCREEN_W)
-    if st == _u.STATE_NODES and not ui._find:
+    mod, prow = _panel(ui)
+    if prow is not None:
+        return prow
+    if st == _u.STATE_NODES:
+        if ui._find:
+            return full + (y0 + _u.CHAR_H, ui._find_rows(), ui._find_scroll,
+                           ui._find_sel, len(ui._find_res))
         ia, sa, keys = _lists(ui)
         return full + (y0, _u.BODY_ROWS - 1, getattr(ui, sa), getattr(ui, ia), len(keys))
     if st == _u.STATE_CHAT:
@@ -66,6 +82,17 @@ def _rows(ui):
         n = _u.BODY_ROWS - 1
         return full + (y0, n, 0, ui.browser_cursor,
                        min(n, max(0, len(ui.browser_lines) - ui.browser_scroll)))
+    if st == _u.STATE_SETTINGS:
+        n = _u.BODY_ROWS - 1
+        if ui._settings_page == _u._SET_MAIN:
+            # Drawn windowed from the selection (_draw_settings_main).
+            return full + (y0, n, max(0, ui._settings_idx - n + 1), ui._settings_idx,
+                           _u._SET_MAIN_LAST + 1)
+        if ui._settings_page == _u._SET_WIFI_SCAN:
+            return full + (y0, n, ui._settings_scroll, ui._settings_idx, len(ui._wifi_networks))
+        return None
+    if st == _u.STATE_SHELL and ui._shell_menu:
+        return full + (y0, _u.BODY_ROWS - 1, 0, ui._shell_menu_idx, len(_u._SHELL_CTRL_ITEMS))
     return None
 
 
@@ -119,6 +146,13 @@ def _tap_header(ui, x):
             return False
         ui._switch_tab(tab)
         return True
+    if st in (_u.STATE_RRC_ROOMS, _u.STATE_RRC_CHAT):
+        if ui._rrc_prompt:
+            return False
+        ui.nav_event("click")         # the room / member panel, as the ball's click
+        return True
+    if st == _u.STATE_SHELL:
+        return False
     return _back(ui, True)
 
 
@@ -143,6 +177,32 @@ def _back(ui, from_header):
     if st == _u.STATE_RECORDING:
         ui.handle_key(b'\x08')
         return True
+    if st == _u.STATE_NODES:
+        if ui._find:
+            ui._find_close()
+            return True
+        return False
+    if st == _u.STATE_SETTINGS:
+        if ui._settings_page in ui._TEXT_ENTRY_PAGES:
+            return False              # Esc there cancels what was typed
+        ui.handle_key(b'\x1b')
+        return True
+    if st == _u.STATE_SHELL:
+        if ui._shell_menu:
+            ui._shell_menu_close()
+            return True
+        return False                  # an edge swipe must not drop a live session
+    if st in (_u.STATE_RRC_ROOMS, _u.STATE_RRC_CHAT):
+        import rrc_ui
+        if ui._rrc_panel:
+            rrc_ui.panel_close(ui)
+            return True
+        if ui._rrc_prompt:
+            return False
+        if st == _u.STATE_RRC_CHAT and ui._rrc_input:
+            return False
+        rrc_ui.handle_key(ui, 8, b'\x08')
+        return True
     return False
 
 
@@ -159,6 +219,13 @@ def _tap(ui, x, y):
         return True
     if y >= _u.SEP_Y - 6:
         return _tap_footer(ui, x)
+    mod, prow = _panel(ui)
+    if prow is not None:
+        inside = (prow[0] <= x < prow[1] and mod.PANEL_Y <= y < mod.PANEL_Y + mod.PANEL_H)
+        if not inside:
+            mod.panel_close(ui)
+            return True
+        return _tap_row(ui, prow, y)
     if y < _u.BODY_Y + _u.CHAR_H:
         # Navbar + first body row. On the node list the navbar's right third
         # is the clock (Setup); everything else up here is the header row,
@@ -169,13 +236,21 @@ def _tap(ui, x, y):
         return _tap_header(ui, x)
     rows = _rows(ui)
     if rows is not None and rows[0] <= x < rows[1]:
-        return _tap_row(ui, rows, y)
+        if _tap_row(ui, rows, y):
+            return True
+        if st == _u.STATE_SHELL and ui._shell_menu:
+            ui._shell_menu_close()    # a tap below the last item
+            return True
     return False
 
 
 def _long(ui):
-    if ui.state == _u.STATE_IMAGE:
+    st = ui.state
+    if st == _u.STATE_IMAGE:
         ui.handle_key(b'r')
+        return True
+    if st == _u.STATE_SHELL and not ui._shell_menu:
+        ui.nav_event("click")         # opens the control-key menu
         return True
     return False
 
@@ -193,6 +268,12 @@ def _scroll_content(ui, n):
     if st == _u.STATE_BROWSER:
         ui._browser_page(-n)
         return True
+    if st == _u.STATE_SHELL and not ui._shell_menu:
+        ui._shell_scroll(n)           # delta > 0 = toward older lines
+        return True
+    if st in (_u.STATE_RRC_ROOMS, _u.STATE_RRC_CHAT) and not ui._rrc_panel:
+        _steps(ui, -n)                # the scrollback's own up = older
+        return True
     return False
 
 
@@ -208,10 +289,22 @@ def _drag(ui, n):
     return False
 
 
-def _swipe(ui, d):
-    if ui.state == _u.STATE_NODES and not ui._find:
+def _swipe(ui, d, y):
+    st = ui.state
+    if st == _u.STATE_NODES and not ui._find:
         # Like turning a page: the finger moving left brings the next tab in.
         ui.nav_event("right" if d < 0 else "left")
+        return True
+    if st == _u.STATE_SETTINGS:
+        rows = _rows(ui)
+        if rows is not None:
+            # On a list page the swipe must be on the selected row: stepping
+            # a value you did not aim at is worse than a swipe that misses.
+            if rows[4] + (y - rows[2]) // _u.CHAR_H != rows[5]:
+                return False
+        elif ui._settings_page in ui._TEXT_ENTRY_PAGES:
+            return False
+        ui._settings_adjust(d)
         return True
     return False
 
@@ -233,10 +326,10 @@ def handle(ui, g, changed_ms):
     if kind == FLICK:
         return _drag(ui, n * _PAGE)
     if kind == SWIPE:
-        return _swipe(ui, n)
+        return _swipe(ui, n, y)
     if kind == BACK:
         if ui.state == _u.STATE_NODES and not ui._find:
-            return _swipe(ui, 1)
+            return _swipe(ui, 1, y)
         return _back(ui, False)
     return False
 
