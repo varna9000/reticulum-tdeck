@@ -28,6 +28,7 @@ INFO_R = 212       # right-hand second-line text ends here
 NAME_COLS = 25
 INFO_COLS = 22
 SHEET_SLOT = 10    # ui._cache slot for the sheet
+SBAR_SLOT = 11     # ...and for the scroll lane
 
 import time
 
@@ -136,6 +137,10 @@ def _scrollbar(ui):
     ia, sa, keys, table, show_unread, empty = cur(ui)
     total = len(keys)
     track = LIST_ROWS * ROW_H
+    ck = (total, getattr(ui, sa))
+    if ui._cache[SBAR_SLOT] == ck:
+        return                       # an unchanged lane is not worth a refresh
+    ui._cache[SBAR_SLOT] = ck
     ui.tft.fill_rect(_u.SBAR_X, LIST_Y, _u.SBAR_W, track, ui.BG_DARK)
     if total > LIST_ROWS:
         h = max(6, track * LIST_ROWS // total)
@@ -191,7 +196,8 @@ def draw_tab_bar(ui):
 def draw_toolbar(ui):
     """The bottom line: four cells, icon + label, each a touch target and a
     reminder of its key (the underlined letter)."""
-    ck = "\x03tools"
+    sheet = ui._sheet is not None
+    ck = "\x03sheet" if sheet else "\x03tools"
     if ui._cache[_u.FOOT_SLOT] == ck:
         return
     ui._cache[_u.FOOT_SLOT] = ck
@@ -201,6 +207,14 @@ def draw_toolbar(ui):
     tft.fill_rect(0, TOOL_Y, _u.SCREEN_W, TOOL_H, paper)
     tft.fill_rect(0, TOOL_Y, _u.SCREEN_W, 1, ui.DIM_CYAN)
     ui._hint_zones = []
+    if sheet:
+        ty = TOOL_Y + 1 + (TOOL_H - 1 - ui.SH) // 2
+        ui._sdraw("tap outside to close", 4, ty, ui.DIM_CYAN, paper)
+        s = "(BKSP)close"
+        x = _u.SCREEN_W - 4 - len(s) * ui.SW
+        ui._sdraw(s, x, ty, ink, paper)
+        ui._hint_zones.append((ui.state, x, _u.SCREEN_W, b'\x08'))
+        return
     cw = _u.SCREEN_W // 4
     ty = TOOL_Y + 1 + (TOOL_H - 1 - ui.SH) // 2
     for i in range(4):
@@ -217,14 +231,22 @@ def draw_toolbar(ui):
 def draw_node_list(ui):
     draw_tab_bar(ui)
     if ui._find:
-        if ui._cache[_u.FOOT_SLOT] == "\x03tools":
+        ui._sheet = None
+        if ui._cache[_u.FOOT_SLOT] in ("\x03tools", "\x03sheet"):
             # Find paints its own footer text; clear the toolbar's band once.
             ui._cache[_u.FOOT_SLOT] = ''
             ui.tft.fill_rect(0, TOOL_Y, _u.SCREEN_W, TOOL_H, ui.BG_DARK)
         ui._draw_find()          # Find keeps its own single-line layout
         return
-    draw_rows(ui)
-    _scrollbar(ui)
+    if ui._sheet is not None and (ui._sheet != ui.node_tab or not cur(ui)[2]):
+        sheet_close(ui)              # the tab changed or the list emptied under it
+    if ui._sheet is not None:
+        draw_rows(ui, LIST_ROWS - len(sheet_items(ui)))
+        _scrollbar(ui)
+        draw_sheet(ui)
+    else:
+        draw_rows(ui)
+        _scrollbar(ui)
     draw_toolbar(ui)
 
 
@@ -300,3 +322,101 @@ def draw_navbar(ui):
         if center:
             ui._sdraw(center, x + iw, ny, col, hb)
     ui._cache[0] = bat_key + mid_key
+
+
+# --- the actions sheet ---------------------------------------------------------
+# A touch menu for the selected row. It adds nothing the keys cannot do: each
+# item closes the sheet and then does exactly what its key does.
+
+_OPEN = {0: "Open chat", 1: "Open page", 2: "Open shell", 3: "Open hub"}   # by tab id
+
+
+def sheet_items(ui):
+    """(label, key label, key bytes or None for the click, icon), top to bottom."""
+    items = [(_OPEN[ui.node_tab], "Enter", None, _TAB_ICONS[ui.node_tab]),
+             ("Favorite", "F", b'f', _u._STAR)]
+    if ui.node_tab == _u.TAB_MSG:
+        items.append(("Ping", "P", b'p', _u._ANTENNA))
+    items.append(("Delete", "D", b'd', _TRASH))
+    return tuple(items)
+
+
+def sheet_rect(ui):
+    """(top y, item count): the sheet covers the list's last rows."""
+    n = len(sheet_items(ui))
+    return TOOL_Y - n * ROW_H, n
+
+
+def sheet_open(ui):
+    ia, sa, keys, table, show_unread, empty = cur(ui)
+    if ui.state != _u.STATE_NODES or ui._find or not keys:
+        return False
+    sel = getattr(ui, ia)
+    if not (0 <= sel < len(keys)):
+        return False
+    ui._sheet = ui.node_tab
+    # Keep the row it is about in view: the last row above the sheet at most.
+    free = LIST_ROWS - len(sheet_items(ui))
+    scroll = getattr(ui, sa)
+    ui._sheet_scroll = scroll
+    if sel - scroll >= free:
+        setattr(ui, sa, sel - free + 1)
+    ui._cache[SHEET_SLOT] = ''
+    ui._cache[_u.FOOT_SLOT] = ''
+    ui.dirty = True
+    return True
+
+
+def sheet_close(ui):
+    if ui._sheet is None:
+        return False
+    tab = ui._sheet
+    ui._sheet = None
+    if tab == ui.node_tab:
+        setattr(ui, cur(ui)[1], ui._sheet_scroll)
+    for i in range(2, 2 + LIST_ROWS):
+        ui._cache[i] = ''
+    ui._cache[SHEET_SLOT] = ''
+    ui._cache[_u.FOOT_SLOT] = ''
+    ui.dirty = True
+    return True
+
+
+def sheet_act(ui, i):
+    items = sheet_items(ui) if ui._sheet is not None else ()
+    sheet_close(ui)
+    if not (0 <= i < len(items)):
+        return
+    key = items[i][2]
+    if key is None:
+        ui.nav_event("click")       # what Enter / the ball's click does here
+    else:
+        ui.handle_key(key)
+
+
+def sheet_key(ui, ch):
+    """A key while the sheet is up: it always closes. Backspace / Esc are
+    consumed; anything else is then handled as it would be on the list."""
+    sheet_close(ui)
+    return ch == 0x08 or ch == 0x1B
+
+
+def draw_sheet(ui):
+    ck = "S" + str(ui._sheet)
+    if ui._cache[SHEET_SLOT] == ck:
+        return
+    ui._cache[SHEET_SLOT] = ck
+    tft = ui.tft
+    paper = ui.BG_DARK
+    ink = ui.NEON_CYAN
+    y0, n = sheet_rect(ui)
+    items = sheet_items(ui)
+    width = _u.SBAR_X
+    tft.fill_rect(0, y0, width, n * ROW_H, paper)
+    for i in range(n):
+        label, klabel, key, icon = items[i]
+        y = y0 + i * ROW_H
+        tft.fill_rect(0, y, width, 2 if i == 0 else 1, ink)
+        ui._bitmap(icon, 14, y + (ROW_H - icon[1]) // 2, ink)
+        tft.text(ui.font, label, 34, y + 8, ink, paper)
+        ui._sdraw(klabel, INFO_R - len(klabel) * ui.SW, y + 10, ui.DIM_CYAN, paper)

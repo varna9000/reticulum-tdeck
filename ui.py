@@ -2445,6 +2445,9 @@ class UI:
             self.dirty = True
 
     def _handle_key_nodes(self, ch, key):
+        if _pro is not None and self._sheet is not None:
+            if _pro.sheet_key(self, ch):
+                return True
         # Find sub-mode captures all keys.
         if self._find:
             return self._handle_find_key(ch)
@@ -4513,6 +4516,8 @@ class UI:
         click = self._irq_click;  self._irq_click = 0
         left = self._irq_left;  self._irq_left = 0
         right = self._irq_right;  self._irq_right = 0
+        if _pro is not None and self._sheet is not None and (up or down or left or right or click):
+            _pro.sheet_close(self)      # a navigation key: the sheet goes, the key acts
 
         # Locking takes a long click; getting back in takes any click. The
         # ball sits recessed and stiff enough that a pocket press is not a

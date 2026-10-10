@@ -375,6 +375,118 @@ def test_navbar_clock_right_no_name():
     check("ui.draw_navbar hands over and is cached", t.calls == [], repr(t.calls[:2]))
 
 
+# --- Task 5: the sheet ------------------------------------------------------------
+
+def test_sheet_items_per_tab():
+    print("sheet")
+    g, t = mkui()
+    peers(g, 3)
+    check("MSG: open, favorite, ping, delete",
+          [i[0] for i in ui_pro.sheet_items(g)] == ["Open chat", "Favorite", "Ping", "Delete"])
+    g.node_tab = ui.TAB_NET
+    check("NET: open, favorite, delete",
+          [i[0] for i in ui_pro.sheet_items(g)] == ["Open page", "Favorite", "Delete"])
+    g.node_tab = ui.TAB_SSH
+    check("SSH", ui_pro.sheet_items(g)[0][0] == "Open shell")
+    g.node_tab = ui.TAB_RRC
+    check("RRC", ui_pro.sheet_items(g)[0][0] == "Open hub")
+
+
+def test_sheet_open_draw_close():
+    g, t = mkui()
+    peers(g, 3)
+    g.selected_idx = 1
+    g.draw_node_list()
+    check("opens on a list with rows", ui_pro.sheet_open(g) is True and g._sheet == ui.TAB_MSG and g.dirty)
+    y0, n = ui_pro.sheet_rect(g)
+    check("four 32 px items, bottom-aligned above the toolbar", n == 4 and y0 == ui_pro.TOOL_Y - 4 * 32, "%d %d" % (y0, n))
+    del t.calls[:]
+    g.draw_node_list()
+    labels = [c for c in texts(t) if c[1] in ("Open chat", "Favorite", "Ping", "Delete")]
+    check("items drawn top to bottom at 32 px", [c[3] - (c[3] - y0) % 32 for c in labels] == [y0, y0 + 32, y0 + 64, y0 + 96], repr([c[3] for c in labels]))
+    keys = [c[1] for c in texts(t, "small")]
+    check("each item names its key", all(k in keys for k in ("Enter", "F", "P", "D")), repr(keys))
+    check("the toolbar line explains how to close", any("close" in k for k in keys))
+    z = [k for _, _, _, k in g._hint_zones]
+    check("the only footer zone left is close", z == [b'\x08'], repr(z))
+    del t.calls[:]
+    g.draw_node_list()
+    check("cached while nothing changes", t.calls == [], repr(t.calls[:2]))
+    check("close", ui_pro.sheet_close(g) is True and g._sheet is None)
+    del t.calls[:]
+    g.draw_node_list()
+    check("the rows it covered and the toolbar come back",
+          find(t, "small", "Annc") is not None and len([c for c in t.calls if c[0] == "rect" and c[5] == g.BG_DARK and c[4] == 32]) >= 1)
+    g2, t2 = mkui()
+    check("refuses on an empty list", ui_pro.sheet_open(g2) is False and g2._sheet is None)
+    g2._find = True
+    check("refuses while Find is open", ui_pro.sheet_open(g2) is False)
+
+
+def test_sheet_keeps_the_row_visible():
+    g, t = mkui()
+    peers(g, 14)
+    g.selected_idx = 6                      # the 7th visible row: under a 4-item sheet
+    g.node_scroll = 0
+    ui_pro.sheet_open(g)
+    y0, n = ui_pro.sheet_rect(g)
+    vis = g.selected_idx - g.node_scroll
+    check("the list scrolls so the selected row is the last one above the sheet",
+          ui_pro.LIST_Y + (vis + 1) * 32 == y0, "vis %d scroll %d" % (vis, g.node_scroll))
+    ui_pro.sheet_close(g)
+    check("closing puts the scroll back", g.node_scroll == 0, str(g.node_scroll))
+    g.selected_idx = 1
+    ui_pro.sheet_open(g)
+    check("a row already above the sheet does not scroll", g.node_scroll == 0)
+
+
+def test_sheet_actions():
+    g, t = mkui()
+    peers(g, 3)
+    g.selected_idx = 2
+    seen = []
+    clicks = []
+    g.handle_key = lambda k: seen.append(bytes(k)) or True
+    g.nav_event = lambda n: clicks.append(n)
+    ui_pro.sheet_open(g)
+    ui_pro.sheet_act(g, 0)
+    check("Open is the click, with the sheet already closed", clicks == ["click"] and g._sheet is None, repr(clicks))
+    for i, k in ((1, b'f'), (2, b'p'), (3, b'd')):
+        ui_pro.sheet_open(g)
+        ui_pro.sheet_act(g, i)
+        check("item %d presses %r" % (i, k), seen[-1] == k and g._sheet is None, repr(seen))
+    ui_pro.sheet_open(g)
+    ui_pro.sheet_act(g, 9)
+    check("an item index past the end just closes", g._sheet is None and len(seen) == 3)
+
+
+def test_sheet_keys():
+    g, t = mkui()
+    peers(g, 3)
+    g.selected_idx = 1
+    fav = []
+    g._favorite = lambda kind=None: fav.append(kind)
+    ui_pro.sheet_open(g)
+    g.handle_key(b'\x08')
+    check("Backspace closes the sheet and does nothing else", g._sheet is None and g.state == ui.STATE_NODES)
+    ui_pro.sheet_open(g)
+    g.handle_key(b'f')
+    check("F closes the sheet and still favourites the row", g._sheet is None and fav == ["peer"], repr(fav))
+    ui_pro.sheet_open(g)
+    g.nav_event("down")
+    g.handle_trackball()
+    check("an arrow closes the sheet and moves the selection", g._sheet is None and g.selected_idx == 2, str(g.selected_idx))
+    ui_pro.sheet_open(g)
+    g._switch_tab(ui.TAB_NET)
+    g.draw_node_list()
+    check("a tab switch drops the sheet", g._sheet is None)
+    g._switch_tab(ui.TAB_MSG)
+    ui_pro.sheet_open(g)
+    g.state = ui.STATE_SETTINGS
+    g.draw()
+    check("leaving the list drops the sheet", g._sheet is None)
+
+
 if __name__ == "__main__":
     test_pro_layout_is_active_on_the_pro()
     test_list_window_follows_the_selection()
@@ -392,6 +504,11 @@ if __name__ == "__main__":
     test_toolbar()
     test_no_body_frame_on_the_pro_list()
     test_navbar_clock_right_no_name()
+    test_sheet_items_per_tab()
+    test_sheet_open_draw_close()
+    test_sheet_keeps_the_row_visible()
+    test_sheet_actions()
+    test_sheet_keys()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))
