@@ -229,7 +229,7 @@ class Power:
         self.last_reason = None
         self._blocked = False
         if kind == "input":
-            self.gui.wake_screen()
+            self.gui.wake_screen(why="input")
         return kind
 
     def summary(self):

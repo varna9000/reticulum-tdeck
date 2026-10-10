@@ -145,7 +145,7 @@ class FakeGui:
     def _sleep_blocked(self):
         return self.blocked
 
-    def wake_screen(self):
+    def wake_screen(self, why=None):
         self.woken += 1
 
 

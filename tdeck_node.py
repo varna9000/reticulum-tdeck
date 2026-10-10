@@ -467,7 +467,7 @@ def _on_message_inner(message):
 
     # Wake screen and play notification (mode 2 = never wake automatically)
     if gui._wake_mode != 2:
-        gui.wake_screen()
+        gui.wake_screen(why="msg")
     if DEBUG >= 1:
         print("[RX] wake ok")
     sound.play_rx()
@@ -536,7 +536,7 @@ def on_announce(destination_hash, display_name):
     # A received message always wakes it -- see the LXMF delivery handler above.
     gui.add_peer(destination_hash, display_name, rssi=rssi, hops=hops, via=via)
     if gui._wake_mode == 1:  # only mode 1 wakes on announces; a live mesh never sleeps otherwise
-        gui.wake_screen()
+        gui.wake_screen(why="announce")
     if DEBUG >= 1:
         print("[Peer]", display_name or "?", "[" + destination_hash.hex()[:8] + "]",
               "hops:", hops)

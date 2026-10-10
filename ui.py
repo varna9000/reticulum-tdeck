@@ -146,6 +146,12 @@ _TB_LONG_PRESS_MS = 700
 
 # Screen power-off timeout options (ms); 0 = never sleep
 _SCREEN_TIMEOUT_MS = 10000
+# Who lit a dark screen: the last WAKE_TRACE_MAX (ticks_ms, reason) pairs in
+# RAM, and the same appended to WAKE_TRACE_PATH on the deck so a wake "for
+# no reason" seen on battery can be read back later (v1, 2026-10-10).
+WAKE_TRACE_MAX = 16
+WAKE_TRACE_PATH = "/rns/wake.txt"
+WAKE_TRACE_FILE_MAX = 3000
 _TIMEOUT_CHOICES = (10000, 30000, 60000, 0)
 
 # Unicode -> font glyph index for the display driver. The font
@@ -839,6 +845,7 @@ class UI:
 
         # Screen power management
         self._last_activity = time.ticks_ms()
+        self._wake_trace = []           # (ticks_ms, reason) of dark-to-lit wakes
         self._screen_on = True
         self._bl = None  # backlight pin, set by set_backlight()
         self.locked = False  # long-press lock: screen off, all input dropped
@@ -1010,12 +1017,13 @@ class UI:
         if self._panel_flush is not None:
             self._panel_flush(force_full=full, user=user)
 
-    def wake_screen(self, force=False):
+    def wake_screen(self, force=False, why=None):
         # One guard for every wake source — including the message/announce
         # wakes tdeck_node.py fires from the RX path. Only unlocking forces.
         if self.locked and not force:
             return
         if not self._screen_on:
+            self._trace_wake(why)
             if self._bl:
                 self._bl.value(1)
             self._screen_on = True
@@ -1032,6 +1040,28 @@ class UI:
             if self._kbd_tracks_screen() and self._kbd_bl and not self._kbd_bl_lit:
                 self._drive_kbd_backlight(True)
         self._last_activity = time.ticks_ms()
+
+    def _trace_wake(self, why):
+        """Record who lit a dark screen; see WAKE_TRACE_PATH. Never raises."""
+        why = why or "?"
+        now = time.ticks_ms()
+        self._wake_trace.append((now, why))
+        if len(self._wake_trace) > WAKE_TRACE_MAX:
+            del self._wake_trace[0]
+        try:
+            try:
+                with open(WAKE_TRACE_PATH) as f:
+                    old = f.read()
+            except OSError:
+                old = ""
+            body = old + "%d %d %s\n" % (int(time.time()), now, why)
+            if len(body) > WAKE_TRACE_FILE_MAX:
+                body = body[-WAKE_TRACE_FILE_MAX:]
+                body = body[body.find("\n") + 1:]
+            with open(WAKE_TRACE_PATH, "w") as f:
+                f.write(body)
+        except Exception:
+            pass
 
     def sleep_screen(self):
         if self._screen_on:
@@ -1077,7 +1107,7 @@ class UI:
 
     def unlock(self):
         self.locked = False
-        self.wake_screen(force=True)
+        self.wake_screen(force=True, why="unlock")
         self._cache = [''] * CACHE_ROWS  # row caches are stale after the screen blanked
         self.dirty = True
 
@@ -2885,7 +2915,7 @@ class UI:
             self._terminal.feed(data)
             if self.state == STATE_SHELL:
                 self.dirty = True
-                self.wake_screen()
+                self.wake_screen(why="shell")
 
     def shell_connected(self):
         self._shell_connected = True
@@ -4461,10 +4491,11 @@ class UI:
 
         # If screen is off, consume the event and just wake
         if not self._screen_on:
-            self.wake_screen()
+            self.wake_screen(why="ball:" + ("click" if click else "up" if up else "down" if down
+                                            else "left" if left else "right"))
             return True
 
-        self.wake_screen()
+        self.wake_screen(why="ball")
 
         # An open RRC panel takes the trackball entirely: scroll the rows,
         # click to act on the highlighted one, no page/tab switching and no
@@ -5210,13 +5241,13 @@ class UI:
                     continue  # keep draining the I2C queue, drop the keys
                 self.note_user_input()
                 if not self._screen_on:
-                    self.wake_screen()
+                    self.wake_screen(why="key")
                     # Drain remaining keys — first press only wakes
                     for _ in range(10):
                         if self.get_key() == b'\x00':
                             break
                     break
-                self.wake_screen()
+                self.wake_screen(why="key")
                 self.handle_key(key)
             if (self._irq_up or self._irq_down or self._irq_left or self._irq_right
                     or self._irq_click or self._irq_long_click):
