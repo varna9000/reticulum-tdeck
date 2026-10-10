@@ -668,6 +668,7 @@ class UI:
         self._rec_max = REC_MAX_SECS   # max recording length in seconds
         self._rec_level = 0            # live mic peak, 0..10 bar units
         self._rec_warming = False      # True while the ADC warms before capture
+        self._rec_warm_secs = 0        # seconds spent warming (driven by node)
         self._progress_dirty = False
         self.announce_flash = 0  # timestamp of last announce flash
 
@@ -3506,7 +3507,10 @@ class UI:
         which starves the core-1 mic thread and hurts the audio, so there is no
         VU meter or live counter here (row cache skips the unchanged rows)."""
         if self._rec_warming:
-            title, tcol = "Warming mic...", self.NEON_CYAN
+            # After a light sleep the v1's ADC takes a few seconds to come
+            # back; the count shows it is still trying (the node cancels
+            # the recording if it gives up), so it cannot read as a hang.
+            title, tcol = "Warming mic... %ds" % self._rec_warm_secs, self.NEON_CYAN
             hint = "Esc=cancel"
         else:
             title, tcol = "* Recording *", self.NEON_MAG
@@ -3534,6 +3538,7 @@ class UI:
         self._rec_seconds = 0
         self._rec_level = 0
         self._rec_warming = False
+        self._rec_warm_secs = 0
         self.state = STATE_RECORDING
         self._prev_state = -1
         self._state_change_ms = time.ticks_ms()

@@ -215,12 +215,14 @@ class Sound:
         """Initialize ES7210 mic ADC, MCLK, and I2S(1) RX.
         I2S stays alive across recordings to avoid ESP32-S3 TDM bit-order
         reinit bug (micropython#11245). Thread shutdown uses _recording flag."""
-        from machine import PWM
-        self._mclk = PWM(Pin(48), freq=4096000, duty_u16=32768)
-
         from es7210 import ES7210
+        self._mclk = None
+        self._mclk_pin = 48
+        self._mic_gain = ES7210.GAIN_37_5DB
+        self._start_mclk()
+
         self._es7210 = ES7210(i2c)
-        self._es7210.init(gain=ES7210.GAIN_37_5DB)
+        self._es7210.init(gain=self._mic_gain)
 
         self._i2s_mic = I2S(
             1, sck=Pin(47), ws=Pin(21), sd=Pin(14),
@@ -253,6 +255,51 @@ class Sound:
         screen shows 'Warming mic...' until this flips (normally ~0.2s; the
         full warm-up only runs in the rare re-warm fallback)."""
         return self._capturing
+
+    # ES7210 recovery after its clocks stopped (light sleep). Bench
+    # 2026-10-10 on the v1: a kick alone never brought it back; MCLK restart
+    # + re-init + polling with a kick every MIC_KICK_MS recovered it in
+    # 0.4-7 s, 4 of 4 (the ADC resyncs at a random moment after a kick, so
+    # kicks are re-rolls and polling catches the first live chunk).
+    MIC_KICK_MS = 1500      # between kicks while polling for life
+    MIC_ROUND_MS = 12000    # after this long, start over with a fresh re-init
+    MIC_RECOVER_MS = 36000  # total bound: three rounds, then give up
+
+    def _start_mclk(self):
+        """(Re)create the 4.096 MHz master clock. The LEDC output does not
+        feed the ADC usefully again after a light sleep until it is rebuilt;
+        rebuilding it is cheap and is the first step of every recovery."""
+        from machine import PWM
+        if self._mclk is not None:
+            self._mclk.deinit()
+        self._mclk = PWM(Pin(self._mclk_pin), freq=4096000, duty_u16=32768)
+
+    def _recover_es7210(self, raw, abort=None):
+        """Bring a dead (clock-starved) ADC back: restart MCLK, re-init the
+        ADC, then read continuously until a chunk shows a noise floor, kicking
+        the ADC clock every MIC_KICK_MS. A round that stays dead for
+        MIC_ROUND_MS is restarted from the re-init; MIC_RECOVER_MS bounds the
+        whole thing. abort() is polled every chunk."""
+        import time
+        t_all = time.ticks_ms()
+        while time.ticks_diff(time.ticks_ms(), t_all) < self.MIC_RECOVER_MS:
+            self._start_mclk()
+            self._es7210.init(gain=self._mic_gain)
+            t_round = time.ticks_ms()
+            t_kick = t_round
+            while time.ticks_diff(time.ticks_ms(), t_round) < self.MIC_ROUND_MS:
+                if abort and abort():
+                    return False
+                self._i2s_mic.readinto(raw)
+                if self._raw_spread(raw) > 0:
+                    return True
+                now = time.ticks_ms()
+                if time.ticks_diff(now, t_kick) >= self.MIC_KICK_MS:
+                    self._kick_mic()
+                    t_kick = time.ticks_ms()
+                if time.ticks_diff(now, t_all) >= self.MIC_RECOVER_MS:
+                    return False
+        return False
 
     def _kick_mic(self):
         """ES7210 clock stop->start — makes a warmed ADC begin outputting."""
@@ -303,8 +350,12 @@ class Sound:
         free-running ADC keeps one sync state for days, so recordings also
         sound consistent with each other.
 
-        abort: optional callable polled during the wait/slow paths; return
-        True to abandon (recording cancelled). Returns True when live."""
+        A light sleep stops MCLK and the I2S clocks, after which the ADC
+        reads dead; see _recover_es7210 for what brings it back and how
+        long that takes.
+
+        abort: optional callable polled during the slow path; return True
+        to abandon (recording cancelled). Returns True when live."""
         if not self._i2s_mic or not self._es7210:
             return True
         import time
@@ -319,28 +370,8 @@ class Sound:
             time.sleep_ms(3)
         if self._raw_spread(raw) > 0:
             return True
-        # Not producing. Give a transient state a moment before the full
-        # re-warm (fresh chunks only — each read is ~80ms of new audio).
-        t0 = time.ticks_ms()
-        while time.ticks_diff(time.ticks_ms(), t0) < 2000:
-            if abort and abort():
-                return False
-            self._i2s_mic.readinto(raw)
-            if self._raw_spread(raw) > 0:
-                return True
-        # Cold (boot) or wedged: active reads + kick; retry a few rounds.
-        for _ in range(3):
-            t0 = time.ticks_ms()
-            while time.ticks_diff(time.ticks_ms(), t0) < 3000:
-                if abort and abort():
-                    return False
-                self._i2s_mic.readinto(raw)
-            self._kick_mic()
-            self._i2s_mic.readinto(raw)   # settle chunk
-            self._i2s_mic.readinto(raw)   # fresh post-kick sample
-            if self._raw_spread(raw) > 0:
-                return True
-        return False
+        # Not producing: the ADC lost its clocks (light sleep) or is cold.
+        return self._recover_es7210(raw, abort)
 
     def start_recording(self, chunk_samples=640):
         """Allocate capture buffers and arm recording. The capture thread

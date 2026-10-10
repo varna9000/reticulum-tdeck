@@ -1379,6 +1379,7 @@ _MAX_REC_SECS = 15  # max recording duration
 _REC_CHUNK = 640    # samples per mic read (80ms) — larger chunks reduce GIL contention
 _rec_buf = bytearray(_MAX_REC_SECS * 8000 * 2)  # permanent recording buffer — avoids fragmentation
 _rec_pos = 0
+_mic_failed = False  # the capture thread's warm-up gave up (see _recording_loop)
 
 def _on_record_start():
     global _rec_pos
@@ -1487,11 +1488,15 @@ def _mic_thread():
     prime_mic() first: a stale-ring flush + liveness check (~0.6s; the ADC
     free-runs from the boot prime onward, kept deliberately kick-free — see
     prime_mic). Falls back to the full re-warm if the ADC ever wedges."""
-    global _rec_pos
+    global _rec_pos, _mic_failed
     chunk_bytes = _REC_CHUNK * 2
     try:
         if not sound.prime_mic(abort=lambda: not sound.is_recording):
-            return  # cancelled mid-warm, or mic genuinely dead
+            # Cancelled mid-warm, or the ADC never came back (it gives up
+            # after sound.MIC_RECOVER_MS). Tell the loop, which ends the
+            # recording instead of leaving "Warming mic..." up for good.
+            _mic_failed = sound.is_recording
+            return
         if not sound.is_recording:
             return  # cancelled during the flush
         sound._capturing = True  # UI switches from "warming" to "recording"
@@ -1520,6 +1525,8 @@ async def _recording_loop():
        re-warm fallback (rare)."""
     import uasyncio as asyncio
     import _thread
+    global _mic_failed
+    _mic_failed = False
     _buf_full = len(_rec_buf) - _REC_CHUNK * 2
 
     # 1. Wait for the recording screen to be on-glass (bounded at ~300ms).
@@ -1541,10 +1548,25 @@ async def _recording_loop():
             gui.handle_key(key)  # any key stops (see _handle_key_recording)
             break
         if not sound.is_capturing:
-            # Only surface "Warming mic..." if the slow fallback engaged.
+            if _mic_failed:
+                # The warm-up gave up: end the recording the way Esc does
+                # (nothing was captured, so nothing is sent) rather than
+                # sit on the warming screen forever.
+                if DEBUG >= 1:
+                    print("[Audio] mic did not come back; recording cancelled")
+                gui.handle_key(b'\x1b')
+                break
+            # Only surface "Warming mic..." if the slow path engaged (after a
+            # light sleep the ADC needs a few seconds: see sound.py). Count
+            # the seconds on screen so it reads as progress, not a hang.
+            _secs = time.ticks_diff(time.ticks_ms(), _t0) // 1000
             if not _warm_shown and time.ticks_diff(time.ticks_ms(), _t0) > 1500:
                 _warm_shown = True
                 gui._rec_warming = True
+                gui._rec_warm_secs = _secs
+                gui.dirty = True
+            elif _warm_shown and _secs != gui._rec_warm_secs:
+                gui._rec_warm_secs = _secs
                 gui.dirty = True
             await asyncio.sleep_ms(50)
             continue
