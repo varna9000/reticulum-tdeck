@@ -1,0 +1,181 @@
+# Host-side tests for the T-Deck Pro touch driver (CST328). Run:
+#   /opt/homebrew/bin/python3 tests/test_cst328.py
+#
+# Register sequences come from tools/tdeck_pro_touch_probe.py on a V1.1
+# board (2026-10-10): status nibble 6 = contact, 0xB = lifted but still
+# reported with the last position, INT = one falling edge per contact report.
+
+import os
+import sys
+import types
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, "lib"))
+
+_mp = types.ModuleType("micropython")
+_mp.const = lambda x: x
+sys.modules.setdefault("micropython", _mp)
+
+import time as _time  # noqa: E402
+
+_clock = [1000]
+_time.ticks_ms = lambda: _clock[0]
+_time.ticks_diff = lambda a, b: a - b
+
+
+def _sleep_ms(ms):
+    _clock[0] += ms
+
+
+_time.sleep_ms = _sleep_ms
+
+
+class FakePin:
+    IN = 1
+    OUT = 3
+    PULL_UP = 2
+    IRQ_FALLING = 2
+    created = []
+
+    def __init__(self, gpio, mode=None, pull=None, value=None):
+        self.gpio = gpio
+        self.mode = mode
+        self.pull = pull
+        self.v = 1 if value is None else value
+        self.handler = None
+        self.trigger = None
+        self.history = []          # every value written, in order
+        FakePin.created.append(self)
+
+    def value(self, x=None):
+        if x is None:
+            return self.v
+        self.v = x
+        self.history.append(x)
+
+    def irq(self, trigger=None, handler=None):
+        self.trigger = trigger
+        self.handler = handler
+
+    def fire(self):
+        """Simulate the INT falling edge."""
+        self.handler(self)
+
+
+_machine = types.ModuleType("machine")
+_machine.Pin = FakePin
+sys.modules["machine"] = _machine
+
+import cst328  # noqa: E402
+
+_failures = []
+
+
+def check(name, cond, detail=""):
+    if cond:
+        print("  ok   %s" % name)
+    else:
+        print("  FAIL %s %s" % (name, detail))
+        _failures.append(name)
+
+
+class FakeI2C:
+    """The chip as a little state machine: a count, a 27-byte report, and a
+    'dead' flag for the time it spends in reset. Every read and write is
+    logged so a test can assert that nothing happened."""
+
+    def __init__(self):
+        self.count = 0
+        self.report = bytearray(27)
+        self.dead = False
+        self.reads = []            # (reg, n)
+        self.writes = []           # bytes
+
+    def readfrom_mem(self, addr, reg, n, addrsize=8):
+        assert addr == 0x1A and addrsize == 16, (addr, addrsize)
+        if self.dead:
+            raise OSError(19)
+        self.reads.append((reg, n))
+        if reg == 0xD005:
+            return bytes([self.count])
+        if reg == 0xD000:
+            return bytes(self.report[:n])
+        return bytes(n)
+
+    def writeto(self, addr, data):
+        assert addr == 0x1A
+        if self.dead:
+            raise OSError(19)
+        self.writes.append(bytes(data))
+
+    # helpers that script the chip the way the probe saw it
+    def _point(self, offset, x, y, status, pressure, fid):
+        self.report[offset] = (fid << 4) | status
+        self.report[offset + 1] = (x >> 4) & 0xFF
+        self.report[offset + 2] = (y >> 4) & 0xFF
+        self.report[offset + 3] = ((x & 0x0F) << 4) | (y & 0x0F)
+        self.report[offset + 4] = pressure
+
+    def contact(self, x, y, pressure=60):
+        self.count = 1
+        self._point(0, x, y, 6, pressure, 0)
+
+    def contact2(self, x, y, x2, y2):
+        self.count = 2
+        self._point(0, x, y, 6, 60, 0)
+        self._point(7, x2, y2, 6, 60, 1)
+
+    def lifted(self, x, y):
+        self.count = 1
+        self._point(0, x, y, 0xB, 20, 0)
+
+    def nothing(self):
+        self.count = 0
+
+
+def new():
+    FakePin.created = []
+    i2c = FakeI2C()
+    t = cst328.CST328(i2c, 12, 38)
+    pins = {p.gpio: p for p in FakePin.created}
+    return i2c, t, pins[12], pins[38]
+
+
+def kinds(evs):
+    return [e[0] for e in evs]
+
+
+# --- construction and idle -------------------------------------------------
+
+def test_pins_configured():
+    print("construction")
+    i2c, t, int_pin, rst = new()
+    check("INT is an input with pull-up", int_pin.mode == FakePin.IN and int_pin.pull == FakePin.PULL_UP)
+    check("INT irq is falling edge", int_pin.trigger == FakePin.IRQ_FALLING and int_pin.handler is not None)
+    check("reset is an output left high", rst.mode == FakePin.OUT and rst.value() == 1)
+    check("no I2C traffic at construction", i2c.reads == [] and i2c.writes == [])
+
+
+def test_idle_poll_makes_no_traffic():
+    print("idle")
+    i2c, t, int_pin, rst = new()
+    for _ in range(50):
+        evs = t.poll()
+        if evs != []:
+            check("idle poll returns []", False, repr(evs))
+            break
+    else:
+        check("idle poll returns [] (50 passes)", True)
+    check("idle polls never read the bus", i2c.reads == [] and i2c.writes == [], repr(i2c.reads))
+    check("not touching", t.touching() is False)
+
+
+if __name__ == "__main__":
+    test_pins_configured()
+    test_idle_poll_makes_no_traffic()
+    print()
+    if _failures:
+        print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))
+        sys.exit(1)
+    print("all passed")
