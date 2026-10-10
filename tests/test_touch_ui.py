@@ -131,11 +131,278 @@ def test_settings_bar_and_chat_footer_record_zones():
     check("typing replaces the hints with the draft: no zones", g._hint_zones == [], repr(g._hint_zones))
 
 
+import touch_ui  # noqa: E402
+import touch_gestures as tg  # noqa: E402
+from touch_gestures import TAP, LONG, DRAG, FLICK, SWIPE, BACK, DOWN, MOVE, UP  # noqa: E402
+
+ROW0 = ui.BODY_Y + ui.CHAR_H          # y of the first list row on a list screen
+
+
+def row_y(i):
+    return ROW0 + i * ui.CHAR_H + ui.CHAR_H // 2
+
+
+def with_peers(n):
+    g = mkui(ui.STATE_NODES)
+    g.node_tab = ui.TAB_MSG
+    for i in range(n):
+        g.add_peer(bytes([i + 1]) * 16, "peer%02d" % i)
+    g.selected_idx = 0
+    g.node_scroll = 0
+    return g
+
+
+def tap(g, x, y, t=200000, changed=0):
+    return touch_ui.handle(g, (TAP, x, y, 0, t), changed)
+
+
+def settle(g):
+    """Run the UI's own navigation, as kbd_loop does after get_key()."""
+    g.handle_trackball()
+
+
+# --- Task 4: core ------------------------------------------------------------
+
+def test_tap_selects_then_opens():
+    print("node list rows")
+    g = with_peers(6)
+    opened = []
+    g._enter_chat = lambda: opened.append(g.selected_idx)
+    check("tap on row 3 is accepted", tap(g, 100, row_y(3)) is True)
+    settle(g)
+    check("...and selects it without opening", g.selected_idx == 3 and opened == [], "%d %r" % (g.selected_idx, opened))
+    check("tap on the selected row is accepted", tap(g, 100, row_y(3)) is True)
+    settle(g)
+    check("...and opens it", opened == [3], repr(opened))
+    tap(g, 100, row_y(1))
+    settle(g)
+    check("tapping above moves the selection up", g.selected_idx == 1, str(g.selected_idx))
+
+
+def test_tap_beyond_list_end_is_ignored():
+    g = with_peers(3)
+    check("a tap on row 5 of a 3-row list does nothing", tap(g, 100, row_y(5)) is False)
+    settle(g)
+    check("selection unchanged", g.selected_idx == 0)
+    g = with_peers(0)
+    check("a tap on an empty list does nothing", tap(g, 100, row_y(0)) is False)
+
+
+def test_tabs_and_swipe():
+    print("tabs")
+    g = with_peers(2)
+    tab_y = ui.BODY_Y + 4
+    check("tap the 3rd tab column", tap(g, ui.SCREEN_W * 5 // 8, tab_y) is True and g.node_tab == 2, str(g.node_tab))
+    check("tap the navbar above a tab also counts (bigger target)", tap(g, 10, 5) is True and g.node_tab == 0, str(g.node_tab))
+    check("tapping the tab that is already active does nothing", tap(g, 10, tab_y) is False)
+    check("finger moving LEFT goes to the next tab",
+          touch_ui.handle(g, (SWIPE, 200, 150, -1, 200000), 0) is True)
+    settle(g)
+    check("...tab 1", g.node_tab == 1, str(g.node_tab))
+    touch_ui.handle(g, (SWIPE, 60, 150, 1, 200000), 0)
+    settle(g)
+    check("finger moving right goes back", g.node_tab == 0, str(g.node_tab))
+    touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0)
+    settle(g)
+    check("an edge swipe on the node list is a rightward swipe (previous tab)",
+          g.node_tab == ui.N_TABS - 1, str(g.node_tab))
+
+
+def test_footer_taps_press_the_hinted_key():
+    print("footer")
+    g = with_peers(2)
+    g._draw_hints((("A", "nnc"), ("S", "etup"), ("F", "av"), ("M", "hash")))
+    seen = keys_pressed(g)
+    fy = ui.INPUT_Y + 8
+    check("tap inside (S)etup", tap(g, g._hint_zones[1][1] + 4, fy) is True and seen == [b's'], repr(seen))
+    del seen[:]
+    check("the zone reaches 8 px above the hint row", tap(g, 4, ui.SEP_Y - 6) is True and seen == [b'a'], repr(seen))
+    del seen[:]
+    gap = g._hint_zones[0][2] + 2                 # in the space between two hints
+    check("a tap in a gap goes to the nearest hint within 8 px", tap(g, gap, fy) is True and len(seen) == 1, repr(seen))
+    del seen[:]
+    check("far from any hint: nothing", tap(g, ui.SCREEN_W - 2, fy) is False and seen == [], repr(seen))
+
+
+def test_footer_zones_from_another_state_are_ignored():
+    g = with_peers(2)
+    g._draw_hints((("A", "nnc"),))
+    g.state = ui.STATE_BROWSER                   # the footer was drawn for the node list
+    seen = keys_pressed(g)
+    check("stale zones do not fire", tap(g, 4, ui.INPUT_Y + 8) is False and seen == [], repr(seen))
+
+
+def test_navbar_clock_opens_setup():
+    g = with_peers(2)
+    seen = keys_pressed(g)
+    check("tap the right third of the navbar", tap(g, ui.SCREEN_W - 10, 5) is True and seen == [b's'], repr(seen))
+
+
+def test_drag_and_flick_move_the_selection():
+    print("drag")
+    g = with_peers(40)
+    check("drag 3 steps down", touch_ui.handle(g, (DRAG, 100, 100, 3, 200000), 0) is True)
+    settle(g)
+    check("selection follows the finger down", g.selected_idx == 3, str(g.selected_idx))
+    touch_ui.handle(g, (DRAG, 100, 100, -2, 200000), 0)
+    settle(g)
+    check("and back up", g.selected_idx == 1, str(g.selected_idx))
+    g.selected_idx = 0                # the peer list holds at most MAX_PEERS (16)
+    touch_ui.handle(g, (FLICK, 100, 100, 1, 200000), 0)
+    settle(g)
+    check("a flick moves a page", g.selected_idx == ui.BODY_ROWS - 2, str(g.selected_idx))
+
+
+def test_stale_layout_guard():
+    print("stale layout")
+    g = with_peers(6)
+    check("a tap whose DOWN predates the layout change is dropped",
+          tap(g, 100, row_y(3), t=5000, changed=5001) is False)
+    settle(g)
+    check("...and selected nothing", g.selected_idx == 0)
+    check("a tap after the change counts", tap(g, 100, row_y(3), t=5001, changed=5001) is True)
+    check("a drag is exempt (it causes the changes)",
+          touch_ui.handle(g, (DRAG, 100, 100, 1, 5000), 9000) is True)
+
+
+def test_stale_long_press_is_dropped():
+    g = mkui(ui.STATE_IMAGE)
+    seen = keys_pressed(g)
+    check("a long press from before the screen changed does nothing",
+          touch_ui.handle(g, (LONG, 100, 100, 0, 5000), 5001) is False and seen == [], repr(seen))
+
+
+def test_locked_and_dark():
+    g = with_peers(3)
+    g.locked = True
+    check("locked: nothing", tap(g, 100, row_y(1)) is False)
+    g.locked = False
+    g._screen_on = False
+    check("dark: nothing", tap(g, 100, row_y(1)) is False)
+
+
+def test_layout_key_changes_with_what_is_on_screen():
+    print("layout key")
+    g = with_peers(40)
+    k0 = touch_ui.layout_key(g)
+    g.selected_idx = 2
+    check("moving the selection alone does not change it", touch_ui.layout_key(g) == k0)
+    g.node_scroll = 5
+    k1 = touch_ui.layout_key(g)
+    check("scrolling does", k1 != k0)
+    g.node_tab = ui.TAB_NET
+    k2 = touch_ui.layout_key(g)
+    check("a tab switch does", k2 != k1)
+    g.state = ui.STATE_SETTINGS
+    check("a state change does", touch_ui.layout_key(g) != k2)
+
+
+def test_controller_flow():
+    print("controller")
+    g = with_peers(6)
+    clicks = []
+    c = touch_ui.Controller(g, feedback=lambda: clicks.append(1))
+    c.service(1000)
+    c.event((DOWN, 100, row_y(2), 1100))
+    c.event((UP, 100, row_y(2), 1200))
+    settle(g)
+    check("a tap through the controller selects and clicks once", g.selected_idx == 2 and clicks == [1], "%d %r" % (g.selected_idx, clicks))
+    c.event((DOWN, 100, row_y(9), 1300))          # beyond the list end
+    c.event((UP, 100, row_y(9), 1400))
+    check("a rejected tap gives no feedback", clicks == [1], repr(clicks))
+    c.key(2000)
+    c.event((DOWN, 100, row_y(4), 2100))
+    c.event((UP, 100, row_y(4), 2200))
+    settle(g)
+    check("a touch right after a key is ignored", g.selected_idx == 2 and clicks == [1])
+    del clicks[:]
+    c.event((DOWN, 100, 100, 3000))
+    for i in range(1, 6):
+        c.event((MOVE, 100, 100 + 20 * i, 3000 + 200 * i))
+    c.event((UP, 100, 200, 5000))
+    check("a drag of several steps clicks once, at its start", clicks == [1], repr(clicks))
+
+
+def test_controller_stamps_layout_changes():
+    g = with_peers(40)
+    c = touch_ui.Controller(g)
+    c.service(1000)
+    c.event((DOWN, 100, row_y(3), 1500))          # the finger went down at 1500...
+    g.node_scroll = 4                             # ...then the list scrolled under it
+    c.service(1600)                               # the controller notices at 1600
+    c.event((UP, 100, row_y(3), 1700))
+    settle(g)
+    check("the tap is dropped: the row under it changed", g.selected_idx == 0, str(g.selected_idx))
+    c.event((DOWN, 100, row_y(3), 1800))
+    c.event((UP, 100, row_y(3), 1900))
+    settle(g)
+    check("the next tap counts", g.selected_idx == 4 + 3, str(g.selected_idx))
+
+
+def test_controller_long_press_and_dark_screen():
+    g = mkui(ui.STATE_IMAGE)
+    seen = keys_pressed(g)
+    c = touch_ui.Controller(g)
+    c.service(1000)
+    c.event((DOWN, 100, 100, 1100))
+    c.service(1799)
+    check("no long press yet", seen == [])
+    c.service(1800)
+    check("the tick fires the long press: rotate", seen == [b'r'], repr(seen))
+    g = with_peers(4)
+    c = touch_ui.Controller(g)
+    c.service(1000)
+    c.event((DOWN, 100, row_y(2), 1100))
+    g._screen_on = False                          # the screen timed out under the finger
+    c.service(1200)
+    c.event((UP, 100, row_y(2), 1210))            # the driver closes the stroke
+    settle(g)
+    check("that UP is not a tap", g.selected_idx == 0, str(g.selected_idx))
+
+
+def test_controller_swallows_ui_errors():
+    g = with_peers(4)
+    reports = []
+
+    def boom(name):
+        raise ValueError("ui blew up")
+
+    g.nav_event = boom
+    c = touch_ui.Controller(g, report=lambda name, e: reports.append((name, str(e))))
+    c.service(1000)
+    try:
+        c.event((DOWN, 100, row_y(2), 1100))
+        c.event((UP, 100, row_y(2), 1200))
+        check("an exception in the UI does not escape", True)
+    except Exception as e:
+        check("an exception in the UI does not escape", False, repr(e))
+    check("it is reported", reports == [("touch", "ui blew up")], repr(reports))
+    del g.nav_event
+    c.event((MOVE, 100, 200, 1300))
+    c.event((UP, 100, 200, 1400))
+    check("and the stroke is cancelled", True)
+
+
 if __name__ == "__main__":
     test_geometry_is_the_pros()
     test_hint_zones_follow_the_hints()
     test_hint_key_table()
     test_settings_bar_and_chat_footer_record_zones()
+    test_tap_selects_then_opens()
+    test_tap_beyond_list_end_is_ignored()
+    test_tabs_and_swipe()
+    test_footer_taps_press_the_hinted_key()
+    test_footer_zones_from_another_state_are_ignored()
+    test_navbar_clock_opens_setup()
+    test_drag_and_flick_move_the_selection()
+    test_stale_layout_guard()
+    test_stale_long_press_is_dropped()
+    test_locked_and_dark()
+    test_layout_key_changes_with_what_is_on_screen()
+    test_controller_flow()
+    test_controller_stamps_layout_changes()
+    test_controller_long_press_and_dark_screen()
+    test_controller_swallows_ui_errors()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))
