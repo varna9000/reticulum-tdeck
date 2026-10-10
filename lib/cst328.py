@@ -68,6 +68,48 @@ class CST328:
     def touching(self):
         return self._down
 
+    def _read(self):
+        """(count, report) or raises OSError when the chip is not answering."""
+        n = self._i2c.readfrom_mem(self._addr, _REG_COUNT, 1, addrsize=16)[0] & 0x0F
+        buf = None
+        if n:
+            buf = self._i2c.readfrom_mem(self._addr, _REG_POINTS, _POINTS_LEN, addrsize=16)
+        self._i2c.writeto(self._addr, _CLEAR)
+        return n, buf
+
     def poll(self):
-        """Events since the last call: [(kind, x, y, t_ms), ...]."""
-        return []
+        """Events since the last call: [(kind, x, y, t_ms), ...].
+
+        Reads the chip only when INT fired since the last call or a finger is
+        known to be down, so an idle deck puts nothing on the bus. The latch
+        is cleared BEFORE the read: an edge that lands during the read sets
+        it again and the next pass reads once more."""
+        if not self.ready or not (self._latched or self._down):
+            return []
+        self._latched = 0
+        try:
+            n, buf = self._read()
+        except OSError:
+            self._down = False
+            return []
+        t = time.ticks_ms()
+        contact = False
+        x = y = 0
+        if n and buf is not None:
+            contact = (buf[0] & 0x0F) == _ST_CONTACT
+            x = (buf[1] << 4) | (buf[3] >> 4)
+            y = (buf[2] << 4) | (buf[3] & 0x0F)
+            if x > MAX_X:
+                x = MAX_X
+            if y > MAX_Y:
+                y = MAX_Y
+        evs = []
+        if contact:
+            if not self._down:
+                self._down = True
+                self._x, self._y = x, y
+                evs.append((DOWN, x, y, t))
+            elif abs(x - self._x) > _JITTER_PX or abs(y - self._y) > _JITTER_PX:
+                self._x, self._y = x, y
+                evs.append((MOVE, x, y, t))
+        return evs

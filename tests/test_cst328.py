@@ -135,6 +135,7 @@ class FakeI2C:
 
 
 def new():
+    _clock[0] = 1000
     FakePin.created = []
     i2c = FakeI2C()
     t = cst328.CST328(i2c, 12, 38)
@@ -171,9 +172,69 @@ def test_idle_poll_makes_no_traffic():
     check("not touching", t.touching() is False)
 
 
+# --- contact ---------------------------------------------------------------
+
+def test_first_contact_is_down():
+    print("contact")
+    i2c, t, int_pin, rst = new()
+    t.ready = True                      # the board woke it; see the reset tests
+    i2c.contact(126, 169)
+    int_pin.fire()
+    evs = t.poll()
+    check("one DOWN at the reported point", evs == [(cst328.DOWN, 126, 169, 1000)], repr(evs))
+    check("count then points were read", i2c.reads == [(0xD005, 1), (0xD000, 27)], repr(i2c.reads))
+    check("report acknowledged with 0xAB", i2c.writes == [b"\xD0\x00\xAB"], repr(i2c.writes))
+    check("touching", t.touching() is True)
+
+
+def test_jitter_is_dropped_and_moves_pass():
+    i2c, t, int_pin, rst = new()
+    t.ready = True
+    i2c.contact(126, 169)
+    int_pin.fire()
+    t.poll()
+    i2c.contact(127, 170)              # 1 px: jitter
+    _clock[0] += 20
+    evs = t.poll()
+    check("1 px wobble is not a MOVE", evs == [], repr(evs))
+    check("a known finger is still polled without a new edge", len(i2c.reads) == 4, repr(i2c.reads))
+    i2c.contact(130, 169)              # 4 px
+    _clock[0] += 20
+    evs = t.poll()
+    check("4 px is a MOVE with the new point and time", evs == [(cst328.MOVE, 130, 169, 1040)], repr(evs))
+    i2c.contact(129, 171)              # 1 px from (130,169) in x, 2 px in y
+    _clock[0] += 20
+    evs = t.poll()
+    check("2 px in one axis is a MOVE", evs == [(cst328.MOVE, 129, 171, 1060)], repr(evs))
+
+
+def test_coordinates_clamped_to_panel():
+    i2c, t, int_pin, rst = new()
+    t.ready = True
+    i2c.contact(250, 330)
+    int_pin.fire()
+    evs = t.poll()
+    check("x and y clamp to 239 x 319", evs == [(cst328.DOWN, 239, 319, 1000)], repr(evs))
+
+
+def test_second_finger_ignored_but_report_cleared():
+    i2c, t, int_pin, rst = new()
+    t.ready = True
+    i2c.contact2(116, 32, 111, 288)
+    int_pin.fire()
+    evs = t.poll()
+    check("only the first finger is reported", evs == [(cst328.DOWN, 116, 32, 1000)], repr(evs))
+    check("full 27-byte read and the clear still happen",
+          (0xD000, 27) in i2c.reads and i2c.writes[-1] == b"\xD0\x00\xAB")
+
+
 if __name__ == "__main__":
     test_pins_configured()
     test_idle_poll_makes_no_traffic()
+    test_first_contact_is_down()
+    test_jitter_is_dropped_and_moves_pass()
+    test_coordinates_clamped_to_panel()
+    test_second_finger_ignored_but_report_cleared()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))
