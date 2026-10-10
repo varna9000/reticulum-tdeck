@@ -59,6 +59,13 @@ def _rows(ui):
     if st == _u.STATE_NODES and not ui._find:
         ia, sa, keys = _lists(ui)
         return full + (y0, _u.BODY_ROWS - 1, getattr(ui, sa), getattr(ui, ia), len(keys))
+    if st == _u.STATE_CHAT:
+        n = _u.BODY_ROWS - 1
+        return full + (y0, n, 0, ui.chat_cursor, n)
+    if st == _u.STATE_BROWSER:
+        n = _u.BODY_ROWS - 1
+        return full + (y0, n, 0, ui.browser_cursor,
+                       min(n, max(0, len(ui.browser_lines) - ui.browser_scroll)))
     return None
 
 
@@ -116,11 +123,40 @@ def _tap_header(ui, x):
 
 
 def _back(ui, from_header):
-    return False                      # screens are added in the next tasks
+    """Leave this screen the way its own back key does. Never discards
+    typed text: with a draft in the composer this does nothing."""
+    st = ui.state
+    if st == _u.STATE_CHAT:
+        if len(ui.cmd_buf):
+            return False
+        ui.handle_key(b'\x1b')
+        return True
+    if st == _u.STATE_BROWSER:
+        if from_header:
+            ui._browser_exit()        # the title: straight out to the NET tab
+        else:
+            ui._browser_back()        # one page back, out at the bottom of the stack
+        return True
+    if st == _u.STATE_IMAGE:
+        ui._exit_image_view()
+        return True
+    if st == _u.STATE_RECORDING:
+        ui.handle_key(b'\x08')
+        return True
+    return False
 
 
 def _tap(ui, x, y):
     st = ui.state
+    if st == _u.STATE_IMAGE:
+        ui._exit_image_view()
+        return True
+    if st == _u.STATE_RECORDING:
+        # Nothing may redraw while the mic thread runs, so the whole panel is
+        # two targets: the upper half sends, the lower half cancels.
+        mid = _u.BODY_Y + (_u.BODY_ROWS // 2) * _u.CHAR_H
+        ui.handle_key(b'\r' if y < mid else b'\x08')
+        return True
     if y >= _u.SEP_Y - 6:
         return _tap_footer(ui, x)
     if y < _u.BODY_Y + _u.CHAR_H:
@@ -144,7 +180,28 @@ def _long(ui):
     return False
 
 
+def _scroll_content(ui, n):
+    """Scrolling content follows the finger: n > 0 (finger moved down)
+    brings earlier content into view. True if this screen is such content."""
+    st = ui.state
+    if st == _u.STATE_CHAT:
+        top = max(0, len(ui._build_chat_lines()) - (_u.BODY_ROWS - 1))
+        ui.chat_scroll = max(0, min(top, ui.chat_scroll + n))
+        ui.chat_cursor = -1
+        ui.dirty = True
+        return True
+    if st == _u.STATE_BROWSER:
+        ui._browser_page(-n)
+        return True
+    return False
+
+
 def _drag(ui, n):
+    st = ui.state
+    if st == _u.STATE_IMAGE or st == _u.STATE_RECORDING:
+        return False
+    if _scroll_content(ui, n):
+        return True
     if _rows(ui) is not None:
         _steps(ui, n)                 # a selection list: it follows the finger
         return True

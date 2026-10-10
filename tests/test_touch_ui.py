@@ -383,6 +383,111 @@ def test_controller_swallows_ui_errors():
     check("and the stroke is cancelled", True)
 
 
+# --- Task 5: chat, recording, browser, viewer --------------------------------
+
+def mkchat(lines=40):
+    g = mkui(ui.STATE_CHAT)
+    g.selected_peer = b"\x01" * 16
+    g.cmd_buf = bytearray()
+    g.chat_cursor = -1
+    g.chat_scroll = 0
+    g._build_chat_lines = lambda: [None] * lines
+    return g
+
+
+def test_chat():
+    print("chat")
+    g = mkchat()
+    opened = []
+    g._chat_open_cursor_media = lambda: opened.append(g.chat_cursor)
+    check("tap line 4", tap(g, 100, row_y(4)) is True)
+    settle(g)
+    check("the cursor lands on it", g.chat_cursor == 4, str(g.chat_cursor))
+    tap(g, 100, row_y(2))
+    settle(g)
+    check("tap a line above: cursor moves up", g.chat_cursor == 2, str(g.chat_cursor))
+    tap(g, 100, row_y(2))
+    settle(g)
+    check("tap the cursor line: open its media", opened == [2], repr(opened))
+    g = mkchat(40)
+    check("finger down 3 steps: older messages come into view",
+          touch_ui.handle(g, (DRAG, 100, 100, 3, 200000), 0) is True and g.chat_scroll == 3 and g.chat_cursor == -1,
+          "%d %d" % (g.chat_scroll, g.chat_cursor))
+    touch_ui.handle(g, (DRAG, 100, 100, -5, 200000), 0)
+    check("finger up: back toward the newest, clamped at 0", g.chat_scroll == 0, str(g.chat_scroll))
+    touch_ui.handle(g, (DRAG, 100, 100, 999, 200000), 0)
+    check("clamped at the oldest full window", g.chat_scroll == 40 - (ui.BODY_ROWS - 1), str(g.chat_scroll))
+    g = mkchat()
+    seen = keys_pressed(g)
+    check("header tap goes back", tap(g, 30, ui.BODY_Y + 4) is True and seen == [b'\x1b'], repr(seen))
+    del seen[:]
+    check("edge swipe goes back", touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is True and seen == [b'\x1b'], repr(seen))
+    del seen[:]
+    g.cmd_buf = bytearray(b"draft")
+    check("with a draft, back does nothing", touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is False and seen == [], repr(seen))
+    check("...from the header too", tap(g, 30, ui.BODY_Y + 4) is False and seen == [])
+
+
+def test_recording():
+    print("recording")
+    g = mkui(ui.STATE_RECORDING)
+    seen = keys_pressed(g)
+    mid = ui.BODY_Y + (ui.BODY_ROWS // 2) * ui.CHAR_H
+    check("upper half sends", tap(g, 120, mid - 40) is True and seen == [b'\r'], repr(seen))
+    del seen[:]
+    check("lower half cancels", tap(g, 120, mid + 40) is True and seen == [b'\x08'], repr(seen))
+    del seen[:]
+    check("an edge swipe cancels", touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is True and seen == [b'\x08'], repr(seen))
+    check("a drag does nothing here", touch_ui.handle(g, (DRAG, 100, 100, 2, 200000), 0) is False)
+
+
+def mkbrowser(lines=60):
+    g = mkui(ui.STATE_BROWSER)
+    g.browser_lines = [("line %d" % i,) for i in range(lines)]
+    g.browser_path = "/page/index.mu"
+    g.browser_cursor = -1
+    g.browser_scroll = 0
+    return g
+
+
+def test_browser():
+    print("browser")
+    g = mkbrowser()
+    followed = []
+    g._browser_follow_cursor = lambda: followed.append(g.browser_cursor)
+    tap(g, 100, row_y(5))
+    settle(g)
+    check("tap a line: cursor to it", g.browser_cursor == 5, str(g.browser_cursor))
+    tap(g, 100, row_y(5))
+    settle(g)
+    check("tap it again: follow", followed == [5], repr(followed))
+    touch_ui.handle(g, (DRAG, 100, 200, -4, 200000), 0)
+    check("finger up 4 steps: 4 lines further down the page", g.browser_scroll == 4, str(g.browser_scroll))
+    touch_ui.handle(g, (FLICK, 100, 200, -1, 200000), 0)
+    check("flick up: a page forward", g.browser_scroll == 4 + (ui.BODY_ROWS - 2), str(g.browser_scroll))
+    touch_ui.handle(g, (FLICK, 100, 100, 1, 200000), 0)
+    check("flick down: a page back", g.browser_scroll == 4, str(g.browser_scroll))
+    g = mkbrowser(3)
+    check("a tap below the last line of a short page does nothing", tap(g, 100, row_y(8)) is False)
+    g = mkbrowser()
+    calls = []
+    g._browser_back = lambda: calls.append("back")
+    g._browser_exit = lambda: calls.append("exit")
+    check("edge swipe: one page back", touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is True and calls == ["back"], repr(calls))
+    check("header tap: straight out", tap(g, 30, ui.BODY_Y + 4) is True and calls == ["back", "exit"], repr(calls))
+
+
+def test_image_viewer():
+    print("viewer")
+    g = mkui(ui.STATE_IMAGE)
+    closed = []
+    g._exit_image_view = lambda: closed.append(1)
+    check("a tap anywhere closes", tap(g, 120, 160) is True and closed == [1])
+    check("so does a tap on the hint bar", tap(g, 120, ui.INPUT_Y + 8) is True and closed == [1, 1])
+    check("and an edge swipe", touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is True and len(closed) == 3)
+    check("a drag does nothing", touch_ui.handle(g, (DRAG, 100, 100, 2, 200000), 0) is False)
+
+
 if __name__ == "__main__":
     test_geometry_is_the_pros()
     test_hint_zones_follow_the_hints()
@@ -403,6 +508,10 @@ if __name__ == "__main__":
     test_controller_stamps_layout_changes()
     test_controller_long_press_and_dark_screen()
     test_controller_swallows_ui_errors()
+    test_chat()
+    test_recording()
+    test_browser()
+    test_image_viewer()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))
