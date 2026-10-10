@@ -84,6 +84,15 @@ class RecTFT:
         return lambda *a, **k: None
 
 
+class _FakeSmall:
+    """Stands in for ui._SmallText(spleen_6x12): records instead of blitting."""
+    w = 6
+    h = 12
+
+    def draw(self, tft, slots, x, y, fg, bg):
+        tft.calls.append(("small", bytes(slots).decode("latin-1"), x, y, fg, bg))
+
+
 def mkui():
     _clock[0] = 100000
     t = RecTFT()
@@ -91,9 +100,12 @@ def mkui():
     g.state = ui.STATE_NODES
     g._screen_on = True
     g._state_change_ms = 0
-    g.SW, g.SH = 6, 12        # the device's small font (spleen 6x12); the host has no font module
-    # Record small-font text and icons by content rather than as raw blits.
-    g._sdraw = lambda s, x, y, fg, bg: t.calls.append(("small", s, x, y, fg, bg))
+    # On the Pro ui.py has NO small font: the shim's text() is 8 px only, so
+    # ui.SW/SH are 8/16 and ui._sdraw draws the main font. ui_pro brings its
+    # own 6x12 through a blit; record that by content. A stray ui._sdraw from
+    # ui_pro is recorded as "big" so a test can see it.
+    g._sdraw = lambda s, x, y, fg, bg: t.calls.append(("big", s, x, y, fg, bg))
+    ui_pro._small = _FakeSmall()
     g._bitmap = lambda icon, x, y, c: t.calls.append(("icon", icon, x, y, c))
     return g, t
 
@@ -178,7 +190,7 @@ def test_rows_are_two_lines_at_32px():
         check("row %d hash on the second line" % i, h is not None and h[2] == 16 and h[3] == row_y(i) + 17, repr(h))
     info = [c for c in texts(t, "small") if "hop" in c[1]]
     check("hops / last-seen right-aligned, ending at x 212",
-          len(info) == 3 and all(c[2] + len(c[1]) * g.SW == ui_pro.INFO_R for c in info), repr(info[:1]))
+          len(info) == 3 and all(c[2] + len(c[1]) * ui_pro.SW == ui_pro.INFO_R for c in info), repr(info[:1]))
     dots = [c for c in t.calls if c[0] == "rect" and c[3] == 3 and c[4] == 3]
     check("three dots per row in the ... column", len(dots) == 9 and all(c[1] >= ui_pro.DOTS_X for c in dots), str(len(dots)))
 
@@ -209,7 +221,7 @@ def test_margin_pill_and_star():
     p3 = find(t, "small", "3")
     p12 = find(t, "small", "12")
     check("one-digit pill in the margin on the name line", p3 is not None and p3[2] < 16 and p3[3] == row_y(0) + 2, repr(p3))
-    check("two-digit pill is exactly the margin wide", p12 is not None and p12[2] == 2 and p12[2] + 2 * g.SW + 2 == 16, repr(p12))
+    check("two-digit pill is exactly the margin wide", p12 is not None and p12[2] == 2 and p12[2] + 2 * ui_pro.SW + 2 == 16, repr(p12))
     check("the pill is inverse to its row", p3[4] == g.BG_DARK)
     stars = [c for c in t.calls if c[0] == "icon" and c[1] is ui._STAR]
     check("stars on the second line of rows 1 and 2",
@@ -317,7 +329,7 @@ def test_toolbar():
     check("zones belong to the node list", all(s == ui.STATE_NODES for s, _, _, _ in z))
     labels = [c[1] for c in texts(t, "small")]
     check("labels", labels == ["Annc", "Setup", "Fav", "Lookup"], repr(labels))
-    ul = [c for c in t.calls if c[0] == "rect" and c[4] == 1 and c[2] > ui_pro.TOOL_Y + 10 and c[3] == g.SW - 1]
+    ul = [c for c in t.calls if c[0] == "rect" and c[4] == 1 and c[2] > ui_pro.TOOL_Y + 10 and c[3] == ui_pro.SW - 1]
     check("the hotkey letter of each label is underlined", len(ul) == 4, repr(ul))
     check("everything is inside the toolbar band",
           all(ui_pro.TOOL_Y <= c[3] < 320 for c in texts(t, "small")))
@@ -361,9 +373,9 @@ def test_navbar_clock_right_no_name():
     check("the node name is not drawn", not any("MyDeck" in x for x in strs), repr(strs))
     clk = [c for c in s if c[1] == "09:41"][0]
     check("the clock ends one character from the right edge",
-          clk[2] + 5 * g.SW == ui.SCREEN_W - g.SW, repr(clk))
+          clk[2] + 5 * ui_pro.SW == ui.SCREEN_W - ui_pro.SW, repr(clk))
     snr = [c for c in s if c[1] == "snr 7"][0]
-    check("radio state sits between the battery and the clock", 4 * ui.CHAR_W + 5 * g.SW < snr[2] < clk[2], repr(snr))
+    check("radio state sits between the battery and the clock", 4 * ui.CHAR_W + 5 * ui_pro.SW < snr[2] < clk[2], repr(snr))
     s = nav(g, t, valid=False)
     check("no valid clock: nothing on the right", [c[1] for c in s if c[2] > 180] == [], repr([c[1] for c in s]))
     g.announce_flash = _clock[0]
@@ -487,6 +499,103 @@ def test_sheet_keys():
     check("leaving the list drops the sheet", g._sheet is None)
 
 
+
+# --- review fixes -------------------------------------------------------------
+
+def test_small_text_is_ui_pros_own_6x12():
+    print("review: the Pro's small font")
+    g, t = mkui()
+    check("ui.py's own small font on the Pro is the 8x16 main font", g.SW == 8 and g.SH == 16, "%d %d" % (g.SW, g.SH))
+    check("ui_pro measures with 6x12", ui_pro.SW == 6 and ui_pro.SH == 12)
+    peers(g, 3)
+    k = g._peer_keys
+    g.peers[k[0]]["hops"] = 12
+    g.peers[k[0]]["rssi"] = -102
+    g.peers[k[0]]["seen"] = _time.time() - 50 * 60
+    g.unread[k[1]] = 12
+    g.draw_navbar()
+    ui_pro.draw_node_list(g)
+    g.selected_idx = 0
+    ui_pro.sheet_open(g)
+    ui_pro.draw_node_list(g)
+    check("nothing in ui_pro goes through ui._sdraw", texts(t, "big") == [], repr(texts(t, "big")[:2]))
+    sm = texts(t, "small")
+    hsh = find(t, "small", k[0].hex()[:8])
+    info = [c for c in sm if "hops" in c[1] and c[3] == row_y(0) + 17]
+    check("the longest info line starts right of the hash",
+          hsh is not None and len(info) >= 1 and info[0][2] > hsh[2] + 8 * ui_pro.SW, repr(info))
+    line2 = [c for c in sm if ui_pro.LIST_Y <= c[3] < ui_pro.TOOL_Y and (c[3] - ui_pro.LIST_Y) % 32 == 17]
+    check("the second line ends above the row's rule",
+          len(line2) > 0 and all((c[3] - ui_pro.LIST_Y) % 32 + ui_pro.SH <= 31 for c in line2))
+    p12 = find(t, "small", "12")
+    check("a two-digit pill stays inside the 16 px margin",
+          p12 is not None and p12[2] - 2 >= 0 and p12[2] + 2 * ui_pro.SW + 2 <= ui_pro.MARGIN, repr(p12))
+    a = find(t, "small", "tap outside to close")
+    b = find(t, "small", "(BKSP)close")
+    check("the sheet's footer texts do not overlap",
+          a is not None and b is not None and a[2] + len(a[1]) * ui_pro.SW < b[2], repr((a, b)))
+
+
+def _visible(g):
+    ia, sa, keys = ui_pro.cur(g)[:3]
+    sel, sc = getattr(g, ia), getattr(g, sa)
+    return sc <= sel < sc + ui_pro.LIST_ROWS and 0 <= sc <= max(0, len(keys) - ui_pro.LIST_ROWS)
+
+
+def test_selection_stays_in_the_window():
+    print("review: the window follows the selection whoever moved it")
+    g, t = mkui()
+    peers(g, 12)
+    g.node_scroll, g.selected_idx = 4, 11
+    g.handle_key(b'd')
+    ui_pro.draw_node_list(g)
+    check("after a delete at the bottom", _visible(g), "%d %d" % (g.selected_idx, g.node_scroll))
+    g, t = mkui()
+    peers(g, 12)
+    g.node_scroll, g.selected_idx = 0, 10          # what a Find pick or a bubble leaves behind
+    ui_pro.draw_node_list(g)
+    check("a selection below the window is scrolled to", _visible(g) and g.node_scroll == 3, str(g.node_scroll))
+    g.node_scroll, g.selected_idx = 8, 2
+    ui_pro.draw_node_list(g)
+    check("a selection above the window is scrolled to", _visible(g) and g.node_scroll == 2, str(g.node_scroll))
+    g.node_scroll, g.selected_idx = 9, 11
+    ui_pro.draw_node_list(g)
+    check("the window never runs past the end", g.node_scroll == 4, str(g.node_scroll))
+    g.node_scroll, g.selected_idx = 4, 6
+    ui_pro.draw_node_list(g)
+    check("a visible selection is left where it is", g.node_scroll == 4)
+    g.selected_idx = 7
+    ui_pro.sheet_open(g)
+    sc = g.node_scroll
+    ui_pro.draw_node_list(g)
+    check("the sheet's own scroll is not fought", g.node_scroll == sc and g._sheet is not None)
+
+
+def test_find_clears_the_toolbar_band():
+    print("review: Find over the Pro list")
+    g, t = mkui()
+    peers(g, 3)
+    ui_pro.draw_node_list(g)
+    g.handle_key(b'l')
+    del t.calls[:]
+    ui_pro.draw_node_list(g)
+    band = [c for c in t.calls if c[0] == "rect" and c[1] == 0 and c[2] <= ui_pro.TOOL_Y
+            and c[2] + c[4] >= ui.INPUT_Y and c[3] == ui.SCREEN_W and c[5] == g.BG_DARK]
+    check("opening Find clears the toolbar's rule and icon tops", len(band) >= 1, repr(t.calls[:6]))
+    del t.calls[:]
+    ui_pro.draw_node_list(g)
+    band = [c for c in t.calls if c[0] == "rect" and c[2] == ui_pro.TOOL_Y]
+    check("...once, not on every draw", band == [], repr(band))
+
+
+def test_lane_repaint_reaches_the_panel_edge():
+    g, t = mkui()
+    peers(g, 12)
+    ui_pro.draw_node_list(g)
+    lane = [c for c in t.calls if c[0] == "rect" and c[1] == ui.SBAR_X and c[5] == g.BG_DARK]
+    check("the lane's clear runs to x 239 (Find inks its selected row that far)",
+          len(lane) == 1 and lane[0][1] + lane[0][3] == ui.SCREEN_W, repr(lane))
+
 if __name__ == "__main__":
     test_pro_layout_is_active_on_the_pro()
     test_list_window_follows_the_selection()
@@ -509,6 +618,10 @@ if __name__ == "__main__":
     test_sheet_keeps_the_row_visible()
     test_sheet_actions()
     test_sheet_keys()
+    test_small_text_is_ui_pros_own_6x12()
+    test_selection_stays_in_the_window()
+    test_find_clears_the_toolbar_band()
+    test_lane_repaint_reaches_the_panel_edge()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

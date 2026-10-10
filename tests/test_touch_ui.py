@@ -209,7 +209,7 @@ def test_footer_taps_press_the_hinted_key():
     fy = ui.INPUT_Y + 8
     check("tap inside (S)etup", tap(g, g._hint_zones[1][1] + 4, fy) is True and seen == [b's'], repr(seen))
     del seen[:]
-    check("the zone reaches 8 px above the hint row", tap(g, 4, ui.SEP_Y - 6) is True and seen == [b'a'], repr(seen))
+    check("on the Pro list the zone is the toolbar band, from its top line", tap(g, 4, ui._pro.TOOL_Y) is True and seen == [b'a'], repr(seen))
     del seen[:]
     gap = g._hint_zones[0][2] + 2                 # in the space between two hints
     check("a tap in a gap goes to the nearest hint within 8 px", tap(g, gap, fy) is True and len(seen) == 1, repr(seen))
@@ -1032,6 +1032,38 @@ def test_board_glue_wiring():
           "on_kbd_backlight" not in src.split("def _touch_feedback():")[1].split("\ndef ")[0])
 
 
+
+def test_layout_key_sees_a_reorder():
+    print("review: reorder / row edges (Pro layout)")
+    g = with_peers(10)
+    g.node_scroll, g.selected_idx = 2, 9
+    k0 = touch_ui.layout_key(g)
+    ks = g._peer_keys
+    ks[3], ks[4] = ks[4], ks[3]            # a message bubbled one visible peer over another
+    check("two visible rows swapping changes the layout", touch_ui.layout_key(g) != k0)
+    k1 = touch_ui.layout_key(g)
+    ks[0], ks[1] = ks[1], ks[0]
+    check("rows off screen do not", touch_ui.layout_key(g) == k1)
+
+
+def test_row_edges():
+    g = with_peers(10)
+    opened = []
+    g._enter_chat = lambda: opened.append(g.selected_idx)
+    pressed = keys_pressed(g)
+    check("the last pixel line of row 7 is still row 7", tap(g, 100, 297) is True and g.selected_idx == 7, str(g.selected_idx))
+    settle(g)
+    check("...and not the toolbar", opened == [7] and pressed == [], repr((opened, pressed)))
+    g = with_peers(4)
+    opened = []
+    g._enter_chat = lambda: opened.append(g.selected_idx)
+    tap(g, 215, nrow_y(1))
+    settle(g)
+    check("x 215 opens the row", opened == [1] and g._sheet is None, repr(opened))
+    g = with_peers(4)
+    tap(g, 216, nrow_y(1))
+    check("x 216 opens the sheet", g._sheet is not None)
+
 if __name__ == "__main__":
     test_geometry_is_the_pros()
     test_hint_zones_follow_the_hints()
@@ -1074,6 +1106,8 @@ if __name__ == "__main__":
     test_dots_column_opens_the_sheet()
     test_long_press_opens_the_sheet()
     test_sheet_taps()
+    test_layout_key_sees_a_reorder()
+    test_row_edges()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

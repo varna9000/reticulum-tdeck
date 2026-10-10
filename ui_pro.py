@@ -27,6 +27,8 @@ DOTS_X = 216       # the "..." column starts here
 INFO_R = 212       # right-hand second-line text ends here
 NAME_COLS = 25
 INFO_COLS = 22
+SW = 6             # this module's small font: spleen 6x12, see _sd()
+SH = 12
 SHEET_SLOT = 10    # ui._cache slot for the sheet
 SBAR_SLOT = 11     # ...and for the scroll lane
 
@@ -52,6 +54,28 @@ def cur(ui):
             ("No rnsh nodes.", "(L) to find or add one"))
 
 
+_small = None      # ui._SmallText(spleen_6x12), made on first use
+
+
+def _sd(ui, s, x, y, fg, bg):
+    """Small text, top at y. ui.py has no small font on the Pro -- the e-ink
+    shim's text() draws 8 px glyphs only, so ui.SW/SH are 8/16 there and
+    ui._sdraw is the main font. This layout needs a real 6x12 for the second
+    line, the pill and the toolbar, so it composites one and blits it, the way
+    the shell's fonts already reach this panel."""
+    global _small
+    if _small is None:
+        try:
+            import spleen_6x12
+            _small = _u._SmallText(spleen_6x12)
+        except ImportError:
+            _small = False           # host tests without framebuf
+    if _small:
+        _small.draw(ui.tft, ui._tb(s), x, y, fg, bg)
+    else:
+        ui._sdraw(s, x, y, fg, bg)
+
+
 def _info(entry):
     """Hops, RSSI and last-seen: what the old footer showed for the selection."""
     hops = _u._hops(entry["hops"]) + " " if entry.get("hops") else ""
@@ -68,10 +92,10 @@ def _pill(ui, n, y, fg, bg):
     """Unread count in the margin, inverse to its row. Two digits fill the
     16 px margin exactly; the count stops at 99."""
     s = str(min(n, 99))
-    w = len(s) * ui.SW + 4
+    w = len(s) * SW + 4
     x = (MARGIN - w) // 2
-    ui.tft.fill_rect(x, y, w, ui.SH, fg)
-    ui._sdraw(s, x + 2, y, bg, fg)
+    ui.tft.fill_rect(x, y, w, SH, fg)
+    _sd(ui, s, x + 2, y, bg, fg)
 
 
 def draw_rows(ui, limit=LIST_ROWS):
@@ -122,9 +146,9 @@ def draw_rows(ui, limit=LIST_ROWS):
         tft.fill_rect(0, y, width, ROW_H - 1, bg)
         tft.fill_rect(0, y + ROW_H - 1, width, 1, ui.DIM_CYAN)
         tft.text(ui.font, ui._tb(name), MARGIN, y, fg, bg)
-        ui._sdraw(hsh, MARGIN, y + 17, dim, bg)
+        _sd(ui, hsh, MARGIN, y + 17, dim, bg)
         if info:
-            ui._sdraw(info, INFO_R - len(info) * ui.SW, y + 17, dim, bg)
+            _sd(ui, info, INFO_R - len(info) * SW, y + 17, dim, bg)
         for k in range(3):
             tft.fill_rect(DOTS_X + 4 + k * 5, y + 14, 3, 3, fg)
         if uc:
@@ -141,7 +165,8 @@ def _scrollbar(ui):
     if ui._cache[SBAR_SLOT] == ck:
         return                       # an unchanged lane is not worth a refresh
     ui._cache[SBAR_SLOT] = ck
-    ui.tft.fill_rect(_u.SBAR_X, LIST_Y, _u.SBAR_W, track, ui.BG_DARK)
+    # To the panel's edge: Find inks its selected row as far as x 239.
+    ui.tft.fill_rect(_u.SBAR_X, LIST_Y, _u.SCREEN_W - _u.SBAR_X, track, ui.BG_DARK)
     if total > LIST_ROWS:
         h = max(6, track * LIST_ROWS // total)
         ui.tft.fill_rect(_u.SBAR_X, LIST_Y + getattr(ui, sa) * track // total, _u.SBAR_W, h, ui.DIM_CYAN)
@@ -208,43 +233,66 @@ def draw_toolbar(ui):
     tft.fill_rect(0, TOOL_Y, _u.SCREEN_W, 1, ui.DIM_CYAN)
     ui._hint_zones = []
     if sheet:
-        ty = TOOL_Y + 1 + (TOOL_H - 1 - ui.SH) // 2
-        ui._sdraw("tap outside to close", 4, ty, ui.DIM_CYAN, paper)
+        ty = TOOL_Y + 1 + (TOOL_H - 1 - SH) // 2
+        _sd(ui, "tap outside to close", 4, ty, ui.DIM_CYAN, paper)
         s = "(BKSP)close"
-        x = _u.SCREEN_W - 4 - len(s) * ui.SW
-        ui._sdraw(s, x, ty, ink, paper)
+        x = _u.SCREEN_W - 4 - len(s) * SW
+        _sd(ui, s, x, ty, ink, paper)
         ui._hint_zones.append((ui.state, x, _u.SCREEN_W, b'\x08'))
         return
     cw = _u.SCREEN_W // 4
-    ty = TOOL_Y + 1 + (TOOL_H - 1 - ui.SH) // 2
+    ty = TOOL_Y + 1 + (TOOL_H - 1 - SH) // 2
     for i in range(4):
         ic, label, key = _TOOLS[i]
-        x = i * cw + (cw - (ic[0] + 3 + len(label) * ui.SW)) // 2
+        x = i * cw + (cw - (ic[0] + 3 + len(label) * SW)) // 2
         ui._bitmap(ic, x, TOOL_Y + 1 + (TOOL_H - 1 - ic[1]) // 2, ink)
         lx = x + ic[0] + 3
-        ui._sdraw(label, lx, ty, ink, paper)
+        _sd(ui, label, lx, ty, ink, paper)
         # The small font has no bold face; an underline marks the hotkey.
-        tft.fill_rect(lx, ty + ui.SH - 1, ui.SW - 1, 1, ink)
+        tft.fill_rect(lx, ty + SH - 1, SW - 1, 1, ink)
         ui._hint_zones.append((ui.state, i * cw, (i + 1) * cw, key))
+
+
+def _clamp(ui):
+    """Bring the window to the selection. The keys that step the selection
+    scroll with it, but a delete, a Find pick, a message bubbling its sender
+    up and an eviction all move it with ui.py's own row count in mind, which
+    on this layout is twice what is on screen."""
+    ia, sa, keys = cur(ui)[:3]
+    sel = getattr(ui, ia)
+    sc = getattr(ui, sa)
+    n = sc
+    if sel < n:
+        n = sel
+    elif sel >= n + LIST_ROWS:
+        n = sel - LIST_ROWS + 1
+    n = max(0, min(n, len(keys) - LIST_ROWS))
+    if n != sc:
+        setattr(ui, sa, n)
 
 
 def draw_node_list(ui):
     draw_tab_bar(ui)
     if ui._find:
         ui._sheet = None
-        if ui._cache[_u.FOOT_SLOT] in ("\x03tools", "\x03sheet"):
-            # Find paints its own footer text; clear the toolbar's band once.
+        if ui._tools_up:
+            # Find paints its own footer text lower down; clear the toolbar's
+            # band once. (A flag, not the cache slot: opening Find wipes the
+            # whole cache before this runs.)
+            ui._tools_up = False
             ui._cache[_u.FOOT_SLOT] = ''
             ui.tft.fill_rect(0, TOOL_Y, _u.SCREEN_W, TOOL_H, ui.BG_DARK)
         ui._draw_find()          # Find keeps its own single-line layout
         return
     if ui._sheet is not None and (ui._sheet != ui.node_tab or not cur(ui)[2]):
         sheet_close(ui)              # the tab changed or the list emptied under it
+    ui._tools_up = True
     if ui._sheet is not None:
         draw_rows(ui, LIST_ROWS - len(sheet_items(ui)))
         _scrollbar(ui)
         draw_sheet(ui)
     else:
+        _clamp(ui)
         draw_rows(ui)
         _scrollbar(ui)
     draw_toolbar(ui)
@@ -282,8 +330,8 @@ def draw_navbar(ui):
     right = (">>> " if ann else "") + clock
     right = right.rstrip() if not clock else right
     hb = ui.HEADER_BG
-    sw = ui.SW
-    ny = (NAV_H - ui.SH) // 2
+    sw = SW
+    ny = (NAV_H - SH) // 2
     left_end = 4 * _u.CHAR_W + 5 * sw
     bl = 3 if ui.bat_v > 3.9 else (2 if ui.bat_v > 3.6 else (1 if ui.bat_v > 3.3 else 0))
     bat_key = bat + str(bl)
@@ -303,13 +351,13 @@ def draw_navbar(ui):
         tft.fill_rect(11, 6, 7, 8, gr if bl >= 2 else dm)
         tft.fill_rect(19, 6, 7, 8, gr if bl >= 3 else dm)
         tft.fill_rect(4 * _u.CHAR_W, 0, 5 * sw, NAV_H, hb)
-        ui._sdraw(bat, 4 * _u.CHAR_W, ny, ui.NEON_GREEN, hb)
+        _sd(ui, bat, 4 * _u.CHAR_W, ny, ui.NEON_GREEN, hb)
     if ui._nav_mid_cache != mid_key:
         ui._nav_mid_cache = mid_key
         tft.fill_rect(left_end, 0, W - left_end, NAV_H, hb)
         rx = W - sw - len(right) * sw
         if right:
-            ui._sdraw(right, rx, ny, ui.NEON_CYAN, hb)
+            _sd(ui, right, rx, ny, ui.NEON_CYAN, hb)
         lo = left_end + sw
         hi = rx - sw
         iw = icon[0] + 4 if icon else 0
@@ -320,7 +368,7 @@ def draw_navbar(ui):
         if icon:
             ui._bitmap(icon, x, (NAV_H - icon[1]) // 2, col)
         if center:
-            ui._sdraw(center, x + iw, ny, col, hb)
+            _sd(ui, center, x + iw, ny, col, hb)
     ui._cache[0] = bat_key + mid_key
 
 
@@ -419,4 +467,4 @@ def draw_sheet(ui):
         tft.fill_rect(0, y, width, 2 if i == 0 else 1, ink)
         ui._bitmap(icon, 14, y + (ROW_H - icon[1]) // 2, ink)
         tft.text(ui.font, label, 34, y + 8, ink, paper)
-        ui._sdraw(klabel, INFO_R - len(klabel) * ui.SW, y + 10, ui.DIM_CYAN, paper)
+        _sd(ui, klabel, INFO_R - len(klabel) * SW, y + 10, ui.DIM_CYAN, paper)

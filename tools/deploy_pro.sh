@@ -88,7 +88,7 @@ done
 # announce is silently dropped. txb stays 0.
 for f in "$SRC"/lib/lora/*.py; do add "$f" "lora/$(basename "$f")"; done
 
-for f in eink_gdeq031t10.py eink_shim.py tca8418.py cst328.py drv2605.py bq27220.py spleen_8x16.py; do
+for f in eink_gdeq031t10.py eink_shim.py tca8418.py cst328.py drv2605.py bq27220.py spleen_8x16.py spleen_6x12.py; do
     add "$SRC/lib/$f" "lib/$f"
 done
 for f in "$SRC"/lib/shell_*.py; do add "$f" "lib/$(basename "$f")"; done

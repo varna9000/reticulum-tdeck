@@ -645,6 +645,7 @@ class UI:
         # on. Always None on the v1.
         self._sheet = None
         self._sheet_scroll = 0
+        self._tools_up = False        # ui_pro: its toolbar is on the panel
         self._cache = [''] * CACHE_ROWS
         self._nav_bat_cache = ''
         self._nav_mid_cache = ''

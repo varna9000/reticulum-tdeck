@@ -58,9 +58,14 @@ def layout_key(ui):
     g = getattr
     if st == _u.STATE_NODES:
         ia, sa, keys = _lists(ui)
-        return (st, ui.node_tab, g(ui, sa), g(ui, ia), len(keys), ui._find,
+        sc = g(ui, sa)
+        # One tap opens a row on the Pro layout, so WHO is on each row is part
+        # of the layout: a message that reorders the list under a finger must
+        # not open the neighbour's chat.
+        vis = tuple(keys[sc:sc + _u.LIST_ROWS]) if _u._pro is not None else None
+        return (st, ui.node_tab, sc, g(ui, ia), len(keys), ui._find,
                 g(ui, "_find_scroll", 0), g(ui, "_find_sel", 0), len(g(ui, "_find_res", ())),
-                ui._sheet)
+                ui._sheet, vis)
     if st == _u.STATE_CHAT:
         return (st, ui.selected_peer, ui.chat_scroll, ui.chat_cursor, len(ui.cmd_buf) > 0,
                 len(ui.chat_history.get(ui.selected_peer, ())))
@@ -281,7 +286,7 @@ def _tap_pro_list(ui, x, y):
         else:
             p.sheet_close(ui)              # anywhere else: just close
         return True
-    if y >= _u.SEP_Y - 6:
+    if y >= p.TOOL_Y:                      # the list's last row runs right up to it
         return _tap_footer(ui, x)
     if y < p.LIST_Y:
         if y < _u.NAV_H and x >= _u.SCREEN_W * 2 // 3:
