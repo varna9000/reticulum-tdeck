@@ -226,3 +226,77 @@ def draw_node_list(ui):
     draw_rows(ui)
     _scrollbar(ui)
     draw_toolbar(ui)
+
+
+def draw_navbar(ui):
+    """Battery left, radio state in the middle, the mesh clock on the right.
+    No node name: it never changes, and the clock is what gets glanced at.
+    Left and centre keep ui.draw_navbar's content and rules."""
+    tft = ui.tft
+    W = _u.SCREEN_W
+    NAV_H = _u.NAV_H
+    if ui.bat_v >= 4.3:
+        bat = "USB"
+    elif ui.bat_v <= 0.0:
+        bat = "--"
+    else:
+        bat = "{:.1f}V".format(ui.bat_v)
+    ann = ui.announce_flash and time.ticks_diff(time.ticks_ms(), ui.announce_flash) < 2000
+    icon = None
+    if ui._audio_status:
+        center = "[" + ui._audio_status + "]"
+    elif ui.transfer_progress:
+        rcv, tot = ui.transfer_progress
+        center = "RX " + str(rcv) + "/" + str(tot)
+    elif ui._tcp_enabled:
+        icon, center = _u._GLOBE, ""
+    elif not ui.lora_online:
+        icon, center = _u._ANTENNA, "FAIL"
+    elif ui.rssi is not None:
+        icon, center = _u._ANTENNA, "snr " + str(ui.snr or 0)
+    else:
+        icon, center = _u._ANTENNA, ""
+    clock = _u._fmt_clock() if _u._clock_valid() else ""
+    right = (">>> " if ann else "") + clock
+    right = right.rstrip() if not clock else right
+    hb = ui.HEADER_BG
+    sw = ui.SW
+    ny = (NAV_H - ui.SH) // 2
+    left_end = 4 * _u.CHAR_W + 5 * sw
+    bl = 3 if ui.bat_v > 3.9 else (2 if ui.bat_v > 3.6 else (1 if ui.bat_v > 3.3 else 0))
+    bat_key = bat + str(bl)
+    mid_key = ("G" if icon is _u._GLOBE else "A" if icon else "") + center + "|" + right
+    if ui._cache[0] == '':
+        ui._nav_bat_cache = ''
+        ui._nav_mid_cache = ''
+        tft.fill_rect(0, 0, W, NAV_H, hb)
+    if ui._nav_bat_cache != bat_key:
+        ui._nav_bat_cache = bat_key
+        gr = ui.NEON_GREEN
+        dm = ui.BG_DARK
+        tft.fill_rect(1, 4, 26, 12, gr)
+        tft.fill_rect(2, 5, 24, 10, hb)
+        tft.fill_rect(27, 7, 2, 6, gr)
+        tft.fill_rect(3, 6, 7, 8, gr if bl >= 1 else dm)
+        tft.fill_rect(11, 6, 7, 8, gr if bl >= 2 else dm)
+        tft.fill_rect(19, 6, 7, 8, gr if bl >= 3 else dm)
+        tft.fill_rect(4 * _u.CHAR_W, 0, 5 * sw, NAV_H, hb)
+        ui._sdraw(bat, 4 * _u.CHAR_W, ny, ui.NEON_GREEN, hb)
+    if ui._nav_mid_cache != mid_key:
+        ui._nav_mid_cache = mid_key
+        tft.fill_rect(left_end, 0, W - left_end, NAV_H, hb)
+        rx = W - sw - len(right) * sw
+        if right:
+            ui._sdraw(right, rx, ny, ui.NEON_CYAN, hb)
+        lo = left_end + sw
+        hi = rx - sw
+        iw = icon[0] + 4 if icon else 0
+        center = center[:max(0, (hi - lo - iw) // sw)]
+        cw = iw + len(center) * sw
+        x = max(lo, min((W - cw) // 2, hi - cw))
+        col = ui.NEON_MAG if (not ui._tcp_enabled and not ui.lora_online) else ui.DIM_CYAN
+        if icon:
+            ui._bitmap(icon, x, (NAV_H - icon[1]) // 2, col)
+        if center:
+            ui._sdraw(center, x + iw, ny, col, hb)
+    ui._cache[0] = bat_key + mid_key

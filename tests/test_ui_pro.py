@@ -336,6 +336,45 @@ def test_no_body_frame_on_the_pro_list():
     check("other screens keep it", len(t.calls) > 0)
 
 
+# --- Task 4: top bar --------------------------------------------------------------
+
+def nav(g, t, clock="09:41", valid=True):
+    ui._clock_valid = lambda: valid
+    ui._fmt_clock = lambda: clock
+    g._cache[0] = ''
+    del t.calls[:]
+    ui_pro.draw_navbar(g)
+    return [c for c in texts(t, "small")]
+
+
+def test_navbar_clock_right_no_name():
+    print("top bar")
+    g, t = mkui()
+    g.node_name = "MyDeck"
+    g.bat_v = 3.9
+    g.lora_online = True
+    g.rssi = -80
+    g.snr = 7
+    s = nav(g, t)
+    strs = [c[1] for c in s]
+    check("voltage on the left", "3.9V" in strs)
+    check("the node name is not drawn", not any("MyDeck" in x for x in strs), repr(strs))
+    clk = [c for c in s if c[1] == "09:41"][0]
+    check("the clock ends one character from the right edge",
+          clk[2] + 5 * g.SW == ui.SCREEN_W - g.SW, repr(clk))
+    snr = [c for c in s if c[1] == "snr 7"][0]
+    check("radio state sits between the battery and the clock", 4 * ui.CHAR_W + 5 * g.SW < snr[2] < clk[2], repr(snr))
+    s = nav(g, t, valid=False)
+    check("no valid clock: nothing on the right", [c[1] for c in s if c[2] > 180] == [], repr([c[1] for c in s]))
+    g.announce_flash = _clock[0]
+    s = nav(g, t)
+    fl = [c for c in s if ">>>" in c[1]]
+    check("the announce flash sits just left of the clock", len(fl) == 1 and fl[0][1].endswith("09:41"), repr(fl))
+    del t.calls[:]
+    g.draw_navbar()
+    check("ui.draw_navbar hands over and is cached", t.calls == [], repr(t.calls[:2]))
+
+
 if __name__ == "__main__":
     test_pro_layout_is_active_on_the_pro()
     test_list_window_follows_the_selection()
@@ -352,6 +391,7 @@ if __name__ == "__main__":
     test_tab_bar()
     test_toolbar()
     test_no_body_frame_on_the_pro_list()
+    test_navbar_clock_right_no_name()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

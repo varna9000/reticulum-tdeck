@@ -1312,6 +1312,8 @@ class UI:
     # --- Navbar ---
 
     def draw_navbar(self):
+        if _pro is not None:
+            return _pro.draw_navbar(self)
         # Above ~4.3V the pack is on USB/charge — a LiPo never rests that
         # high, so a bare voltage there reads like a bug. Show "USB" instead.
         if self.bat_v >= 4.3:
