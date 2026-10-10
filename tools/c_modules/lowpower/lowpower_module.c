@@ -117,6 +117,16 @@ static mp_obj_t lp_sleep(mp_obj_t ms_in, mp_obj_t pins_in) {
         // so it is taken exactly once for the life of the firmware.
         err = esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
         rtc_periph_kept = (err == ESP_OK);
+        // ESP-IDF (CONFIG_ESP_SLEEP_GPIO_RESET_WORKAROUND, on in both builds)
+        // configures EVERY pad to be isolated in light sleep -- input, output
+        // and pulls off -- and switches to that configuration automatically;
+        // only wake pins are exempt. On the T-Deck v1 the trackball lines
+        // then lose their pull-ups and float: a falling edge latches during
+        // the slice and fires as a "nudge" on wake, lighting the screen for
+        // nobody (bench 2026-10-10, /rns/wake.txt said "ball:down"); the
+        // keyboard's I2C lines float the same way. Keep every pad's awake
+        // configuration through sleep instead.
+        esp_sleep_enable_gpio_switch(false);
     }
     if (err != ESP_OK) {
         lp_restore(armed, gpio, restore);
