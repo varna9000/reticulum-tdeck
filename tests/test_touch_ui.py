@@ -157,6 +157,7 @@ def with_peers(n):
         g.add_peer(bytes([i + 1]) * 16, "peer%02d" % i)
     g.selected_idx = 0
     g.node_scroll = 0
+    g._enter_chat = lambda: None      # one tap opens now; keep that inert by default
     g.dirty = False                   # add_peer asked for a redraw; it has happened
     return g
 
@@ -171,31 +172,6 @@ def settle(g):
 
 
 # --- Task 4: core ------------------------------------------------------------
-
-def test_tap_selects_then_opens():
-    print("node list rows")
-    g = with_peers(6)
-    opened = []
-    g._enter_chat = lambda: opened.append(g.selected_idx)
-    check("tap on row 3 is accepted", tap(g, 100, row_y(3)) is True)
-    settle(g)
-    check("...and selects it without opening", g.selected_idx == 3 and opened == [], "%d %r" % (g.selected_idx, opened))
-    check("tap on the selected row is accepted", tap(g, 100, row_y(3)) is True)
-    settle(g)
-    check("...and opens it", opened == [3], repr(opened))
-    tap(g, 100, row_y(1))
-    settle(g)
-    check("tapping above moves the selection up", g.selected_idx == 1, str(g.selected_idx))
-
-
-def test_tap_beyond_list_end_is_ignored():
-    g = with_peers(3)
-    check("a tap on row 5 of a 3-row list does nothing", tap(g, 100, row_y(5)) is False)
-    settle(g)
-    check("selection unchanged", g.selected_idx == 0)
-    g = with_peers(0)
-    check("a tap on an empty list does nothing", tap(g, 100, row_y(0)) is False)
-
 
 def test_tabs_and_swipe():
     print("tabs")
@@ -255,29 +231,14 @@ def test_navbar_clock_opens_setup():
     check("tap the right third of the navbar", tap(g, ui.SCREEN_W - 10, 5) is True and seen == [b's'], repr(seen))
 
 
-def test_drag_and_flick_move_the_selection():
-    print("drag")
-    g = with_peers(40)
-    check("drag 3 steps down", touch_ui.handle(g, (DRAG, 100, 100, 3, 200000), 0) is True)
-    settle(g)
-    check("selection follows the finger down", g.selected_idx == 3, str(g.selected_idx))
-    touch_ui.handle(g, (DRAG, 100, 100, -2, 200000), 0)
-    settle(g)
-    check("and back up", g.selected_idx == 1, str(g.selected_idx))
-    g.selected_idx = 0                # the peer list holds at most MAX_PEERS (16)
-    touch_ui.handle(g, (FLICK, 100, 100, 1, 200000), 0)
-    settle(g)
-    check("a flick moves a page", g.selected_idx == ui.BODY_ROWS - 2, str(g.selected_idx))
-
-
 def test_stale_layout_guard():
     print("stale layout")
     g = with_peers(6)
     check("a tap whose DOWN predates the layout change is dropped",
-          tap(g, 100, row_y(3), t=5000, changed=5001) is False)
+          tap(g, 100, nrow_y(3), t=5000, changed=5001) is False)
     settle(g)
     check("...and selected nothing", g.selected_idx == 0)
-    check("a tap after the change counts", tap(g, 100, row_y(3), t=5001, changed=5001) is True)
+    check("a tap after the change counts", tap(g, 100, nrow_y(3), t=5001, changed=5001) is True)
     check("a drag is exempt (it causes the changes)",
           touch_ui.handle(g, (DRAG, 100, 100, 1, 5000), 9000) is True)
 
@@ -292,10 +253,10 @@ def test_stale_long_press_is_dropped():
 def test_locked_and_dark():
     g = with_peers(3)
     g.locked = True
-    check("locked: nothing", tap(g, 100, row_y(1)) is False)
+    check("locked: nothing", tap(g, 100, nrow_y(1)) is False)
     g.locked = False
     g._screen_on = False
-    check("dark: nothing", tap(g, 100, row_y(1)) is False)
+    check("dark: nothing", tap(g, 100, nrow_y(1)) is False)
 
 
 def test_layout_key_changes_with_what_is_on_screen():
@@ -322,18 +283,18 @@ def test_controller_flow():
     clicks = []
     c = touch_ui.Controller(g, feedback=lambda: clicks.append(1))
     c.service(1000)
-    c.event((DOWN, 100, row_y(2), 1100))
-    c.event((UP, 100, row_y(2), 1200))
+    c.event((DOWN, 100, nrow_y(2), 1100))
+    c.event((UP, 100, nrow_y(2), 1200))
     settle(g)
     check("a tap through the controller selects and clicks once", g.selected_idx == 2 and clicks == [1], "%d %r" % (g.selected_idx, clicks))
     drawn(g)
     c.service(1250)
-    c.event((DOWN, 100, row_y(9), 1300))          # beyond the list end
-    c.event((UP, 100, row_y(9), 1400))
+    c.event((DOWN, 100, nrow_y(9), 1300))          # beyond the list end
+    c.event((UP, 100, nrow_y(9), 1400))
     check("a rejected tap gives no feedback", clicks == [1], repr(clicks))
     c.key(2000)
-    c.event((DOWN, 100, row_y(4), 2100))
-    c.event((UP, 100, row_y(4), 2200))
+    c.event((DOWN, 100, nrow_y(4), 2100))
+    c.event((UP, 100, nrow_y(4), 2200))
     settle(g)
     check("a touch right after a key is ignored", g.selected_idx == 2 and clicks == [1])
     del clicks[:]
@@ -348,27 +309,27 @@ def test_controller_stamps_layout_changes():
     g = with_peers(40)
     c = touch_ui.Controller(g)
     c.service(1000)
-    c.event((DOWN, 100, row_y(3), 1500))          # the finger went down at 1500...
+    c.event((DOWN, 100, nrow_y(3), 1500))          # the finger went down at 1500...
     g.node_scroll = 4                             # ...then the list scrolled under it
     g.dirty = True
     c.service(1600)                               # the controller notices at 1600
-    c.event((UP, 100, row_y(3), 1700))
+    c.event((UP, 100, nrow_y(3), 1700))
     settle(g)
     check("the tap is dropped: the row under it changed", g.selected_idx == 0, str(g.selected_idx))
-    c.event((DOWN, 100, row_y(3), 1800))          # the old frame is STILL on the panel
-    c.event((UP, 100, row_y(3), 1900))
+    c.event((DOWN, 100, nrow_y(3), 1800))          # the old frame is STILL on the panel
+    c.event((UP, 100, nrow_y(3), 1900))
     settle(g)
     check("a tap made before the new frame is shown is dropped too", g.selected_idx == 0, str(g.selected_idx))
     drawn(g)                                      # the ~700 ms refresh ends
     c.service(2500)
-    c.event((DOWN, 100, row_y(3), 2400))          # this finger went down DURING the refresh
-    c.event((UP, 100, row_y(3), 2550))
+    c.event((DOWN, 100, nrow_y(3), 2400))          # this finger went down DURING the refresh
+    c.event((UP, 100, nrow_y(3), 2550))
     settle(g)
     check("...and so is one that went down during the refresh", g.selected_idx == 0, str(g.selected_idx))
     drawn(g)
     c.service(2600)
-    c.event((DOWN, 100, row_y(3), 2700))
-    c.event((UP, 100, row_y(3), 2800))
+    c.event((DOWN, 100, nrow_y(3), 2700))
+    c.event((UP, 100, nrow_y(3), 2800))
     settle(g)
     check("a tap on the frame the user can see counts", g.selected_idx == 4 + 3, str(g.selected_idx))
 
@@ -387,10 +348,10 @@ def test_controller_long_press_and_dark_screen():
     g = with_peers(4)
     c = touch_ui.Controller(g)
     c.service(1000)
-    c.event((DOWN, 100, row_y(2), 1100))
+    c.event((DOWN, 100, nrow_y(2), 1100))
     g._screen_on = False                          # the screen timed out under the finger
     c.service(1200)
-    c.event((UP, 100, row_y(2), 1210))            # the driver closes the stroke
+    c.event((UP, 100, nrow_y(2), 1210))            # the driver closes the stroke
     settle(g)
     check("that UP is not a tap", g.selected_idx == 0, str(g.selected_idx))
 
@@ -406,8 +367,8 @@ def test_controller_swallows_ui_errors():
     c = touch_ui.Controller(g, report=lambda name, e: reports.append((name, str(e))))
     c.service(1000)
     try:
-        c.event((DOWN, 100, row_y(2), 1100))
-        c.event((UP, 100, row_y(2), 1200))
+        c.event((DOWN, 100, nrow_y(2), 1100))
+        c.event((UP, 100, nrow_y(2), 1200))
         check("an exception in the UI does not escape", True)
     except Exception as e:
         check("an exception in the UI does not escape", False, repr(e))
@@ -417,6 +378,99 @@ def test_controller_swallows_ui_errors():
     c.event((MOVE, 100, 140, 3100))               # a drag step -> nav_event -> boom
     check("an error mid-drag cancels the stroke while the finger is still down",
           c.rec._active is False and len(reports) == 2, "%r %r" % (c.rec._active, reports))
+
+
+# --- Pro layout: node list rows, the ... column, the sheet --------------------
+
+def nrow_y(i):
+    """Centre of node-list row i on the Pro layout (32 px rows from y 42)."""
+    return 42 + i * 32 + 16
+
+
+def test_one_tap_opens_a_row():
+    print("node list rows (Pro layout)")
+    g = with_peers(6)
+    opened = []
+    g._enter_chat = lambda: opened.append(g.selected_idx)
+    check("tap on row 3 is accepted", tap(g, 100, nrow_y(3)) is True)
+    check("the selection moved at once", g.selected_idx == 3, str(g.selected_idx))
+    settle(g)
+    check("and it opened, with one tap", opened == [3], repr(opened))
+    tap(g, 100, nrow_y(3))
+    settle(g)
+    check("tapping the selected row opens it too", opened == [3, 3])
+
+
+def test_tap_beyond_list_end_is_ignored():
+    g = with_peers(3)
+    check("a tap on row 5 of a 3-row list does nothing", tap(g, 100, nrow_y(5)) is False)
+    settle(g)
+    check("selection unchanged", g.selected_idx == 0)
+    g = with_peers(0)
+    check("a tap on an empty list does nothing", tap(g, 100, nrow_y(0)) is False)
+
+
+def test_dots_column_opens_the_sheet():
+    g = with_peers(6)
+    opened = []
+    g._enter_chat = lambda: opened.append(1)
+    check("tap the ... of row 2", tap(g, 225, nrow_y(2)) is True)
+    settle(g)
+    check("it selects the row and opens the sheet, not the chat",
+          g.selected_idx == 2 and g._sheet == ui.TAB_MSG and opened == [], "%d %r %r" % (g.selected_idx, g._sheet, opened))
+    import ui_pro
+    ui_pro.sheet_close(g)
+    check("the ... of the already-selected row opens the sheet too",
+          tap(g, 225, nrow_y(2)) is True and g._sheet == ui.TAB_MSG and opened == [])
+
+
+def test_long_press_opens_the_sheet():
+    g = with_peers(6)
+    check("long press on row 4", touch_ui.handle(g, (LONG, 100, nrow_y(4), 0, 200000), 0) is True)
+    check("selects it and opens the sheet", g.selected_idx == 4 and g._sheet == ui.TAB_MSG)
+    g = with_peers(2)
+    check("a long press below the last row does nothing",
+          touch_ui.handle(g, (LONG, 100, nrow_y(6), 0, 200000), 0) is False and g._sheet is None)
+
+
+def test_sheet_taps():
+    import ui_pro
+    g = with_peers(6)
+    g.selected_idx = 1
+    seen = keys_pressed(g)
+    ui_pro.sheet_open(g)
+    y0, n = ui_pro.sheet_rect(g)
+    check("tap the Favorite item", tap(g, 100, y0 + 32 + 10) is True and seen == [b'f'] and g._sheet is None, repr(seen))
+    ui_pro.sheet_open(g)
+    check("tap a row above the sheet: it only closes", tap(g, 100, nrow_y(0)) is True and g._sheet is None and g.selected_idx == 1)
+    ui_pro.sheet_open(g)
+    check("an edge swipe closes it", touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is True and g._sheet is None)
+    ui_pro.sheet_open(g)
+    check("a drag does nothing while it is up", touch_ui.handle(g, (DRAG, 100, 100, 2, 200000), 0) is False and g._sheet is not None)
+    check("nor a swipe", touch_ui.handle(g, (SWIPE, 60, 150, 1, 200000), 0) is False and g.node_tab == ui.TAB_MSG)
+    k0 = touch_ui.layout_key(g)
+    ui_pro.sheet_close(g)
+    check("the sheet is part of the layout fingerprint", touch_ui.layout_key(g) != k0)
+
+
+def test_drag_and_flick_move_the_selection():
+    print("drag")
+    g = with_peers(16)
+    check("two 16 px steps are one 32 px row", touch_ui.handle(g, (DRAG, 100, 100, 2, 200000), 0) is True)
+    settle(g)
+    check("selection moved one row", g.selected_idx == 1, str(g.selected_idx))
+    touch_ui.handle(g, (DRAG, 100, 100, 1, 200000), 0)
+    settle(g)
+    check("a single further step is not yet a row", g.selected_idx == 1, str(g.selected_idx))
+    touch_ui.handle(g, (DRAG, 100, 100, 1, 200000), 0)
+    settle(g)
+    check("the second one is", g.selected_idx == 2, str(g.selected_idx))
+    touch_ui.handle(g, (DRAG, 100, 100, -4, 200000), 0)
+    settle(g)
+    check("and back up two rows", g.selected_idx == 0, str(g.selected_idx))
+    touch_ui.handle(g, (FLICK, 100, 100, 1, 200000), 0)
+    settle(g)
+    check("a flick moves a screen of rows less one", g.selected_idx == ui.LIST_ROWS - 1, str(g.selected_idx))
 
 
 # --- Task 5: chat, recording, browser, viewer --------------------------------
@@ -899,8 +953,8 @@ def test_controller_survives_a_week_idle():
         while t < 1000 + (1 << 29) + 5000:                  # the loop keeps servicing meanwhile
             t += step
             c.service(t & (period - 1))
-        c.event((DOWN, 100, row_y(2), late))
-        c.event((UP, 100, row_y(2), (late + 100) & (period - 1)))
+        c.event((DOWN, 100, nrow_y(2), late))
+        c.event((UP, 100, nrow_y(2), (late + 100) & (period - 1)))
         settle(g)
         check("taps still work after 6 days on one screen", g.selected_idx == 2, str(g.selected_idx))
     finally:
@@ -917,8 +971,8 @@ def test_controller_feedback_and_dark():
     c = touch_ui.Controller(g, feedback=bad_feedback, report=lambda n, e: reports.append(n))
     c.service(1000)
     try:
-        c.event((DOWN, 100, row_y(2), 1100))
-        c.event((UP, 100, row_y(2), 1200))
+        c.event((DOWN, 100, nrow_y(2), 1100))
+        c.event((UP, 100, nrow_y(2), 1200))
         check("a raising feedback does not escape into the key loop", True)
     except Exception as e:
         check("a raising feedback does not escape into the key loop", False, repr(e))
@@ -928,14 +982,14 @@ def test_controller_feedback_and_dark():
     g.note_user_input = lambda: marks.append(1)
     c = touch_ui.Controller(g)
     c.service(1000)
-    c.event((DOWN, 100, row_y(2), 1100))
-    c.event((UP, 100, row_y(2), 1200))
+    c.event((DOWN, 100, nrow_y(2), 1100))
+    c.event((UP, 100, nrow_y(2), 1200))
     check("an accepted gesture marks the redraw as the user's (the e-ink shim pays its ghosting debt on those)",
           marks == [1], repr(marks))
     g = with_peers(6)
     c = touch_ui.Controller(g)
     c.service(1000)
-    c.event((DOWN, 100, row_y(2), 1100))
+    c.event((DOWN, 100, nrow_y(2), 1100))
     g._screen_on = False
     c.service(1200)
     check("the screen going dark cancels the stroke in progress", c.rec._active is False)
@@ -983,7 +1037,6 @@ if __name__ == "__main__":
     test_hint_zones_follow_the_hints()
     test_hint_key_table()
     test_settings_bar_and_chat_footer_record_zones()
-    test_tap_selects_then_opens()
     test_tap_beyond_list_end_is_ignored()
     test_tabs_and_swipe()
     test_footer_taps_press_the_hinted_key()
@@ -1017,6 +1070,10 @@ if __name__ == "__main__":
     test_controller_guard_cannot_wedge()
     test_controller_survives_a_week_idle()
     test_controller_feedback_and_dark()
+    test_one_tap_opens_a_row()
+    test_dots_column_opens_the_sheet()
+    test_long_press_opens_the_sheet()
+    test_sheet_taps()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

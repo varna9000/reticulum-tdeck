@@ -17,6 +17,12 @@ _FOOT_SNAP = 8           # a footer tap this close to a hint goes to it
 _PAGE = _u.BODY_ROWS - 2
 PENDING_MAX_MS = 1500    # how long a redraw may stay "pending" before taps count again
 _STAMP_MAX_AGE = 1 << 28 # ticks_diff is only valid within 2**29 ms (~6 days)
+_drag_acc = [None, 0]    # [stroke t_down, 16 px steps not yet turned into rows]
+
+
+def _pro_list(ui):
+    """The Pro's own node list is up (ui_pro.py): 32 px rows, one tap opens."""
+    return _u._pro is not None and ui.state == _u.STATE_NODES and not ui._find
 
 
 def _panel(ui):
@@ -53,7 +59,8 @@ def layout_key(ui):
     if st == _u.STATE_NODES:
         ia, sa, keys = _lists(ui)
         return (st, ui.node_tab, g(ui, sa), g(ui, ia), len(keys), ui._find,
-                g(ui, "_find_scroll", 0), g(ui, "_find_sel", 0), len(g(ui, "_find_res", ())))
+                g(ui, "_find_scroll", 0), g(ui, "_find_sel", 0), len(g(ui, "_find_res", ())),
+                ui._sheet)
     if st == _u.STATE_CHAT:
         return (st, ui.selected_peer, ui.chat_scroll, ui.chat_cursor, len(ui.cmd_buf) > 0,
                 len(ui.chat_history.get(ui.selected_peer, ())))
@@ -84,7 +91,7 @@ def _rows(ui):
             return full + (y0 + _u.CHAR_H, ui._find_rows(), ui._find_scroll,
                            ui._find_sel, len(ui._find_res))
         ia, sa, keys = _lists(ui)
-        return full + (y0, _u.BODY_ROWS - 1, getattr(ui, sa), getattr(ui, ia), len(keys))
+        return full + (y0, _u.LIST_ROWS, getattr(ui, sa), getattr(ui, ia), len(keys))
     if st == _u.STATE_CHAT:
         n = _u.BODY_ROWS - 1
         return full + (y0, n, 0, ui.chat_cursor, n)
@@ -249,8 +256,52 @@ def _back(ui, from_header):
     return False
 
 
+def _pro_row(ui, y):
+    """Index into the list of the Pro row at y, or -1."""
+    p = _u._pro
+    i = (y - p.LIST_Y) // p.ROW_H
+    ia, sa, keys = _lists(ui)
+    if y < p.LIST_Y or i >= _u.LIST_ROWS:
+        return -1
+    t = getattr(ui, sa) + i
+    return t if t < len(keys) else -1
+
+
+def _pro_select(ui, target):
+    setattr(ui, _lists(ui)[0], target)     # visible by construction: no scroll needed
+    ui.dirty = True
+
+
+def _tap_pro_list(ui, x, y):
+    p = _u._pro
+    if ui._sheet is not None:
+        y0, n = p.sheet_rect(ui)
+        if y0 <= y < p.TOOL_Y and x < _u.SBAR_X:
+            p.sheet_act(ui, (y - y0) // p.ROW_H)
+        else:
+            p.sheet_close(ui)              # anywhere else: just close
+        return True
+    if y >= _u.SEP_Y - 6:
+        return _tap_footer(ui, x)
+    if y < p.LIST_Y:
+        if y < _u.NAV_H and x >= _u.SCREEN_W * 2 // 3:
+            ui.handle_key(b's')
+            return True
+        return _tap_header(ui, x)
+    target = _pro_row(ui, y)
+    if target < 0:
+        return False
+    _pro_select(ui, target)
+    if x >= p.DOTS_X:
+        return p.sheet_open(ui)
+    ui.nav_event("click")                  # one tap opens: the rows are finger-sized
+    return True
+
+
 def _tap(ui, x, y):
     st = ui.state
+    if _pro_list(ui):
+        return _tap_pro_list(ui, x, y)
     if st == _u.STATE_IMAGE:
         ui._exit_image_view()
         return True
@@ -287,7 +338,15 @@ def _tap(ui, x, y):
     return False
 
 
-def _long(ui):
+def _long(ui, x, y):
+    if _pro_list(ui):
+        if ui._sheet is not None:
+            return False
+        target = _pro_row(ui, y)
+        if target < 0:
+            return False
+        _pro_select(ui, target)
+        return _u._pro.sheet_open(ui)
     st = ui.state
     if st == _u.STATE_IMAGE:
         ui.handle_key(b'r')
@@ -336,6 +395,8 @@ def _drag(ui, n):
 
 
 def _swipe(ui, d, y):
+    if _pro_list(ui) and ui._sheet is not None:
+        return False
     st = ui.state
     if st == _u.STATE_NODES and not ui._find:
         # The finger moves the way the arrow keys do: right = next tab.
@@ -370,14 +431,33 @@ def handle(ui, g, changed_ms):
     if kind == TAP:
         return _tap(ui, x, y)
     if kind == LONG:
-        return _long(ui)
+        return _long(ui, x, y)
     if kind == DRAG:
+        if _pro_list(ui):
+            if _drag_acc[0] != t_down:
+                _drag_acc[0] = t_down
+                _drag_acc[1] = 0
+            acc = _drag_acc[1] + n
+            rows = int(acc / 2)             # toward zero: two steps per 32 px row
+            _drag_acc[1] = acc - rows * 2
+            if ui._sheet is not None:
+                return False
+            if rows:
+                _steps(ui, rows)
+            return True
         return _drag(ui, n)
     if kind == FLICK:
+        if _pro_list(ui):
+            if ui._sheet is not None:
+                return False
+            _steps(ui, n * (_u.LIST_ROWS - 1))
+            return True
         return _drag(ui, n * _PAGE)
     if kind == SWIPE:
         return _swipe(ui, n, y)
     if kind == BACK:
+        if _pro_list(ui) and ui._sheet is not None:
+            return _u._pro.sheet_close(ui)
         if ui.state == _u.STATE_NODES and not ui._find:
             return _swipe(ui, 1, y)
         # Setup's labels start inside the edge band, so a rightward swipe on
