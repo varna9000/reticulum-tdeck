@@ -103,15 +103,57 @@ class Recognizer:
         if d > self._far:
             self._far = d
 
-    def _move(self, x, y, t):
-        self._x, self._y = x, y
-        self._travel(x, y)
-        return []
-
     def _on_edge(self):
         e = EDGE_REJECT_PX
         return (self._x0 < e or self._x0 >= self._w - e
                 or self._y0 < e or self._y0 >= self._h - e)
+
+    def _move(self, x, y, t):
+        self._x, self._y = x, y
+        self._travel(x, y)
+        if self._dead:
+            return []
+        dx = x - self._x0
+        dy = y - self._y0
+        if self._mode == _PENDING and self._far > SLOP_PX:
+            # The axis is decided once, where the finger leaves the slop.
+            self._mode = _VERT if abs(dy) >= abs(dx) else _HORIZ
+        if self._mode != _VERT:
+            return []
+        self._hist.append((t, y))
+        if len(self._hist) > 8:
+            self._hist.pop(0)
+        total = abs(dy) // STEP_PX
+        if dy < 0:
+            total = -total
+        n = total - self._steps
+        if n == 0:
+            return []
+        self._steps = total
+        return [(DRAG, self._x0, self._y0, n, self._t0)]
+
+    def _flick(self):
+        """+1 / -1 if the last FLICK_WINDOW_MS of the drag averaged more
+        than FLICK_PX_S, else 0. Measured between MOVE samples: the UP's own
+        time lags the finger by up to a poll."""
+        h = self._hist
+        if len(h) < 2:
+            return 0
+        t1, y1 = h[-1]
+        t0, y0 = h[-1]
+        for ts, ys in reversed(h[:-1]):
+            if time.ticks_diff(t1, ts) > FLICK_WINDOW_MS:
+                break
+            t0, y0 = ts, ys
+        dt = time.ticks_diff(t1, t0)
+        if dt <= 0:
+            return 0
+        v = (y1 - y0) * 1000 // dt
+        if v > FLICK_PX_S:
+            return 1
+        if v < -FLICK_PX_S:
+            return -1
+        return 0
 
     def _up(self, x, y, t):
         self._travel(x, y)
@@ -121,4 +163,17 @@ class Recognizer:
                 return []            # a grip or a brush, not a tap
             if dur < LONG_MS:
                 return [(TAP, self._x0, self._y0, 0, self._t0)]
+            return []
+        if self._mode == _VERT:
+            # A drag that paused before lifting has a stale last sample.
+            if time.ticks_diff(t, self._hist[-1][0]) > FLICK_WINDOW_MS:
+                return []
+            d = self._flick()
+            return [(FLICK, self._x0, self._y0, d, self._t0)] if d else []
+        if self._mode == _HORIZ:
+            dx = x - self._x0
+            if abs(dx) >= SWIPE_MIN_PX and abs(y - self._y0) < SWIPE_MAX_DY:
+                if dx > 0 and self._x0 < EDGE_BAND_X:
+                    return [(BACK, self._x0, self._y0, 0, self._t0)]
+                return [(SWIPE, self._x0, self._y0, 1 if dx > 0 else -1, self._t0)]
         return []

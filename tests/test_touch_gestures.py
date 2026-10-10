@@ -115,12 +115,100 @@ def test_cancel_and_restart():
     check("a second DOWN restarts the stroke", g == [(TAP, 90, 100, 0, 2500)], repr(g))
 
 
+def stroke(x0, y0, x1, y1, t0=1000, dt=26, n=10):
+    """DOWN, n evenly spaced MOVEs to (x1, y1), UP one interval later."""
+    evs = [(DOWN, x0, y0, t0)]
+    for i in range(1, n + 1):
+        evs.append((MOVE, x0 + (x1 - x0) * i // n, y0 + (y1 - y0) * i // n, t0 + dt * i))
+    evs.append((UP, x1, y1, t0 + dt * (n + 1)))
+    return evs
+
+
+def kinds(gs):
+    return [g[0] for g in gs]
+
+
+def test_drag_steps():
+    print("drag")
+    r = tg.Recognizer()
+    g = run(r, [(DOWN, 100, 100, 1000), (MOVE, 100, 109, 1100)])
+    check("9 px is inside the slop: nothing", g == [], repr(g))
+    g = r.feed((MOVE, 100, 116, 1200))
+    check("16 px down is one step, at the DOWN point", g == [(DRAG, 100, 100, 1, 1000)], repr(g))
+    g = r.feed((MOVE, 100, 131, 1300))
+    check("31 px: no new step yet (remainder carried)", g == [], repr(g))
+    g = r.feed((MOVE, 100, 150, 1400))
+    check("50 px total = 3 steps, so 2 more", g == [(DRAG, 100, 100, 2, 1000)], repr(g))
+    g = r.feed((MOVE, 100, 110, 1500))
+    check("back up to 10 px = 0 steps total, so -3", g == [(DRAG, 100, 100, -3, 1000)], repr(g))
+    g = r.feed((UP, 100, 110, 3000))
+    check("a slow release is not a flick and not a tap", g == [], repr(g))
+    g = run(tg.Recognizer(), [(DOWN, 100, 200, 1000), (MOVE, 100, 150, 1100)])
+    check("upward drag gives negative steps", g == [(DRAG, 100, 200, -3, 1000)], repr(g))
+
+
+def test_drag_big_jump_yields_all_steps():
+    g = run(tg.Recognizer(), [(DOWN, 100, 50, 1000), (MOVE, 102, 150, 1700)])
+    check("one 100 px jump (the loop was blocked) is 6 steps at once",
+          g == [(DRAG, 100, 50, 6, 1000)], repr(g))
+
+
+def test_flick():
+    print("flick")
+    g = run(tg.Recognizer(), stroke(100, 250, 100, 50, dt=26, n=8))     # 200 px in 208 ms
+    check("a fast upward drag ends in FLICK -1", kinds(g)[-1] == FLICK and g[-1][3] == -1, repr(g[-1:]))
+    check("and its drag steps came first", kinds(g)[:-1] == [DRAG] * (len(g) - 1) and len(g) > 1)
+    g = run(tg.Recognizer(), stroke(100, 50, 100, 250, dt=26, n=8))
+    check("downward: FLICK +1", g[-1][0] == FLICK and g[-1][3] == 1, repr(g[-1:]))
+    g = run(tg.Recognizer(), stroke(100, 50, 100, 250, dt=100, n=8))    # 200 px in 800 ms = 250 px/s
+    check("250 px/s is a drag with no flick", FLICK not in kinds(g), repr(kinds(g)))
+    evs = stroke(100, 50, 100, 250, dt=26, n=8)[:-1] + [(MOVE, 100, 250, 1500), (UP, 100, 250, 1530)]
+    g = run(tg.Recognizer(), evs)
+    check("a fast drag that stops before lifting is not a flick", FLICK not in kinds(g), repr(kinds(g)))
+
+
+def test_swipe_and_back():
+    print("swipe / back")
+    g = run(tg.Recognizer(), stroke(60, 150, 160, 155))
+    check("100 px right is SWIPE +1 at the DOWN point", g == [(SWIPE, 60, 150, 1, 1000)], repr(g))
+    g = run(tg.Recognizer(), stroke(200, 150, 100, 150))
+    check("leftward is SWIPE -1", g == [(SWIPE, 200, 150, -1, 1000)], repr(g))
+    g = run(tg.Recognizer(), stroke(60, 150, 99, 150))
+    check("39 px is nothing", g == [], repr(g))
+    g = run(tg.Recognizer(), stroke(60, 150, 100, 150))
+    check("40 px is a swipe", kinds(g) == [SWIPE], repr(g))
+    g = run(tg.Recognizer(), stroke(60, 150, 160, 170))
+    check("20 px of vertical drift cancels it", g == [], repr(g))
+    g = run(tg.Recognizer(), stroke(23, 150, 123, 150))
+    check("starting at x=23 and going right is BACK", g == [(BACK, 23, 150, 0, 1000)], repr(g))
+    g = run(tg.Recognizer(), stroke(24, 150, 124, 150))
+    check("starting at x=24 is an ordinary swipe", kinds(g) == [SWIPE], repr(g))
+    g = run(tg.Recognizer(), stroke(120, 150, 5, 150))
+    check("ending in the edge band going left is a swipe, not BACK", g == [(SWIPE, 120, 150, -1, 1000)], repr(g))
+    g = run(tg.Recognizer(), stroke(60, 150, 160, 150), ticks=(2500,))
+    check("a horizontal stroke never becomes a long press", LONG not in kinds(g))
+
+
+def test_axis_is_decided_once():
+    r = tg.Recognizer()
+    g = run(r, [(DOWN, 100, 100, 1000), (MOVE, 100, 130, 1100), (MOVE, 180, 135, 1200), (UP, 180, 135, 2000)])
+    check("a stroke that began vertical stays a drag even if it wanders sideways",
+          SWIPE not in kinds(g) and kinds(g)[0] == DRAG, repr(g))
+    g = run(tg.Recognizer(), [(DOWN, 100, 100, 1000), (MOVE, 130, 100, 1100), (MOVE, 135, 200, 1200), (UP, 135, 200, 2000)])
+    check("a stroke that began horizontal never emits drag steps", DRAG not in kinds(g), repr(g))
+
+
 if __name__ == "__main__":
     test_tap()
     test_long_press()
     test_key_guard()
     test_edge_reject()
     test_cancel_and_restart()
+    test_drag_steps()
+    test_drag_big_jump_yields_all_steps()
+    test_flick()
+    test_swipe_and_back()
+    test_axis_is_decided_once()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))
