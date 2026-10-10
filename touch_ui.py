@@ -338,8 +338,10 @@ def _drag(ui, n):
 def _swipe(ui, d, y):
     st = ui.state
     if st == _u.STATE_NODES and not ui._find:
-        # Like turning a page: the finger moving left brings the next tab in.
-        ui.nav_event("right" if d < 0 else "left")
+        # The finger moves the way the arrow keys do: right = next tab.
+        # (Phone-style page turning, finger left = next, was tried on the
+        # deck and felt backwards: nothing slides on e-ink to sell it.)
+        ui.nav_event("right" if d > 0 else "left")
         return True
     if st == _u.STATE_SETTINGS:
         page = ui._settings_page

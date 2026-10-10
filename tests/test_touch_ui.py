@@ -204,17 +204,25 @@ def test_tabs_and_swipe():
     check("tap the 3rd tab column", tap(g, ui.SCREEN_W * 5 // 8, tab_y) is True and g.node_tab == 2, str(g.node_tab))
     check("tap the navbar above a tab also counts (bigger target)", tap(g, 10, 5) is True and g.node_tab == 0, str(g.node_tab))
     check("tapping the tab that is already active does nothing", tap(g, 10, tab_y) is False)
-    check("finger moving LEFT goes to the next tab",
-          touch_ui.handle(g, (SWIPE, 200, 150, -1, 200000), 0) is True)
+    # Chosen on the device: the finger moves the way the arrow keys do. A
+    # phone-style "drag the page left to bring the next one in" felt
+    # backwards on a panel that shows no sliding animation.
+    check("finger moving RIGHT goes to the next tab",
+          touch_ui.handle(g, (SWIPE, 60, 150, 1, 200000), 0) is True)
     settle(g)
     check("...tab 1", g.node_tab == 1, str(g.node_tab))
-    touch_ui.handle(g, (SWIPE, 60, 150, 1, 200000), 0)
+    touch_ui.handle(g, (SWIPE, 200, 150, -1, 200000), 0)
     settle(g)
-    check("finger moving right goes back", g.node_tab == 0, str(g.node_tab))
+    check("finger moving left goes back", g.node_tab == 0, str(g.node_tab))
+    touch_ui.handle(g, (SWIPE, 200, 150, -1, 200000), 0)
+    settle(g)
+    check("...and wraps from the first tab to the last, as the arrow keys do",
+          g.node_tab == ui.N_TABS - 1, str(g.node_tab))
+    g.node_tab = 0
     touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0)
     settle(g)
-    check("an edge swipe on the node list is a rightward swipe (previous tab)",
-          g.node_tab == ui.N_TABS - 1, str(g.node_tab))
+    check("an edge swipe on the node list is a rightward swipe (next tab)",
+          g.node_tab == 1, str(g.node_tab))
 
 
 def test_footer_taps_press_the_hinted_key():
