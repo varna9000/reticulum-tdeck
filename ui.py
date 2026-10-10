@@ -636,6 +636,11 @@ class UI:
 
         # Row cache: navbar + one slot per body row + footer + input.
         # Compared before drawing — skip SPI if row unchanged.
+        # Where the footer hints were last drawn: (state, x0, x1, key bytes
+        # or None). Touch boards tap these; nothing else reads it. Tagged
+        # with the state because footers are drawn by several cached paths,
+        # so a list cleared in one of them could outlive its screen.
+        self._hint_zones = []
         self._cache = [''] * CACHE_ROWS
         self._nav_bat_cache = ''
         self._nav_mid_cache = ''
@@ -1125,6 +1130,20 @@ class UI:
                           for o in [ord(c) for c in text]])
         return text
 
+    @staticmethod
+    def _hint_key(k):
+        """The key a footer hint names, as handle_key() takes it; None for a
+        hint that names no single key (e.g. "U/D")."""
+        if isinstance(k, tuple):
+            return b'0'                    # the mic icon: Sym+0
+        if k in ("ENT", "ENTER", "CLICK"):
+            return b'\r'
+        if k == "BKSP":
+            return b'\x08'
+        if len(k) == 1:
+            return k.lower().encode()
+        return None
+
     def _draw_hints(self, hints, prefix=""):
         """Footer hotkeys in the node-list style, e.g. (R)eload (BKSP)back:
         brackets and label dim cyan, the key neon green. `hints` holds
@@ -1144,6 +1163,7 @@ class UI:
                 hints.pop(i)
             i -= 1
         self.tft.fill_rect(0, INPUT_Y, SCREEN_W, CHAR_H, self.BG_DARK)
+        self._hint_zones = []
         x = 0
         if prefix:
             self.tft.text(self.font, self._tb(prefix), 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
@@ -1166,7 +1186,9 @@ class UI:
             kw = len(k)
         self.tft.text(self.font, ")" + rest, x + (kw + 1) * CHAR_W, INPUT_Y,
                       self.DIM_CYAN, self.BG_DARK)
-        return x + (kw + len(rest) + 3) * CHAR_W
+        end = x + (kw + len(rest) + 2) * CHAR_W
+        self._hint_zones.append((self.state, x, end, self._hint_key(k)))
+        return end + CHAR_W
 
     @staticmethod
     def _marker_span(text, keyword):
@@ -1887,6 +1909,7 @@ class UI:
             if self._cache[INPUT_SLOT] == ik:
                 return
             self._cache[INPUT_SLOT] = ik
+            self._hint_zones = []
             self._draw_input_line(inp)
         else:
             _on_image = self.chat_cursor >= 0 and self.chat_cursor in self._visible_image_lines
@@ -1908,6 +1931,7 @@ class UI:
             if self._cache[INPUT_SLOT] == ik:
                 return
             self._cache[INPUT_SLOT] = ik
+            self._hint_zones = []
             self.tft.text(self.font, _pad("> _"), 0, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
             if _ts_txt:
                 self.tft.text(self.font, _pad(_ts_txt, 16), 6 * CHAR_W, INPUT_Y,
@@ -4270,12 +4294,15 @@ class UI:
         """(CLICK)select ... (BKSP)back: hotkeys in the main font and
         capitals like the node-list footer, one-char right margin."""
         self.tft.fill_rect(0, INPUT_Y, SCREEN_W, CHAR_H, self.BG_DARK)
+        self._hint_zones = []
         x = SCREEN_W - CHAR_W - len("(BKSP)back") * CHAR_W
         for kx, key, rest in ((0, "CLICK", "select"), (x, "BKSP", "back"))[0 if select else 1:]:
             self.tft.text(self.font, "(", kx, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
             self.tft.text(self.font, key, kx + CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
             self.tft.text(self.font, ")" + rest, kx + (len(key) + 1) * CHAR_W, INPUT_Y,
                           self.DIM_CYAN, self.BG_DARK)
+            self._hint_zones.append((self.state, kx, kx + (len(key) + len(rest) + 2) * CHAR_W,
+                                     self._hint_key(key)))
 
     def _draw_wifi_scan(self):
         _hdr = ("WiFi: " + self._wifi_err[:18] + "  (r)escan"
