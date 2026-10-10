@@ -371,6 +371,16 @@ def test_wake_when_not_asleep_only_checks():
     check("fresh driver: no pulse, just a read, ready", ok is True and rst.history == [] and t.ready)
 
 
+# --- board wiring ------------------------------------------------------------
+
+def test_touch_reset_pin_per_revision():
+    print("board wiring")
+    import tdeck_pro_rev
+    check("V1.0 touch reset is GPIO 45 (38 is its 1.8 V gate)", tdeck_pro_rev.touch_reset("1.0") == 45)
+    check("V1.1 touch reset is GPIO 38", tdeck_pro_rev.touch_reset("1.1") == 38)
+    check("MAX touch reset is GPIO 38", tdeck_pro_rev.touch_reset("max") == 38)
+
+
 if __name__ == "__main__":
     test_pins_configured()
     test_idle_poll_makes_no_traffic()
@@ -387,6 +397,7 @@ if __name__ == "__main__":
     test_sleep_forgets_finger()
     test_wake_pulses_once_then_retries()
     test_wake_when_not_asleep_only_checks()
+    test_touch_reset_pin_per_revision()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

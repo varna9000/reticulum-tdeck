@@ -236,6 +236,25 @@ else:
           % KBD_ADDR)
 
 
+# --- touch -------------------------------------------------------------------
+# The CST328 hands the gesture layer DOWN/MOVE/UP events; it is held in reset
+# whenever the screen is dark (see _service_touch below), so light sleep
+# finds it already off and the keyboard stays the only input that wakes the
+# deck. Everything about the chip itself is in lib/cst328.py.
+import cst328
+
+HAS_TOUCH = bool(getattr(config, "HAS_TOUCH", True))
+_TOUCH_RST = tdeck_pro_rev.touch_reset(BOARD_REV)
+touch = None
+if HAS_TOUCH and config.TOUCH_ADDR in i2c.scan():
+    touch = cst328.CST328(i2c, config.TOUCH_INT, _TOUCH_RST, addr=config.TOUCH_ADDR)
+    touch.sleep()            # woken by the first get_key() pass with the screen on
+else:
+    Pin(_TOUCH_RST, Pin.OUT, value=0)
+    if HAS_TOUCH:
+        print("[board] CST328 did not answer at 0x%02x; touch disabled" % config.TOUCH_ADDR)
+
+
 # --- battery -----------------------------------------------------------
 
 # No ADC divider on this board, so peripherals/adc_reader.py has nothing to
@@ -299,7 +318,35 @@ def attach_ui(gui):
     _gui = gui
 
 
-def get_key():
+def _touch_handler(ev):
+    """Where touch events go. The gesture layer (the next piece of the
+    touch work) replaces this; until then a touch only keeps the screen
+    awake and, at DEBUG >= 2, shows up on the console."""
+    if _gui is not None and ev[0] == cst328.DOWN:
+        _gui.note_user_input()
+    if config.DEBUG >= 2:
+        print("[touch]", ev)
+
+
+def _service_touch():
+    """One pass, from get_key(): keep the chip's reset in step with the
+    screen, then drain its events. The screen-off case holds the chip in
+    reset; the screen-on case pulses it once and retries wake() on later
+    passes until it answers (~200 ms), without blocking the key loop."""
+    if touch is None or _gui is None:
+        return
+    if not _gui._screen_on:
+        if not touch.asleep:
+            touch.sleep()
+        return
+    if not touch.ready:
+        if not touch.wake():
+            return
+    for ev in touch.poll():
+        _touch_handler(ev)
+
+
+def _get_key():
     """One keystroke, or b'\\x00' if nothing is pending.
 
     Same contract as the v1's i2c.readfrom(KBD_ADDR, 1), so this drops straight
@@ -326,6 +373,14 @@ def get_key():
         if _gui is not None:
             _gui.toggle_kbd_backlight()
         return b'\x00'
+    return k
+
+
+def get_key():
+    """The keyboard, plus one touch pass per call: UI.kbd_loop calls this
+    every 20 ms, which is the cadence the touch driver was designed for."""
+    k = _get_key()
+    _service_touch()
     return k
 
 

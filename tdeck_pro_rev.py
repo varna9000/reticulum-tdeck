@@ -68,6 +68,15 @@ def pins(rev):
     return None, 16
 
 
+def touch_reset(rev):
+    """The CST328 reset line. V1.0 wires it to GPIO 45; V1.1 and MAX moved
+    it to GPIO 38, which on a V1.0 is the 1.8 V gate and must never be
+    driven low (tdeck_pro_config.TOUCH_RST carries the V1.0 number)."""
+    if rev == "1.0":
+        return 45
+    return 38
+
+
 PROFILE_PATH = "/tdeck_pro_hw.json"
 
 
