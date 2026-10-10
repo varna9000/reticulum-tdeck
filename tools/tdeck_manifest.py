@@ -126,6 +126,7 @@ if _board == "tdeck_pro":
     freeze(_root + "/lib", "drv2605.py")
     freeze(_root, "touch_gestures.py")
     freeze(_root, "touch_ui.py")
+    freeze(_root, "ui_pro.py")
     freeze(_root + "/lib", "bq27220.py")
 elif _board == "tdeck_v1":
     freeze(_root, "board_id.py")

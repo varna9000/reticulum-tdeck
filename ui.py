@@ -641,6 +641,10 @@ class UI:
         # with the state because footers are drawn by several cached paths,
         # so a list cleared in one of them could outlive its screen.
         self._hint_zones = []
+        # The Pro's actions sheet (ui_pro.py): None, or the tab it is open
+        # on. Always None on the v1.
+        self._sheet = None
+        self._sheet_scroll = 0
         self._cache = [''] * CACHE_ROWS
         self._nav_bat_cache = ''
         self._nav_mid_cache = ''
@@ -2453,7 +2457,7 @@ class UI:
             # keyboard fallback for trackball left/right tab switch
             self._switch_tab((self.node_tab + 1) % N_TABS)
             return True
-        elif key == b'm' or key == b'M':
+        elif key in (b'm', b'M', b'l', b'L'):   # L(ookup): the Pro toolbar's label
             self._find_open()
             return True
         elif key == b'd' or key == b'D':
@@ -4707,7 +4711,7 @@ class UI:
         if self.state == STATE_IMAGE:
             return
         elif self.state == STATE_NODES:
-            _rows = BODY_ROWS - 1  # tab bar takes the first body row
+            _rows = LIST_ROWS  # what the list shows (the Pro's rows are taller)
             if self._find:
                 self._find_move(1)
             elif self.node_tab == TAB_MSG:
@@ -5230,6 +5234,7 @@ class UI:
         if self.state != self._prev_state:
             self.tft.fill_rect(0, NAV_H, SCREEN_W, SCREEN_H - NAV_H, self.BG_DARK)
             self._cache = [''] * CACHE_ROWS  # invalidate all rows
+            self._sheet = None
             self._prev_state = self.state
             # A screen change is where the e-ink shim spends its full
             # refresh (the ghost-clearing flash); cursor steps and scrolls
@@ -5439,3 +5444,15 @@ class UI:
                         _last_min = m
                         self.dirty = True
             await asyncio.sleep(1)
+
+
+# --- the Pro's own screens ---------------------------------------------------
+# Imported last, so ui_pro can use everything above. The T-Deck v1 image does
+# not carry the module, and a landscape panel never uses it.
+try:
+    import ui_pro as _pro
+except ImportError:
+    _pro = None
+if _pro is not None and SCREEN_H <= SCREEN_W:
+    _pro = None
+LIST_ROWS = _pro.LIST_ROWS if _pro is not None else BODY_ROWS - 1

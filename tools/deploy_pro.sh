@@ -102,6 +102,7 @@ add "$SRC/board_tdeck_pro.py"          "board_tdeck_pro.py"
 add "$SRC/tdeck_pro_rev.py"            "tdeck_pro_rev.py"
 add "$SRC/touch_gestures.py"           "touch_gestures.py"
 add "$SRC/touch_ui.py"                 "touch_ui.py"
+add "$SRC/ui_pro.py"                   "ui_pro.py"
 add "$SRC/board_geometry_tdeck_pro.py" "board_geometry.py"
 add "$FW/lora_boards.py"               "lora_boards.py"
 
