@@ -24,6 +24,7 @@ from tdeck_pro_config import (
 )
 
 import bq27220
+import cst328
 import eink_gdeq031t10
 import eink_shim
 import tca8418
@@ -241,18 +242,22 @@ else:
 # whenever the screen is dark (see _service_touch below), so light sleep
 # finds it already off and the keyboard stays the only input that wakes the
 # deck. Everything about the chip itself is in lib/cst328.py.
-import cst328
-
+#
+# No I2C scan decides whether the chip is there. Its reset pad is still
+# driven low after a soft reset (the last sleep() left it so), and on a V1.0
+# it is a strapping pin with a pull-down, so at import the chip is often off
+# the bus; a scan here read that as "no touch panel" until the next power
+# cycle. The driver's own wake() retries decide instead, each time the
+# screen comes on.
 HAS_TOUCH = bool(getattr(config, "HAS_TOUCH", True))
 _TOUCH_RST = tdeck_pro_rev.touch_reset(BOARD_REV)
 touch = None
-if HAS_TOUCH and config.TOUCH_ADDR in i2c.scan():
+if HAS_TOUCH:
     touch = cst328.CST328(i2c, config.TOUCH_INT, _TOUCH_RST, addr=config.TOUCH_ADDR)
     touch.sleep()            # woken by the first get_key() pass with the screen on
 else:
     Pin(_TOUCH_RST, Pin.OUT, value=0)
-    if HAS_TOUCH:
-        print("[board] CST328 did not answer at 0x%02x; touch disabled" % config.TOUCH_ADDR)
+_touch_reported = False
 
 
 # --- battery -----------------------------------------------------------
@@ -321,29 +326,32 @@ def attach_ui(gui):
 def _touch_handler(ev):
     """Where touch events go. The gesture layer (the next piece of the
     touch work) replaces this; until then a touch only keeps the screen
-    awake and, at DEBUG >= 2, shows up on the console."""
-    if _gui is not None and ev[0] == cst328.DOWN:
-        _gui.note_user_input()
+    awake and, at DEBUG >= 2, shows up on the console.
+
+    Awake means the inactivity clock, which only wake_screen() stamps (the
+    key loop calls it for every key too). The screen is already on when a
+    finger is down, so this lights nothing and it respects the lock. An UP
+    is left out on purpose: the driver also sends one to close a stroke as
+    the screen goes dark, and that must not turn it back on."""
+    if _gui is not None and ev[0] != cst328.UP:
+        _gui.wake_screen(why="touch")
     if config.DEBUG >= 2:
         print("[touch]", ev)
 
 
 def _service_touch():
-    """One pass, from get_key(): keep the chip's reset in step with the
-    screen, then drain its events. The screen-off case holds the chip in
-    reset; the screen-on case pulses it once and retries wake() on later
-    passes until it answers (~200 ms), without blocking the key loop."""
+    """One pass, from get_key(). The driver keeps its own reset in step
+    with the screen (off while dark, pulsed and retried when it lights)
+    and hands back whatever the finger did since the last pass."""
+    global _touch_reported
     if touch is None or _gui is None:
         return
-    if not _gui._screen_on:
-        if not touch.asleep:
-            touch.sleep()
-        return
-    if not touch.ready:
-        if not touch.wake():
-            return
-    for ev in touch.poll():
+    for ev in touch.service(_gui._screen_on):
         _touch_handler(ev)
+    if touch.gave_up and not _touch_reported:
+        _touch_reported = True
+        print("[board] CST328 did not answer at 0x%02x; touch is off until the screen next wakes"
+              % config.TOUCH_ADDR)
 
 
 def _get_key():

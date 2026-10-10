@@ -4,7 +4,7 @@
 #
 #   mpremote connect /dev/cu.usbmodem1101 run tools/tdeck_pro_touch_smoke.py
 #
-# Expect: "touch: ready" within ~250 ms, then DOWN/MOVE/UP lines as you tap
+# Expect: "touch: ready" within ~100 ms, then DOWN/MOVE/UP lines as you tap
 # and drag (kind 1/2/3), nothing while you do not, and "asleep" after the
 # fake screen goes dark at the end.
 
@@ -16,8 +16,8 @@ class FakeUI:
     _screen_on = True
     inputs = 0
 
-    def note_user_input(self):
-        self.inputs += 1
+    def wake_screen(self, force=False, why=None):
+        self.inputs += 1            # what stamps the inactivity clock in the real UI
 
     def nav_event(self, name):
         print("nav", name)
@@ -59,5 +59,14 @@ ui._screen_on = False
 board.get_key()
 print("screen off -> asleep:", board.touch.asleep, "ready:", board.touch.ready)
 kinds = [e[0] for e in seen]
-print("events: %d (DOWN %d, MOVE %d, UP %d), note_user_input calls %d"
+print("events: %d (DOWN %d, MOVE %d, UP %d), activity stamps %d (expect DOWN + MOVE)"
       % (len(seen), kinds.count(1), kinds.count(2), kinds.count(3), ui.inputs))
+durs = []
+t_down = None
+for k, x, y, t in seen:
+    if k == 1:
+        t_down = t
+    elif k == 3 and t_down is not None:
+        durs.append(time.ticks_diff(t, t_down))
+        t_down = None
+print("stroke durations ms:", durs)

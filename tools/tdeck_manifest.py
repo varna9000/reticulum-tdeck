@@ -122,6 +122,7 @@ if _board == "tdeck_pro":
     freeze(_root + "/lib", "eink_gdeq031t10.py")
     freeze(_root + "/lib", "eink_shim.py")
     freeze(_root + "/lib", "tca8418.py")
+    freeze(_root + "/lib", "cst328.py")
     freeze(_root + "/lib", "bq27220.py")
 elif _board == "tdeck_v1":
     freeze(_root, "board_id.py")
