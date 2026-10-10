@@ -1136,7 +1136,10 @@ class UI:
         hint that names no single key (e.g. "U/D")."""
         if isinstance(k, tuple):
             return b'0'                    # the mic icon: Sym+0
-        if k in ("ENT", "ENTER", "CLICK"):
+        if k == "CLICK":
+            return "click"                 # the click gesture: Enter on most
+                                           # screens, but the keys menu in the shell
+        if k in ("ENT", "ENTER"):
             return b'\r'
         if k == "BKSP":
             return b'\x08'
@@ -1274,6 +1277,7 @@ class UI:
         """Draw the '> ...' input at the bottom, showing the tail of a long
         buffer with a '<' continuation marker so typing past the visible
         width stays visible (the caret is always the last cell)."""
+        self._hint_zones = []     # this line is text now, not hints
         avail = COLS - 3  # cols after "> ", minus 1 for the caret
         if len(inp) > avail:
             visible = "<" + inp[-(avail - 1):]
@@ -1667,6 +1671,7 @@ class UI:
             foot = self.browser_status[:COLS]
             if self._cache[FOOT_SLOT] != foot:
                 self._cache[FOOT_SLOT] = foot
+                self._hint_zones = []
                 self.tft.text(self.font, self._tb(_pad(foot)), 0, INPUT_Y,
                               self.NEON_MAG, self.BG_DARK)
             return
@@ -3371,6 +3376,7 @@ class UI:
             fkey = "S\x00" + foot
             if self._cache[FOOT_SLOT] != fkey:
                 self._cache[FOOT_SLOT] = fkey
+                self._hint_zones = []
                 self.tft.text(self.font, self._tb(_pad(foot)), 0, INPUT_Y, self.NEON_MAG, self.BG_DARK)
         elif self._shell_line_mode and self._shell_input:
             self._cache[FOOT_SLOT] = ''           # input redraws live; repaint on next status change
@@ -3669,6 +3675,7 @@ class UI:
                 self._draw_row_cached(i + 1, hint.center(COLS), y, self.DIM_CYAN)
             else:
                 self._draw_row_cached(i + 1, "", y, self.NEON_CYAN)
+        self._hint_zones = []
         self.tft.text(self.font, _pad(""), 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
 
     def _enter_recording(self):

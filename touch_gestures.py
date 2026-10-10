@@ -52,7 +52,8 @@ class Recognizer:
         self._x0 = self._y0 = self._t0 = 0
         self._x = self._y = 0
         self._far = 0            # furthest travel from the DOWN point, px
-        self._steps = 0          # drag steps already emitted
+        self._anchor = 0         # vertical travel at the last emitted drag step
+        self._dir = 0            # direction of the last drag step: +1, -1, 0 = none yet
         self._hist = []          # recent (t, y) for the flick velocity
         self._key_ms = None
 
@@ -80,7 +81,8 @@ class Recognizer:
             self._x0, self._y0, self._t0 = x, y, t
             self._x, self._y = x, y
             self._far = 0
-            self._steps = 0
+            self._anchor = 0
+            self._dir = 0
             self._hist = [(t, y)]
             k = self._key_ms
             self._dead = k is not None and 0 <= time.ticks_diff(t, k) < KEY_GUARD_MS
@@ -123,13 +125,26 @@ class Recognizer:
         self._hist.append((t, y))
         if len(self._hist) > 8:
             self._hist.pop(0)
-        total = abs(dy) // STEP_PX
-        if dy < 0:
-            total = -total
-        n = total - self._steps
+        # Steps are counted from where the last one was emitted. Carrying on
+        # the same way takes a full step; turning back takes half a step of
+        # retreat first. Without that a finger resting on a 16 px boundary
+        # toggles a step on every pixel of jitter, and each step is a
+        # selection change and a ~700 ms refresh.
+        d = dy - self._anchor
+        half = STEP_PX // 2
+        n = 0
+        if d >= STEP_PX and self._dir >= 0:
+            n = d // STEP_PX
+        elif d <= -STEP_PX and self._dir <= 0:
+            n = -((-d) // STEP_PX)
+        elif self._dir > 0 and d <= -half:
+            n = -((-d - half) // STEP_PX + 1)
+        elif self._dir < 0 and d >= half:
+            n = (d - half) // STEP_PX + 1
         if n == 0:
             return []
-        self._steps = total
+        self._anchor += n * STEP_PX
+        self._dir = 1 if n > 0 else -1
         return [(DRAG, self._x0, self._y0, n, self._t0)]
 
     def _flick(self):

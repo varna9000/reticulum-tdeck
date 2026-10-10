@@ -275,8 +275,6 @@ if HAS_TOUCH and HAS_HAPTICS and drv2605.DRV2605_ADDR in i2c.scan():
         haptic.enable(False)
     else:
         haptic = None
-else:
-    Pin(config.PIN_VIBRATION, Pin.OUT, value=0)
 _blink_until = None
 _touch_ctl = None
 

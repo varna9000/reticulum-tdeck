@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.join(ROOT, "lib"))
 _clock = [100000]
 _time.ticks_ms = lambda: _clock[0]
 _time.ticks_diff = lambda a, b: a - b
+_time.ticks_add = lambda a, d: a + d
 _time.sleep_ms = lambda ms: None
 sys.modules.setdefault("uasyncio", types.ModuleType("uasyncio"))
 
@@ -70,7 +71,13 @@ def mkui(state=None):
         g.state = state
     g._screen_on = True
     g._state_change_ms = 0                     # the 500 ms back guards are long past
+    g.dirty = False                            # ...and the screen has been drawn
     return g
+
+
+def drawn(g):
+    """The redraw a change asked for has reached the panel."""
+    g.dirty = False
 
 
 def keys_pressed(g):
@@ -105,7 +112,8 @@ def test_hint_zones_follow_the_hints():
 
 def test_hint_key_table():
     hk = ui.UI._hint_key
-    check("CLICK and ENTER are Enter", hk("CLICK") == b'\r' and hk("ENTER") == b'\r')
+    check("ENT and ENTER are Enter", hk("ENT") == b'\r' and hk("ENTER") == b'\r')
+    check("CLICK is the click gesture, which is not Enter on every screen", hk("CLICK") == "click")
     check("the mic icon is the 0 key", hk(ui._MIC) == b'0')
     check("a capital letter is its lower-case key", hk("R") == b'r')
     check("a label that names no single key has none", hk("U/D") is None)
@@ -116,7 +124,7 @@ def test_settings_bar_and_chat_footer_record_zones():
     g._draw_settings_bottom_bar()
     z = g._hint_zones
     check("settings bar: select on the left, back on the right",
-          [k for _, _, _, k in z] == [b'\r', b'\x08'] and z[0][1] == 0 and z[1][2] <= ui.SCREEN_W, repr(z))
+          [k for _, _, _, k in z] == ["click", b'\x08'] and z[0][1] == 0 and z[1][2] <= ui.SCREEN_W, repr(z))
     g = mkui(ui.STATE_CHAT)
     g.selected_peer = b"\x01" * 16
     g.cmd_buf = bytearray()
@@ -149,6 +157,7 @@ def with_peers(n):
         g.add_peer(bytes([i + 1]) * 16, "peer%02d" % i)
     g.selected_idx = 0
     g.node_scroll = 0
+    g.dirty = False                   # add_peer asked for a redraw; it has happened
     return g
 
 
@@ -286,7 +295,9 @@ def test_layout_key_changes_with_what_is_on_screen():
     g = with_peers(40)
     k0 = touch_ui.layout_key(g)
     g.selected_idx = 2
-    check("moving the selection alone does not change it", touch_ui.layout_key(g) == k0)
+    check("moving the selection changes it (a tap must not act on a selection not yet shown)",
+          touch_ui.layout_key(g) != k0)
+    k0 = touch_ui.layout_key(g)
     g.node_scroll = 5
     k1 = touch_ui.layout_key(g)
     check("scrolling does", k1 != k0)
@@ -307,6 +318,8 @@ def test_controller_flow():
     c.event((UP, 100, row_y(2), 1200))
     settle(g)
     check("a tap through the controller selects and clicks once", g.selected_idx == 2 and clicks == [1], "%d %r" % (g.selected_idx, clicks))
+    drawn(g)
+    c.service(1250)
     c.event((DOWN, 100, row_y(9), 1300))          # beyond the list end
     c.event((UP, 100, row_y(9), 1400))
     check("a rejected tap gives no feedback", clicks == [1], repr(clicks))
@@ -329,18 +342,32 @@ def test_controller_stamps_layout_changes():
     c.service(1000)
     c.event((DOWN, 100, row_y(3), 1500))          # the finger went down at 1500...
     g.node_scroll = 4                             # ...then the list scrolled under it
+    g.dirty = True
     c.service(1600)                               # the controller notices at 1600
     c.event((UP, 100, row_y(3), 1700))
     settle(g)
     check("the tap is dropped: the row under it changed", g.selected_idx == 0, str(g.selected_idx))
-    c.event((DOWN, 100, row_y(3), 1800))
+    c.event((DOWN, 100, row_y(3), 1800))          # the old frame is STILL on the panel
     c.event((UP, 100, row_y(3), 1900))
     settle(g)
-    check("the next tap counts", g.selected_idx == 4 + 3, str(g.selected_idx))
+    check("a tap made before the new frame is shown is dropped too", g.selected_idx == 0, str(g.selected_idx))
+    drawn(g)                                      # the ~700 ms refresh ends
+    c.service(2500)
+    c.event((DOWN, 100, row_y(3), 2400))          # this finger went down DURING the refresh
+    c.event((UP, 100, row_y(3), 2550))
+    settle(g)
+    check("...and so is one that went down during the refresh", g.selected_idx == 0, str(g.selected_idx))
+    drawn(g)
+    c.service(2600)
+    c.event((DOWN, 100, row_y(3), 2700))
+    c.event((UP, 100, row_y(3), 2800))
+    settle(g)
+    check("a tap on the frame the user can see counts", g.selected_idx == 4 + 3, str(g.selected_idx))
 
 
 def test_controller_long_press_and_dark_screen():
     g = mkui(ui.STATE_IMAGE)
+    g._image_drawn = True                         # the picture is on the panel
     seen = keys_pressed(g)
     c = touch_ui.Controller(g)
     c.service(1000)
@@ -377,10 +404,11 @@ def test_controller_swallows_ui_errors():
     except Exception as e:
         check("an exception in the UI does not escape", False, repr(e))
     check("it is reported", reports == [("touch", "ui blew up")], repr(reports))
-    del g.nav_event
-    c.event((MOVE, 100, 200, 1300))
-    c.event((UP, 100, 200, 1400))
-    check("and the stroke is cancelled", True)
+    check("and the stroke is cancelled", c.rec._active is False)
+    c.event((DOWN, 100, 100, 3000))               # now fail in the MIDDLE of a stroke
+    c.event((MOVE, 100, 140, 3100))               # a drag step -> nav_event -> boom
+    check("an error mid-drag cancels the stroke while the finger is still down",
+          c.rec._active is False and len(reports) == 2, "%r %r" % (c.rec._active, reports))
 
 
 # --- Task 5: chat, recording, browser, viewer --------------------------------
@@ -636,6 +664,275 @@ def test_rrc():
           touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is False)
 
 
+# --- review fixes --------------------------------------------------------------
+
+def stale_zones(g):
+    g._hint_zones = [(g.state, 0, 80, b'\x08'), (g.state, 96, 200, b'\r'), (g.state, 208, 236, "click")]
+
+
+def test_footer_is_dead_while_a_text_field_owns_it():
+    print("review: footer vs typing")
+    fy = ui.INPUT_Y + 8
+    g = mkui(ui.STATE_CHAT)
+    g.selected_peer = b"\x01" * 16
+    g.cmd_buf = bytearray(b"half a message")
+    stale_zones(g)
+    seen = keys_pressed(g)
+    check("chat with a draft: a footer tap presses nothing", tap(g, 120, fy) is False and seen == [], repr(seen))
+    g = mkui(ui.STATE_SETTINGS)
+    g._settings_page = g._TEXT_ENTRY_PAGES[0]
+    stale_zones(g)
+    seen = keys_pressed(g)
+    check("a text-entry settings page: nothing (it would submit or delete)",
+          tap(g, 120, fy) is False and tap(g, 20, fy) is False and seen == [], repr(seen))
+    g = with_peers(2)
+    g._find = True
+    g._find_res = []
+    g._find_sel = g._find_scroll = 0
+    stale_zones(g)
+    seen = keys_pressed(g)
+    check("Find open: nothing (it would type into the query)", tap(g, 20, fy) is False and seen == [], repr(seen))
+    g = mkui(ui.STATE_SHELL)
+    g._shell_menu = False
+    g._shell_input = bytearray(b"rm x")
+    stale_zones(g)
+    seen = keys_pressed(g)
+    check("shell with a typed command: nothing (Enter would run it)", tap(g, 120, fy) is False and seen == [], repr(seen))
+    g = mkui(ui.STATE_RRC_ROOMS)
+    g._rrc_panel = False
+    g._rrc_prompt = True
+    stale_zones(g)
+    seen = keys_pressed(g)
+    check("the room-name prompt: nothing", tap(g, 120, fy) is False and seen == [], repr(seen))
+    g = mkui(ui.STATE_RRC_CHAT)
+    g._rrc_panel = False
+    g._rrc_prompt = False
+    stale_zones(g)
+    seen = keys_pressed(g)
+    check("a room's composer line: nothing", tap(g, 120, fy) is False and seen == [], repr(seen))
+
+
+def test_text_lines_clear_the_zones_when_painted():
+    g = mkui(ui.STATE_CHAT)
+    stale_zones(g)
+    g._draw_input_line("typing")
+    check("_draw_input_line leaves no zones behind", g._hint_zones == [], repr(g._hint_zones))
+    g = mkui(ui.STATE_RECORDING)
+    stale_zones(g)
+    g._rec_warming = False
+    g._draw_recording()
+    check("the recording screen leaves no zones behind", g._hint_zones == [], repr(g._hint_zones))
+    import rrc_ui
+    g = mkui(ui.STATE_RRC_ROOMS)
+    g._rrc_prompt = True
+    g._rrc_input = "mes"
+    stale_zones(g)
+    rrc_ui._draw_footer(g)
+    check("the room prompt leaves no zones behind", g._hint_zones == [], repr(g._hint_zones))
+
+
+def test_click_hints_click_and_shell_quit_is_inert():
+    print("review: CLICK hints")
+    fy = ui.INPUT_Y + 8
+    g = mkui(ui.STATE_SHELL)
+    g._shell_menu = False
+    g._shell_input = bytearray()
+    g._shell_line_mode = True
+    g._hint_zones = [(g.state, 0, 80, b'\x08'), (g.state, 88, 180, "click")]
+    opened = []
+    g._shell_menu_open = lambda: opened.append(1)
+    sent = []
+    g._shell_send = lambda d: sent.append(bytes(d))
+    check("tap (CLICK)keys is accepted", tap(g, 120, fy) is True)
+    settle(g)
+    check("...it opens the control menu and sends nothing to the remote", opened == [1] and sent == [], "%r %r" % (opened, sent))
+    left = []
+    g._leave_shell = lambda *a: left.append(1)
+    check("tap (BKSP)quit does nothing: one tap must not drop a live session",
+          tap(g, 20, fy) is False and left == [], repr(left))
+    g = mkui(ui.STATE_NODES)
+    g._hint_zones = [(g.state, 0, 80, None)]
+    seen = keys_pressed(g)
+    check("a hint that names no key is not tappable", tap(g, 20, fy) is False and seen == [], repr(seen))
+
+
+def test_lora_and_radio_pages_drag():
+    print("review: setup pages")
+    g = mkui(ui.STATE_SETTINGS)
+    g._settings_page = ui._SET_LORA
+    g._lora_field = 0
+    check("LoRa page: a drag is accepted", touch_ui.handle(g, (DRAG, 100, 100, 2, 200000), 0) is True)
+    settle(g)
+    check("...and moves the field", g._lora_field == 2, str(g._lora_field))
+    adj = []
+    g._settings_adjust = lambda d: adj.append(d)
+    check("LoRa page: a swipe adjusts the field", touch_ui.handle(g, (SWIPE, 100, 100, -1, 200000), 0) is True and adj == [-1], repr(adj))
+    seen = keys_pressed(g)
+    check("LoRa page: an edge swipe adjusts too, it must not drop the pending edits",
+          touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is True and adj == [-1, 1] and seen == [], "%r %r" % (adj, seen))
+    g = mkui(ui.STATE_SETTINGS)
+    g._settings_page = ui._SET_RADIO
+    g._settings_scroll = 0
+    g._radio_rows = 40
+    check("Radio stats: a drag scrolls", touch_ui.handle(g, (DRAG, 100, 100, 3, 200000), 0) is True)
+    settle(g)
+    check("...by 3", g._settings_scroll == 3, str(g._settings_scroll))
+    check("Radio stats: a swipe has nothing to adjust", touch_ui.handle(g, (SWIPE, 100, 100, 1, 200000), 0) is False)
+    g = mkui(ui.STATE_SETTINGS)
+    g._settings_page = ui._SET_MAIN
+    g._settings_idx = 4
+    adj = []
+    g._settings_adjust = lambda d: adj.append(d)
+    seen = keys_pressed(g)
+    check("Setup: an edge swipe that starts on the selected row steps its value",
+          touch_ui.handle(g, (BACK, 5, row_y(4), 0, 200000), 0) is True and adj == [1] and seen == [], "%r %r" % (adj, seen))
+    check("Setup: an edge swipe elsewhere is back",
+          touch_ui.handle(g, (BACK, 5, row_y(9), 0, 200000), 0) is True and seen == [b'\x1b'], repr(seen))
+
+
+def test_find_back_keeps_a_typed_query():
+    g = with_peers(2)
+    g._find = True
+    g._find_res = []
+    g._find_sel = g._find_scroll = 0
+    g._find_q = "6335c5b9"
+    check("Find with a typed query: back does nothing", touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is False and g._find is True)
+    g._find_q = ""
+    check("Find with an empty query: back closes it", touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is True and g._find is False)
+
+
+def test_untested_lists_follow_their_scroll():
+    print("review: scrolled lists")
+    g = mkui(ui.STATE_SETTINGS)
+    g._settings_page = ui._SET_WIFI_SCAN
+    g._wifi_networks = [("net%d" % i, -60) for i in range(30)]
+    g._settings_scroll = 5
+    g._settings_idx = 5
+    tap(g, 100, row_y(3))
+    settle(g)
+    check("WiFi list: row 3 of a list scrolled by 5 is network 8", g._settings_idx == 8, str(g._settings_idx))
+    g = with_peers(2)
+    g._find = True
+    g._find_q = ""
+    g._find_res = [("n%d" % i, bytes([i]) * 16) for i in range(30)]
+    g._find_scroll = 4
+    g._find_sel = 4
+    fy = ui.BODY_Y + 2 * ui.CHAR_H + ui.CHAR_H // 2
+    tap(g, 100, fy + 2 * ui.CHAR_H)
+    settle(g)
+    check("Find: row 2 of results scrolled by 4 is result 6", g._find_sel == 6, str(g._find_sel))
+    import rrc_ui
+    g = mkui(ui.STATE_RRC_ROOMS)
+    g._rrc_panel = True
+    g._rrc_panel_kind = "rooms"
+    g._rrc_prompt = False
+    g._rrc_rooms = [("room%d" % i, "") for i in range(20)]
+    g._rrc_list_seen = True
+    g._rrc_panel_scroll = 3
+    g._rrc_panel_idx = 3
+    tap(g, rrc_ui.PANEL_X + 40, rrc_ui.PANEL_Y + 22 + 2 * ui.CHAR_H + 8)
+    settle(g)
+    check("panel: row 2 of a panel scrolled by 3 is row 5", g._rrc_panel_idx == 5, str(g._rrc_panel_idx))
+    g = mkui(ui.STATE_RRC_CHAT)
+    g._rrc_panel = False
+    g._rrc_prompt = False
+    ups = []
+    real = g.nav_event
+    g.nav_event = lambda name: ups.append(name)
+    touch_ui.handle(g, (DRAG, 100, 100, 2, 200000), 0)
+    check("room scrollback: finger down brings older lines in (the scrollback's 'up')", ups == ["up", "up"], repr(ups))
+    g = mkui(ui.STATE_SHELL)
+    g._shell_menu = True
+    g._shell_menu_idx = 0
+    check("shell menu open: a long press does nothing", touch_ui.handle(g, (LONG, 100, 100, 0, 200000), 0) is False)
+    g = mkui(ui.STATE_RRC_ROOMS)
+    g._rrc_panel = False
+    g._rrc_prompt = True
+    clicks = []
+    g.nav_event = lambda name: clicks.append(name)
+    check("hub header tap while the join prompt is up does nothing",
+          tap(g, 30, ui.BODY_Y + 4) is False and clicks == [], repr(clicks))
+    g = mkui(ui.STATE_CHAT)
+    seen = keys_pressed(g)
+    check("the navbar's Setup shortcut exists only on the node list",
+          tap(g, ui.SCREEN_W - 10, 5) is True and seen == [b'\x1b'], repr(seen))
+
+
+def test_controller_guard_cannot_wedge():
+    print("review: guard robustness")
+    g = with_peers(6)
+    c = touch_ui.Controller(g)
+    c.service(1000)
+    g.node_tab = ui.TAB_NET
+    g.dirty = True                                 # ...and suppose nothing ever clears it
+    c.service(1100)
+    c.event((DOWN, 30, ui.BODY_Y + 4, 1200))
+    c.event((UP, 30, ui.BODY_Y + 4, 1300))
+    check("while the redraw is pending the tap is dropped", g.node_tab == ui.TAB_NET)
+    c.service(1100 + touch_ui.PENDING_MAX_MS + 1)
+    c.event((DOWN, 30, ui.BODY_Y + 4, 1100 + touch_ui.PENDING_MAX_MS + 50))
+    c.event((UP, 30, ui.BODY_Y + 4, 1100 + touch_ui.PENDING_MAX_MS + 150))
+    check("a redraw flag that never clears cannot disable touch for good", g.node_tab == ui.TAB_MSG, str(g.node_tab))
+
+
+def test_controller_survives_a_week_idle():
+    # ticks_ms wraps at 2**30 and ticks_diff is only valid within 2**29.
+    real_diff, real_ms, real_add = _time.ticks_diff, _time.ticks_ms, _time.ticks_add
+    period = 1 << 30
+    _time.ticks_diff = lambda a, b: ((a - b + period // 2) & (period - 1)) - period // 2
+    _time.ticks_add = lambda a, d: (a + d) & (period - 1)
+    try:
+        g = with_peers(6)
+        c = touch_ui.Controller(g)
+        c.service(1000)
+        late = (1000 + (1 << 29) + 5000) & (period - 1)      # ~6.2 days later, nothing changed
+        step = 1 << 27
+        t = 1000
+        while t < 1000 + (1 << 29) + 5000:                  # the loop keeps servicing meanwhile
+            t += step
+            c.service(t & (period - 1))
+        c.event((DOWN, 100, row_y(2), late))
+        c.event((UP, 100, row_y(2), (late + 100) & (period - 1)))
+        settle(g)
+        check("taps still work after 6 days on one screen", g.selected_idx == 2, str(g.selected_idx))
+    finally:
+        _time.ticks_diff, _time.ticks_ms, _time.ticks_add = real_diff, real_ms, real_add
+
+
+def test_controller_feedback_and_dark():
+    g = with_peers(6)
+
+    def bad_feedback():
+        raise OSError("motor fell off the bus")
+
+    reports = []
+    c = touch_ui.Controller(g, feedback=bad_feedback, report=lambda n, e: reports.append(n))
+    c.service(1000)
+    try:
+        c.event((DOWN, 100, row_y(2), 1100))
+        c.event((UP, 100, row_y(2), 1200))
+        check("a raising feedback does not escape into the key loop", True)
+    except Exception as e:
+        check("a raising feedback does not escape into the key loop", False, repr(e))
+    check("...and is reported", reports == ["touch"], repr(reports))
+    g = with_peers(6)
+    marks = []
+    g.note_user_input = lambda: marks.append(1)
+    c = touch_ui.Controller(g)
+    c.service(1000)
+    c.event((DOWN, 100, row_y(2), 1100))
+    c.event((UP, 100, row_y(2), 1200))
+    check("an accepted gesture marks the redraw as the user's (the e-ink shim pays its ghosting debt on those)",
+          marks == [1], repr(marks))
+    g = with_peers(6)
+    c = touch_ui.Controller(g)
+    c.service(1000)
+    c.event((DOWN, 100, row_y(2), 1100))
+    g._screen_on = False
+    c.service(1200)
+    check("the screen going dark cancels the stroke in progress", c.rec._active is False)
+
+
 # --- Task 8: glue and image --------------------------------------------------
 
 def _src(rel):
@@ -667,6 +964,8 @@ def test_board_glue_wiring():
     check("the motor driver is enabled only while the screen is lit",
           "haptic.enable(_gui._screen_on)" in service or "haptic.enable(" in service)
     check("the driver gets its enable pin (GPIO 2, probed)", "en_gpio=config.PIN_VIBRATION" in src)
+    check("without the motor chip GPIO 2 is left alone (its role on a V1.0 is unknown)",
+          "Pin(config.PIN_VIBRATION, Pin.OUT, value=0)" not in src)
     check("feedback never touches the saved backlight preference",
           "on_kbd_backlight" not in src.split("def _touch_feedback():")[1].split("\ndef ")[0])
 
@@ -701,6 +1000,15 @@ if __name__ == "__main__":
     test_rrc()
     test_image_carries_the_touch_modules()
     test_board_glue_wiring()
+    test_footer_is_dead_while_a_text_field_owns_it()
+    test_text_lines_clear_the_zones_when_painted()
+    test_click_hints_click_and_shell_quit_is_inert()
+    test_lora_and_radio_pages_drag()
+    test_find_back_keeps_a_typed_query()
+    test_untested_lists_follow_their_scroll()
+    test_controller_guard_cannot_wedge()
+    test_controller_survives_a_week_idle()
+    test_controller_feedback_and_dark()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

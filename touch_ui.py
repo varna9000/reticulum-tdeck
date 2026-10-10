@@ -15,6 +15,8 @@ from touch_gestures import Recognizer, TAP, LONG, DRAG, FLICK, SWIPE, BACK
 _FOOT_REACH = 8          # px above the hint row that still count as the footer
 _FOOT_SNAP = 8           # a footer tap this close to a hint goes to it
 _PAGE = _u.BODY_ROWS - 2
+PENDING_MAX_MS = 1500    # how long a redraw may stay "pending" before taps count again
+_STAMP_MAX_AGE = 1 << 28 # ticks_diff is only valid within 2**29 ms (~6 days)
 
 
 def _panel(ui):
@@ -40,23 +42,31 @@ def _lists(ui):
 
 
 def layout_key(ui):
-    """A fingerprint of what is where on the screen. A stroke that began
-    before this last changed was aimed at a screen that is gone."""
+    """A fingerprint of what is where on the screen, selection included. A
+    stroke that began before this last changed -- or before the change
+    reached the panel -- was aimed at a screen the user was not looking at.
+
+    The selection is in it on purpose: "tap the selected row to open it" is
+    only safe if the user has SEEN which row is selected."""
     st = ui.state
+    g = getattr
     if st == _u.STATE_NODES:
-        return (st, ui.node_tab, getattr(ui, _lists(ui)[1]), ui._find,
-                getattr(ui, "_find_scroll", 0))
+        ia, sa, keys = _lists(ui)
+        return (st, ui.node_tab, g(ui, sa), g(ui, ia), len(keys), ui._find,
+                g(ui, "_find_scroll", 0), g(ui, "_find_sel", 0), len(g(ui, "_find_res", ())))
     if st == _u.STATE_CHAT:
-        return (st, ui.selected_peer, ui.chat_scroll)
+        return (st, ui.selected_peer, ui.chat_scroll, ui.chat_cursor, len(ui.cmd_buf) > 0,
+                len(ui.chat_history.get(ui.selected_peer, ())))
     if st == _u.STATE_BROWSER:
-        return (st, ui.browser_path, ui.browser_scroll)
+        return (st, ui.browser_path, ui.browser_scroll, ui.browser_cursor)
     if st == _u.STATE_SETTINGS:
-        return (st, ui._settings_page, getattr(ui, "_settings_scroll", 0))
+        return (st, ui._settings_page, g(ui, "_settings_scroll", 0), g(ui, "_settings_idx", 0),
+                g(ui, "_lora_field", 0))
     if st == _u.STATE_SHELL:
-        return (st, ui._shell_menu, getattr(ui, "_shell_view", 0))
+        return (st, ui._shell_menu, g(ui, "_shell_view", 0), g(ui, "_shell_menu_idx", 0))
     if st in (_u.STATE_RRC_ROOMS, _u.STATE_RRC_CHAT):
-        return (st, ui._rrc_panel, getattr(ui, "_rrc_panel_kind", None),
-                getattr(ui, "_rrc_panel_scroll", 0), ui._rrc_prompt)
+        return (st, ui._rrc_panel, g(ui, "_rrc_panel_kind", None), g(ui, "_rrc_panel_scroll", 0),
+                g(ui, "_rrc_panel_idx", 0), ui._rrc_prompt)
     return (st,)
 
 
@@ -121,7 +131,30 @@ def _tap_row(ui, rows, y):
     return True
 
 
+def _footer_live(ui):
+    """False while a text field owns the footer line. A hint painted there
+    earlier must not fire under the text that replaced it: on those lines
+    Enter submits (a half-typed password, a shell command) and Backspace
+    eats a character, and the footer sits right above the keyboard."""
+    st = ui.state
+    if st == _u.STATE_NODES:
+        return not ui._find
+    if st == _u.STATE_CHAT:
+        return not len(ui.cmd_buf)
+    if st == _u.STATE_SETTINGS:
+        return ui._settings_page not in ui._TEXT_ENTRY_PAGES
+    if st == _u.STATE_SHELL:
+        return ui._shell_menu or not len(ui._shell_input)
+    if st == _u.STATE_RRC_ROOMS:
+        return not ui._rrc_prompt
+    if st == _u.STATE_RRC_CHAT:
+        return False
+    return True
+
+
 def _tap_footer(ui, x):
+    if not _footer_live(ui):
+        return False
     best = None
     dist = _FOOT_SNAP + 1
     for st, x0, x1, key in ui._hint_zones:
@@ -132,6 +165,14 @@ def _tap_footer(ui, x):
             dist, best = d, key
     if best is None:
         return False
+    if best == "click":
+        ui.nav_event("click")         # NOT Enter: in the shell Enter goes to the remote
+        return True
+    if ui.state == _u.STATE_SHELL and best == b'\x08':
+        if ui._shell_menu:
+            ui._shell_menu_close()
+            return True
+        return False                  # (BKSP)quit: one tap must not drop a live session
     ui.handle_key(best)
     return True
 
@@ -179,6 +220,8 @@ def _back(ui, from_header):
         return True
     if st == _u.STATE_NODES:
         if ui._find:
+            if getattr(ui, "_find_q", ""):
+                return False          # a hand-typed hash is not thrown away by a swipe
             ui._find_close()
             return True
         return False
@@ -283,6 +326,9 @@ def _drag(ui, n):
         return False
     if _scroll_content(ui, n):
         return True
+    if st == _u.STATE_SETTINGS and ui._settings_page in (_u._SET_LORA, _u._SET_RADIO):
+        _steps(ui, n)                 # the field cursor / the stats scroll
+        return True
     if _rows(ui) is not None:
         _steps(ui, n)                 # a selection list: it follows the finger
         return True
@@ -296,16 +342,18 @@ def _swipe(ui, d, y):
         ui.nav_event("right" if d < 0 else "left")
         return True
     if st == _u.STATE_SETTINGS:
-        rows = _rows(ui)
-        if rows is not None:
-            # On a list page the swipe must be on the selected row: stepping
-            # a value you did not aim at is worse than a swipe that misses.
+        page = ui._settings_page
+        if page == _u._SET_LORA:
+            ui._settings_adjust(d)    # the field under the cursor
+            return True
+        if page == _u._SET_MAIN:
+            # The swipe must be on the selected row: stepping a value you
+            # did not aim at is worse than a swipe that misses.
+            rows = _rows(ui)
             if rows[4] + (y - rows[2]) // _u.CHAR_H != rows[5]:
                 return False
-        elif ui._settings_page in ui._TEXT_ENTRY_PAGES:
-            return False
-        ui._settings_adjust(d)
-        return True
+            ui._settings_adjust(d)
+            return True
     return False
 
 
@@ -330,14 +378,31 @@ def handle(ui, g, changed_ms):
     if kind == BACK:
         if ui.state == _u.STATE_NODES and not ui._find:
             return _swipe(ui, 1, y)
+        # Setup's labels start inside the edge band, so a rightward swipe on
+        # a value row arrives as BACK. It is a value step there, not "leave
+        # and drop the pending edits".
+        if ui.state == _u.STATE_SETTINGS and _swipe(ui, 1, y):
+            return True
         return _back(ui, False)
     return False
+
+
+def _redraw_pending(ui):
+    if ui.state == _u.STATE_IMAGE:
+        return not ui._image_drawn    # the viewer paints outside the dirty flag
+    return ui.dirty
 
 
 class Controller:
     """The per-pass logic between the driver and handle(): the layout stamp,
     the long-press tick, feedback, and a net under all of it. The board
-    module only wires this up, so everything here runs on a host too."""
+    module only wires this up, so everything here runs on a host too.
+
+    The stamp: when the layout fingerprint changes, taps are dropped until
+    the redraw that change asked for has reached the panel, and any stroke
+    that began before that moment stays dropped. The key loop does not run
+    during the ~700 ms refresh, so "the first pass with nothing left to
+    draw" is when the new frame became visible."""
 
     def __init__(self, ui, feedback=None, report=None):
         self.ui = ui
@@ -346,38 +411,80 @@ class Controller:
         self._report = report
         self._key = None
         self._changed = 0
+        self._pending = False         # a layout change is waiting for its redraw
+        self._pending_since = 0
         self._drag_t0 = None          # the stroke whose drag already clicked
 
     def key(self, now_ms):
         self.rec.note_key(now_ms)
 
+    def _fail(self, e):
+        self.rec.cancel()
+        if self._report is not None:
+            try:
+                self._report("touch", e)
+            except Exception:
+                pass
+
     def service(self, now_ms):
         """Once per keyboard pass, before this pass's events."""
-        k = layout_key(self.ui)
+        try:
+            self._service(now_ms)
+        except Exception as e:
+            self._fail(e)
+
+    def _service(self, now_ms):
+        ui = self.ui
+        if not ui._screen_on:
+            self.rec.cancel()
+            self._key = None          # re-stamp when the screen comes back
+            return
+        k = layout_key(ui)
         if k != self._key:
             self._key = k
-            self._changed = now_ms
-        if not self.ui._screen_on:
-            self.rec.cancel()
+            self._pending = True
+            self._pending_since = now_ms
+        if self._pending:
+            # PENDING_MAX_MS is a backstop: a screen that keeps its redraw
+            # flag set (nothing may repaint while recording) must not be
+            # able to switch touch off.
+            if (not _redraw_pending(ui)
+                    or time.ticks_diff(now_ms, self._pending_since) > PENDING_MAX_MS):
+                self._pending = False
+                self._changed = now_ms
+        elif time.ticks_diff(now_ms, self._changed) > _STAMP_MAX_AGE:
+            # Keep the stamp inside ticks_diff's range, or after ~6 days on
+            # one screen every tap would compare as "before the change".
+            self._changed = time.ticks_add(now_ms, -_STAMP_MAX_AGE)
         for g in self.rec.tick(now_ms):
             self._act(g)
 
     def event(self, ev):
-        for g in self.rec.feed(ev):
-            self._act(g)
+        try:
+            for g in self.rec.feed(ev):
+                self._act(g)
+        except Exception as e:
+            self._fail(e)
 
     def _act(self, g):
+        if self._pending and g[0] != DRAG and g[0] != FLICK:
+            return                    # aimed at a frame that is being replaced
         try:
             ok = handle(self.ui, g, self._changed)
         except Exception as e:
-            self.rec.cancel()
-            if self._report is not None:
-                self._report("touch", e)
+            self._fail(e)
             return
-        if not ok or self._feedback is None:
+        if not ok:
             return
-        if g[0] == DRAG:
-            if self._drag_t0 == g[4]:
-                return                # one click per drag, at its start
-            self._drag_t0 = g[4]
-        self._feedback()
+        try:
+            # The redraw this caused is the user's doing: the e-ink shim
+            # spends its whole-panel refresh on those.
+            self.ui.note_user_input()
+            if self._feedback is not None:
+                if g[0] == DRAG:
+                    if self._drag_t0 == g[4]:
+                        return        # one click per drag, at its start
+                    self._drag_t0 = g[4]
+                self._feedback()
+        except Exception as e:
+            self._fail(e)

@@ -261,6 +261,7 @@ def _draw_scrollback(ui):
 def _draw_footer(ui):
     if ui._rrc_prompt:
         ui._cache[FOOT_SLOT] = ''         # hints repaint once the prompt closes
+        ui._hint_zones = []               # the prompt is a text field, not hints
         ui.tft.text(ui.font, _pad("room> " + ui._rrc_input)[:COLS], 0, INPUT_Y,
                     ui.NEON_CYAN, ui.BG_DARK)
         return
@@ -988,5 +989,6 @@ def _draw_composer(ui):
     if len(inp) > avail:
         inp = "<" + inp[-(avail - 1):]
     row = _pad("> " + inp, COLS - len(tail)) + tail
+    ui._hint_zones = []                   # the composer owns this line
     fg = ui.DIM_CYAN if ui._rrc_panel else ui.NEON_CYAN
     ui.tft.text(ui.font, ui._tb(row[:COLS]), 0, INPUT_Y, fg, ui.BG_DARK)

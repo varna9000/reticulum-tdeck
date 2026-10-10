@@ -140,7 +140,8 @@ def test_drag_steps():
     g = r.feed((MOVE, 100, 150, 1400))
     check("50 px total = 3 steps, so 2 more", g == [(DRAG, 100, 100, 2, 1000)], repr(g))
     g = r.feed((MOVE, 100, 110, 1500))
-    check("back up to 10 px = 0 steps total, so -3", g == [(DRAG, 100, 100, -3, 1000)], repr(g))
+    check("back up to 10 px gives -2: a reversal's first step needs half a step of retreat (hysteresis)",
+          g == [(DRAG, 100, 100, -2, 1000)], repr(g))
     g = r.feed((UP, 100, 110, 3000))
     check("a slow release is not a flick and not a tap", g == [], repr(g))
     g = run(tg.Recognizer(), [(DOWN, 100, 200, 1000), (MOVE, 100, 150, 1100)])
@@ -165,6 +166,10 @@ def test_flick():
     evs = stroke(100, 50, 100, 250, dt=26, n=8)[:-1] + [(MOVE, 100, 250, 1500), (UP, 100, 250, 1530)]
     g = run(tg.Recognizer(), evs)
     check("a fast drag that stops before lifting is not a flick", FLICK not in kinds(g), repr(kinds(g)))
+    evs = stroke(100, 50, 100, 250, dt=26, n=8)[:-1] + [(UP, 100, 250, 1700)]
+    g = run(tg.Recognizer(), evs)
+    check("a fast drag, then the finger rests 500 ms with no further MOVE, is not a flick",
+          FLICK not in kinds(g), repr(kinds(g)))
 
 
 def test_swipe_and_back():
@@ -198,6 +203,24 @@ def test_axis_is_decided_once():
     check("a stroke that began horizontal never emits drag steps", DRAG not in kinds(g), repr(g))
 
 
+
+def test_drag_does_not_flap_at_a_step_boundary():
+    # A finger resting on a 16 px boundary jitters by a pixel or two. Each
+    # drag step is a selection change and a ~700 ms e-ink refresh, so a
+    # boundary must not be a place where steps toggle.
+    r = tg.Recognizer()
+    g = run(r, [(DOWN, 100, 100, 1000), (MOVE, 100, 133, 1100)])
+    check("33 px: two steps", g == [(DRAG, 100, 100, 2, 1000)], repr(g))
+    out = []
+    for i, y in enumerate((131, 133, 130, 134, 131, 133)):
+        out += r.feed((MOVE, 100, y, 1200 + 30 * i))
+    check("jitter of a few px around the boundary emits nothing", out == [], repr(out))
+    g = r.feed((MOVE, 100, 123, 1500))
+    check("retreating 9 px past the boundary steps back once", g == [(DRAG, 100, 100, -1, 1000)], repr(g))
+    g = r.feed((MOVE, 100, 131, 1600))
+    check("and coming forward 8 px steps forward again", g == [(DRAG, 100, 100, 1, 1000)], repr(g))
+
+
 if __name__ == "__main__":
     test_tap()
     test_long_press()
@@ -209,6 +232,7 @@ if __name__ == "__main__":
     test_flick()
     test_swipe_and_back()
     test_axis_is_decided_once()
+    test_drag_does_not_flap_at_a_step_boundary()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))
