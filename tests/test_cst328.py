@@ -310,6 +310,67 @@ def test_i2c_error_mid_finger_is_swallowed():
     check("finger forgotten after the error", t.touching() is False)
 
 
+# --- reset line --------------------------------------------------------------
+
+def test_sleep_holds_reset_low_and_poll_goes_quiet():
+    print("sleep / wake")
+    i2c, t, int_pin, rst = new()
+    t.ready = True
+    i2c.contact(50, 50)
+    int_pin.fire()
+    t.poll()
+    t.sleep()
+    check("reset driven low", rst.value() == 0)
+    check("asleep and not ready", t.asleep is True and t.ready is False)
+    reads = len(i2c.reads)
+    int_pin.fire()
+    evs = t.poll()
+    check("poll while asleep: no events, no bus traffic", evs == [] and len(i2c.reads) == reads, repr(evs))
+
+
+def test_sleep_forgets_finger():
+    i2c, t, int_pin, rst = new()
+    t.ready = True
+    i2c.contact(50, 50)
+    int_pin.fire()
+    t.poll()
+    t.sleep()
+    check("finger forgotten by sleep", t.touching() is False)
+    i2c.lifted(50, 50)
+    t.ready = True                      # as if woken
+    t.asleep = False
+    _clock[0] += 20
+    evs = t.poll()
+    check("no stale UP after a sleep that interrupted a touch", evs == [], repr(evs))
+
+
+def test_wake_pulses_once_then_retries():
+    i2c, t, int_pin, rst = new()
+    t.sleep()
+    i2c.dead = True                     # settling
+    rst.history = []
+    ok = t.wake()
+    check("wake pulses reset: low then high, 20 ms", rst.history == [0, 1], repr(rst.history))
+    check("not ready while the chip does not answer", ok is False and t.ready is False)
+    ok = t.wake()
+    ok = t.wake()
+    check("later calls do not pulse again", rst.history == [0, 1], repr(rst.history))
+    i2c.dead = False
+    ok = t.wake()
+    check("ready once the chip answers", ok is True and t.ready is True and t.asleep is False)
+    check("wake read the count register", i2c.reads[-1] == (0xD005, 1), repr(i2c.reads))
+    reads = len(i2c.reads)
+    evs = t.poll()
+    check("no stale latch after wake", evs == [] and len(i2c.reads) == reads)
+
+
+def test_wake_when_not_asleep_only_checks():
+    i2c, t, int_pin, rst = new()
+    rst.history = []
+    ok = t.wake()
+    check("fresh driver: no pulse, just a read, ready", ok is True and rst.history == [] and t.ready)
+
+
 if __name__ == "__main__":
     test_pins_configured()
     test_idle_poll_makes_no_traffic()
@@ -322,6 +383,10 @@ if __name__ == "__main__":
     test_count_zero_while_down_is_up()
     test_edge_during_read_is_not_lost()
     test_i2c_error_mid_finger_is_swallowed()
+    test_sleep_holds_reset_low_and_poll_goes_quiet()
+    test_sleep_forgets_finger()
+    test_wake_pulses_once_then_retries()
+    test_wake_when_not_asleep_only_checks()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

@@ -68,6 +68,39 @@ class CST328:
     def touching(self):
         return self._down
 
+    def sleep(self):
+        """Hold the chip in reset: no draw, no reports, no INT. The board
+        does this whenever the screen is dark, which also covers light
+        sleep (touch does not wake the deck; the keyboard does)."""
+        self._rst.value(0)
+        self.asleep = True
+        self.ready = False
+        self._down = False
+        self._latched = 0
+
+    def wake(self):
+        """Release reset (once) and report whether the chip answers yet.
+
+        The chip needs ~200 ms after the pulse. This never waits for it:
+        the first call pulses, every call checks, and the caller keeps
+        calling on its own cadence until True. Returns True once ready."""
+        if self.asleep:
+            self._rst.value(0)
+            time.sleep_ms(_RESET_LOW_MS)
+            self._rst.value(1)
+            self.asleep = False
+            self._latched = 0
+        if self.ready:
+            return True
+        try:
+            self._i2c.readfrom_mem(self._addr, _REG_COUNT, 1, addrsize=16)
+        except OSError:
+            return False
+        self.ready = True
+        self._latched = 0
+        self._down = False
+        return True
+
     def _read(self):
         """(count, report) or raises OSError when the chip is not answering."""
         n = self._i2c.readfrom_mem(self._addr, _REG_COUNT, 1, addrsize=16)[0] & 0x0F
