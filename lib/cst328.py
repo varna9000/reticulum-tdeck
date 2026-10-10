@@ -83,9 +83,14 @@ class CST328:
         Reads the chip only when INT fired since the last call or a finger is
         known to be down, so an idle deck puts nothing on the bus. The latch
         is cleared BEFORE the read: an edge that lands during the read sets
-        it again and the next pass reads once more."""
+        it again and the next pass reads once more.
+
+        Status 6 is contact. Anything else (0xB after lift-off, 0 rarely) is
+        not, but the report still carries the last contact position, which
+        is how a tap shorter than one poll still gets a DOWN and an UP."""
         if not self.ready or not (self._latched or self._down):
             return []
+        edge = self._latched
         self._latched = 0
         try:
             n, buf = self._read()
@@ -94,8 +99,10 @@ class CST328:
             return []
         t = time.ticks_ms()
         contact = False
+        have_point = False
         x = y = 0
         if n and buf is not None:
+            have_point = True
             contact = (buf[0] & 0x0F) == _ST_CONTACT
             x = (buf[1] << 4) | (buf[3] >> 4)
             y = (buf[2] << 4) | (buf[3] & 0x0F)
@@ -112,4 +119,15 @@ class CST328:
             elif abs(x - self._x) > _JITTER_PX or abs(y - self._y) > _JITTER_PX:
                 self._x, self._y = x, y
                 evs.append((MOVE, x, y, t))
+        elif self._down:
+            # Lift-off (or the chip dropped the finger): UP where we last
+            # saw it in contact. The lifted report's own coordinates are a
+            # pixel or two off, so they are not used.
+            self._down = False
+            evs.append((UP, self._x, self._y, t))
+        elif edge and have_point:
+            # INT fired but the contact report was already replaced by the
+            # lifted one: a tap shorter than a poll. Its position survives.
+            evs.append((DOWN, x, y, t))
+            evs.append((UP, x, y, t))
         return evs

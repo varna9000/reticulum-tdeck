@@ -228,6 +228,88 @@ def test_second_finger_ignored_but_report_cleared():
           (0xD000, 27) in i2c.reads and i2c.writes[-1] == b"\xD0\x00\xAB")
 
 
+# --- lift-off --------------------------------------------------------------
+
+def test_lifted_report_is_up_at_last_position():
+    print("lift-off")
+    i2c, t, int_pin, rst = new()
+    t.ready = True
+    i2c.contact(21, 190)
+    int_pin.fire()
+    t.poll()
+    i2c.contact(21, 260)
+    _clock[0] += 20
+    t.poll()
+    i2c.lifted(21, 262)                 # the chip's lifted report: last position, status 0xB
+    _clock[0] += 20
+    evs = t.poll()
+    check("UP at the last CONTACT position, not the lifted one",
+          evs == [(cst328.UP, 21, 260, 1040)], repr(evs))
+    check("finger forgotten", t.touching() is False)
+    _clock[0] += 20
+    evs = t.poll()
+    check("lingering lifted report is not read again", evs == [] and i2c.reads[-1] == (0xD000, 27)
+          and len(i2c.reads) == 6, repr(i2c.reads))
+
+
+def test_short_tap_seen_only_as_lifted_is_down_then_up():
+    i2c, t, int_pin, rst = new()
+    t.ready = True
+    int_pin.fire()                      # the contact report came and went between polls
+    i2c.lifted(100, 50)
+    evs = t.poll()
+    check("DOWN then UP at the lifted report's coordinates",
+          evs == [(cst328.DOWN, 100, 50, 1000), (cst328.UP, 100, 50, 1000)], repr(evs))
+    check("not touching afterwards", t.touching() is False)
+
+
+def test_count_zero_while_down_is_up():
+    i2c, t, int_pin, rst = new()
+    t.ready = True
+    i2c.contact(60, 60)
+    int_pin.fire()
+    t.poll()
+    i2c.nothing()
+    _clock[0] += 20
+    evs = t.poll()
+    check("count 0 with a finger known is UP at the last position",
+          evs == [(cst328.UP, 60, 60, 1020)], repr(evs))
+    check("no points read when the count is 0", i2c.reads[-1] == (0xD005, 1))
+
+
+def test_edge_during_read_is_not_lost():
+    i2c, t, int_pin, rst = new()
+    t.ready = True
+    i2c.contact(10, 10)
+    int_pin.fire()
+    t.poll()
+    i2c.lifted(10, 10)
+    _clock[0] += 20
+    t.poll()                            # UP; finger forgotten, latch clear
+    # A new tap's edge arrives while nothing is known.
+    int_pin.fire()
+    i2c.contact(200, 300)
+    _clock[0] += 20
+    evs = t.poll()
+    check("a fresh edge after UP is read", evs == [(cst328.DOWN, 200, 300, 1040)], repr(evs))
+
+
+def test_i2c_error_mid_finger_is_swallowed():
+    i2c, t, int_pin, rst = new()
+    t.ready = True
+    i2c.contact(5, 5)
+    int_pin.fire()
+    t.poll()
+    i2c.dead = True
+    _clock[0] += 20
+    try:
+        evs = t.poll()
+        check("ENODEV returns [] and raises nothing", evs == [], repr(evs))
+    except Exception as e:
+        check("ENODEV returns [] and raises nothing", False, repr(e))
+    check("finger forgotten after the error", t.touching() is False)
+
+
 if __name__ == "__main__":
     test_pins_configured()
     test_idle_poll_makes_no_traffic()
@@ -235,6 +317,11 @@ if __name__ == "__main__":
     test_jitter_is_dropped_and_moves_pass()
     test_coordinates_clamped_to_panel()
     test_second_finger_ignored_but_report_cleared()
+    test_lifted_report_is_up_at_last_position()
+    test_short_tap_seen_only_as_lifted_is_down_then_up()
+    test_count_zero_while_down_is_up()
+    test_edge_during_read_is_not_lost()
+    test_i2c_error_mid_finger_is_swallowed()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))
