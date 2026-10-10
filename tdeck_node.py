@@ -1901,11 +1901,17 @@ def main():
         # Periodic re-announce only if enabled in Settings (default: manual 'a')
         if gui._auto_announce and _reannounce_task is None:
             _reannounce_task = asyncio.create_task(reannounce_loop())
-        asyncio.create_task(gui.kbd_loop())
-        asyncio.create_task(gui.gui_loop(spi_acquire_display, spi_release_display))
-        asyncio.create_task(gui.battery_loop(spi_acquire_display, spi_release_display))
-        asyncio.create_task(gui.ticker_loop())
-        asyncio.create_task(_start_power())
+        # The UI loops run under a supervisor: a task that raises is logged
+        # to /rns/crash.txt and restarted, instead of dying silently and
+        # leaving a deck that looks frozen (see supervise.py).
+        import supervise
+        asyncio.create_task(supervise.run("kbd", gui.kbd_loop))
+        asyncio.create_task(supervise.run(
+            "gui", lambda: gui.gui_loop(spi_acquire_display, spi_release_display)))
+        asyncio.create_task(supervise.run(
+            "battery", lambda: gui.battery_loop(spi_acquire_display, spi_release_display)))
+        asyncio.create_task(supervise.run("ticker", gui.ticker_loop))
+        asyncio.create_task(supervise.run("power", _start_power))
         await _original_run()
 
     try:

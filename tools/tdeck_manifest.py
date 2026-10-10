@@ -131,6 +131,7 @@ else:
 
 freeze(_root, "ui.py")
 freeze(_root, "power.py")
+freeze(_root, "supervise.py")
 freeze(_root, "sound.py")
 freeze(_root, "dtmf.py")
 freeze(_root, "qr.py")
