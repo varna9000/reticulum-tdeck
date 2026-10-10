@@ -1296,6 +1296,8 @@ class UI:
         """Neon body frame — top/bottom rails + short corner arms. Drawn last
         each redraw (over content) so it stays crisp on every screen and the
         corners never get chewed by full-width rows or the scrollbar."""
+        if _pro is not None and self.state == STATE_NODES:
+            return      # the Pro's list has its own rules; the rails would cut its bars
         _cx = self.NEON_CYAN
         _L = 12  # corner arm length
         _top = NAV_H                  # right under the navbar, no gap
@@ -1425,6 +1427,8 @@ class UI:
 
     def _draw_tab_bar(self):
         """MSG/NET/RNSH/RRC tab bar — first body row of the node screen."""
+        if _pro is not None:
+            return _pro.draw_tab_bar(self)
         tabs = self._tab_labels()
         cache_key = str(self.node_tab) + ("F" if self._find else "") + "".join(tabs)
         if self._cache[1] == cache_key:

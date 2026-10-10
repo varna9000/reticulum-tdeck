@@ -142,10 +142,87 @@ def _scrollbar(ui):
         ui.tft.fill_rect(_u.SBAR_X, LIST_Y + getattr(ui, sa) * track // total, _u.SBAR_W, h, ui.DIM_CYAN)
 
 
+_BUBBLE = _u._icon(("##########..", "#........#..", "#.#####..#..", "#........#..", "#.###....#..",
+                    "#........#..", "##########..", "..##........", ".##.........", "#..........."))
+_TERM = _u._icon(("############", "#..........#", "#.#........#", "#..#.......#", "#.#..####..#",
+                  "#..........#", "############"))
+_PEOPLE = _u._icon(("...##...##..", "..####.####.", "...##...##..", "............", ".######.####",
+                    "########.###", "########.###"))
+_GEAR = _u._icon(("...##...", ".#.##.#.", ".######.", "###..###", "###..###", ".######.", ".#.##.#.", "...##..."))
+_LENS = _u._icon((".####....", "#....#...", "#....#...", "#....#...", ".####....", ".....##..",
+                  "......##.", ".......##"))
+_TRASH = _u._icon(("..####..", "########", ".#....#.", ".#.##.#.", ".#.##.#.", ".#.##.#.", ".######."))
+
+_TAB_ICONS = (_BUBBLE, _u._GLOBE, _TERM, _PEOPLE)          # MSG, NET, SSH, RRC
+_TOOLS = ((_u._ANTENNA, "Annc", b'a'), (_GEAR, "Setup", b's'),
+          (_u._STAR, "Fav", b'f'), (_LENS, "Lookup", b'l'))
+
+
+def draw_tab_bar(ui):
+    un = 0
+    for v in ui.unread.values():
+        un += v
+    counts = (str(len(ui._peer_keys)) + ("*" if un else ""), str(len(ui._node_keys)),
+              str(len(ui._shell_keys)), str(len(ui._rrc_keys)))
+    ck = "P" + str(ui.node_tab) + ("F" if ui._find else "") + "/".join(counts)
+    if ui._cache[1] == ck:
+        return
+    ui._cache[1] = ck
+    tft = ui.tft
+    paper = ui.BG_DARK
+    cw = _u.SCREEN_W // 4
+    tft.fill_rect(0, TAB_Y, _u.SCREEN_W, TAB_H, paper)
+    for i in range(4):
+        act = i == ui.node_tab
+        bg = ui.SEL_BG if act else paper
+        fg = paper if act else ui.NEON_CYAN
+        x = i * cw
+        if act:
+            tft.fill_rect(x, TAB_Y + 1, cw, TAB_H - 2, bg)
+        ic = _TAB_ICONS[i]
+        s = counts[i]
+        tx = x + (cw - (ic[0] + 4 + len(s) * _u.CHAR_W)) // 2
+        ui._bitmap(ic, tx, TAB_Y + (TAB_H - ic[1]) // 2, fg)
+        tft.text(ui.font, s, tx + ic[0] + 4, TAB_Y + 3, fg, bg)
+    tft.fill_rect(0, TAB_Y, _u.SCREEN_W, 1, ui.DIM_CYAN)
+    tft.fill_rect(0, TAB_Y + TAB_H - 1, _u.SCREEN_W, 1, ui.DIM_CYAN)
+
+
+def draw_toolbar(ui):
+    """The bottom line: four cells, icon + label, each a touch target and a
+    reminder of its key (the underlined letter)."""
+    ck = "\x03tools"
+    if ui._cache[_u.FOOT_SLOT] == ck:
+        return
+    ui._cache[_u.FOOT_SLOT] = ck
+    tft = ui.tft
+    paper = ui.BG_DARK
+    ink = ui.NEON_CYAN
+    tft.fill_rect(0, TOOL_Y, _u.SCREEN_W, TOOL_H, paper)
+    tft.fill_rect(0, TOOL_Y, _u.SCREEN_W, 1, ui.DIM_CYAN)
+    ui._hint_zones = []
+    cw = _u.SCREEN_W // 4
+    ty = TOOL_Y + 1 + (TOOL_H - 1 - ui.SH) // 2
+    for i in range(4):
+        ic, label, key = _TOOLS[i]
+        x = i * cw + (cw - (ic[0] + 3 + len(label) * ui.SW)) // 2
+        ui._bitmap(ic, x, TOOL_Y + 1 + (TOOL_H - 1 - ic[1]) // 2, ink)
+        lx = x + ic[0] + 3
+        ui._sdraw(label, lx, ty, ink, paper)
+        # The small font has no bold face; an underline marks the hotkey.
+        tft.fill_rect(lx, ty + ui.SH - 1, ui.SW - 1, 1, ink)
+        ui._hint_zones.append((ui.state, i * cw, (i + 1) * cw, key))
+
+
 def draw_node_list(ui):
-    ui._draw_tab_bar()
+    draw_tab_bar(ui)
     if ui._find:
+        if ui._cache[_u.FOOT_SLOT] == "\x03tools":
+            # Find paints its own footer text; clear the toolbar's band once.
+            ui._cache[_u.FOOT_SLOT] = ''
+            ui.tft.fill_rect(0, TOOL_Y, _u.SCREEN_W, TOOL_H, ui.BG_DARK)
         ui._draw_find()          # Find keeps its own single-line layout
         return
     draw_rows(ui)
     _scrollbar(ui)
+    draw_toolbar(ui)

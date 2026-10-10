@@ -284,6 +284,58 @@ def test_draw_node_list_uses_the_pro_rows():
     check("a scroll lane is drawn beside the list", sb and sb[0][2] == ui_pro.LIST_Y and sb[0][4] == 8 * 32, repr(sb[:1]))
 
 
+# --- Task 3: tab bar and toolbar ------------------------------------------------
+
+def test_tab_bar():
+    print("tab bar / toolbar")
+    g, t = mkui()
+    peers(g, 3)
+    g.unread[g._peer_keys[0]] = 1
+    g.node_tab = ui.TAB_NET
+    g._cache = [''] * ui.CACHE_ROWS
+    ui_pro.draw_tab_bar(g)
+    counts = [c for c in texts(t) if c[3] == ui_pro.TAB_Y + 3]
+    check("four counts, MSG marked unread", [c[1] for c in counts] == ["3*", "0", "0", "0"], repr([c[1] for c in counts]))
+    check("one icon per tab", len([c for c in t.calls if c[0] == "icon"]) == 4)
+    check("each count sits in its own 60 px cell", [c[2] // 60 for c in counts] == [0, 1, 2, 3])
+    act = [c for c in counts if c[5] == g.SEL_BG]
+    check("the active tab (NET) is the inverted one", len(act) == 1 and act[0][2] // 60 == 1 and act[0][4] == g.BG_DARK, repr(act))
+    del t.calls[:]
+    ui_pro.draw_tab_bar(g)
+    check("cached: an unchanged bar draws nothing", t.calls == [])
+    g._draw_tab_bar()
+    check("ui._draw_tab_bar hands over (still cached)", t.calls == [])
+
+
+def test_toolbar():
+    g, t = mkui()
+    peers(g, 2)
+    ui_pro.draw_toolbar(g)
+    z = g._hint_zones
+    check("four zones with the keys a, s, f, l", [k for _, _, _, k in z] == [b'a', b's', b'f', b'l'], repr(z))
+    check("each zone is a full 60 px cell", [(a, b) for _, a, b, _ in z] == [(0, 60), (60, 120), (120, 180), (180, 240)])
+    check("zones belong to the node list", all(s == ui.STATE_NODES for s, _, _, _ in z))
+    labels = [c[1] for c in texts(t, "small")]
+    check("labels", labels == ["Annc", "Setup", "Fav", "Lookup"], repr(labels))
+    ul = [c for c in t.calls if c[0] == "rect" and c[4] == 1 and c[2] > ui_pro.TOOL_Y + 10 and c[3] == g.SW - 1]
+    check("the hotkey letter of each label is underlined", len(ul) == 4, repr(ul))
+    check("everything is inside the toolbar band",
+          all(ui_pro.TOOL_Y <= c[3] < 320 for c in texts(t, "small")))
+    del t.calls[:]
+    ui_pro.draw_toolbar(g)
+    check("cached", t.calls == [])
+
+
+def test_no_body_frame_on_the_pro_list():
+    g, t = mkui()
+    peers(g, 2)
+    g._draw_frame()
+    check("the old body frame is not drawn over the tab bar and toolbar", t.calls == [], repr(t.calls[:2]))
+    g.state = ui.STATE_SETTINGS
+    g._draw_frame()
+    check("other screens keep it", len(t.calls) > 0)
+
+
 if __name__ == "__main__":
     test_pro_layout_is_active_on_the_pro()
     test_list_window_follows_the_selection()
@@ -297,6 +349,9 @@ if __name__ == "__main__":
     test_ping_status_on_the_selected_row()
     test_empty_list_and_other_tabs()
     test_draw_node_list_uses_the_pro_rows()
+    test_tab_bar()
+    test_toolbar()
+    test_no_body_frame_on_the_pro_list()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))
