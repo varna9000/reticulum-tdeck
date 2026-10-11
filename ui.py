@@ -1297,8 +1297,8 @@ class UI:
         """Neon body frame — top/bottom rails + short corner arms. Drawn last
         each redraw (over content) so it stays crisp on every screen and the
         corners never get chewed by full-width rows or the scrollbar."""
-        if _pro is not None and self.state == STATE_NODES:
-            return      # the Pro's list has its own rules; the rails would cut its bars
+        if _pro is not None and self.state in (STATE_NODES, STATE_CHAT, STATE_RECORDING):
+            return      # the Pro's list, chat and recording screens have their own rules
         _cx = self.NEON_CYAN
         _L = 12  # corner arm length
         _top = NAV_H                  # right under the navbar, no gap
@@ -1793,6 +1793,8 @@ class UI:
 
     def draw_chat(self):
         # Chat header row: "< PeerName" left, "[hash]" right
+        if _pro is not None:
+            return _pro.draw_chat(self)
         peer = self.peers.get(self.selected_peer)
         pname = _ascii(peer.get("name") or "?")[:20] if peer else "?"
         phash = "[" + self.selected_peer.hex()[:8] + "]"

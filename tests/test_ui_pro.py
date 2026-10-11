@@ -84,6 +84,11 @@ class RecTFT:
         return lambda *a, **k: None
 
 
+class _FakeBold:
+    def draw(self, tft, slots, x, y, fg, bg):
+        tft.calls.append(("bold", bytes(slots).decode("latin-1"), x, y, fg, bg))
+
+
 class _FakeSmall:
     """Stands in for ui._SmallText(spleen_6x12): records instead of blitting."""
     w = 6
@@ -106,6 +111,7 @@ def mkui():
     # ui_pro is recorded as "big" so a test can see it.
     g._sdraw = lambda s, x, y, fg, bg: t.calls.append(("big", s, x, y, fg, bg))
     ui_pro._small = _FakeSmall()
+    ui_pro._boldf = _FakeBold()
     g._bitmap = lambda icon, x, y, c: t.calls.append(("icon", icon, x, y, c))
     return g, t
 
@@ -742,6 +748,93 @@ def test_chat_blocks_media_and_status():
     check("the list is cached until invalidated", g._build_chat_lines() is a)
 
 
+def crow_y(i):
+    return ui_pro.CHAT_Y + 16 * i
+
+
+def test_chat_header_and_rows():
+    print("chat: drawing")
+    P = ui_pro
+    g, t = mkchat()
+    say(g, False, "hey, are you on the mesh tonight? asking for a friend", at=0)   # rows 0..2
+    say(g, True, "yes", at=30, status=2)                                           # row 3
+    ui_pro.draw_chat(g)
+    hd = find(t, "bold", "< Alex")
+    check("header: bold '< name' in the band under the top bar", hd is not None and 20 < hd[3] and hd[3] + 16 <= 41, repr(hd))
+    hs = find(t, "small", "[" + PEER.hex()[:8] + "]")
+    check("header: hash in the small font, right-aligned", hs is not None and hs[2] + 10 * P.SW == 232, repr(hs))
+    check("header: a rule closes the band", any(c[0] == "rect" and c[2] == 41 and c[3] == 240 and c[4] == 1 for c in t.calls))
+    check("a rule separates the rows from the input line", any(c[0] == "rect" and c[2] == 299 and c[3] == 240 for c in t.calls))
+    h = find(t, "small", "Alex \xfa 09:00")
+    check("block header in the small font at the peer's x", h is not None and h[2] == P.PEER_X and h[3] == crow_y(0) + 2, repr(h))
+    tx = [c for c in texts(t) if c[3] == crow_y(1)]
+    check("peer text at x 6", len(tx) == 1 and tx[0][2] == P.PEER_X, repr(tx))
+    bars = [c for c in t.calls if c[0] == "rect" and c[3] == 2 and c[4] == 16]
+    check("peer rows have their bar on the left edge", sorted(c[2] for c in bars if c[1] == 0) == [crow_y(0), crow_y(1), crow_y(2)], repr(bars))
+    check("my row has its bar on the right", [c[2] for c in bars if c[1] == P.ME_BAR_X] == [crow_y(3)], repr(bars))
+    mine = find(t, "text", "me: yes")
+    check("my inline row is indented", mine is not None and mine[2] == P.ME_X and mine[3] == crow_y(3), repr(mine))
+    tm = [c for c in texts(t, "small") if c[1] == "09:00" and c[3] == crow_y(3) + 2]
+    check("its time is on the right in the small font", len(tm) == 1 and tm[0][2] + 5 * P.SW == P.ME_X + P.ME_COLS * 8, repr(tm))
+    mk = [c for c in texts(t) if c[1] == "\xfb" and c[3] == crow_y(3)]
+    check("the delivery mark sits left of the time", len(mk) == 1 and mk[0][2] + 8 <= tm[0][2], repr(mk))
+    rules = sorted(c[2] for c in t.calls if c[0] == "rect" and c[4] == 1 and c[1] == 0 and c[3] == ui.SBAR_X and crow_y(0) <= c[2] < 298)
+    check("a rule under the last row of each block only", rules == [crow_y(2) + 15, crow_y(3) + 15], repr(rules))
+    check("rows below the thread are blanked", any(c[0] == "rect" and c[2] == crow_y(4) and c[4] == 16 for c in t.calls))
+    check("nothing goes through ui._sdraw", texts(t, "big") == [])
+    check("every row maps to its message", sorted(g._visible_msg_lines) == [0, 1, 2, 3])
+    del t.calls[:]
+    ui_pro.draw_chat(g)
+    check("a second draw of the same thread draws nothing", t.calls == [], repr(t.calls[:3]))
+
+
+def test_chat_cursor_and_updates():
+    P = ui_pro
+    g, t = mkchat()
+    mid = say(g, True, "first", at=0, status=1)
+    say(g, False, "second", at=10)
+    ui_pro.draw_chat(g)
+    del t.calls[:]
+    g.chat_cursor = 1
+    ui_pro.draw_chat(g)
+    rows = set((c[3] if c[0] in ("text", "small") else c[2]) for c in t.calls if c[0] in ("text", "small", "rect"))
+    check("moving the cursor redraws only that row", all(crow_y(1) <= y < crow_y(2) for y in rows), repr(sorted(rows)))
+    sel = find(t, "text", "Alex: second")
+    check("the cursor row is inverted", sel is not None and sel[4] == g.BG_DARK and sel[5] == g.SEL_BG, repr(sel))
+    del t.calls[:]
+    g.chat_cursor = -1
+    ui_pro.draw_chat(g)
+    del t.calls[:]
+    h = g.chat_history[PEER]
+    i = g._msg_index(h, mid)
+    m = h[i]
+    h[i] = (m[0], m[1], m[2], 2, m[4], m[5], m[6])
+    g._invalidate_chat_lines()
+    ui_pro.draw_chat(g)
+    ys = set(c[3] for c in texts(t))
+    check("a status change redraws only its own row", ys == {crow_y(0)}, repr(ys))
+    check("...with the new mark", find(t, "text", "\xfb") is not None)
+    g, t = mkchat()
+    for k in range(30):
+        say(g, bool(k % 2), "line %d" % k, at=k)
+    ui_pro.draw_chat(g)
+    shown = [c[1] for c in texts(t) if ": line" in c[1]]
+    check("a long thread shows its last sixteen rows", len(shown) == 16 and shown[-1].endswith("line 29"), repr(shown[-2:]))
+    check("the scroll lane has a thumb", any(c[0] == "rect" and c[1] == ui.SBAR_X and c[5] == g.DIM_CYAN for c in t.calls))
+    g.chat_scroll = 99
+    ui_pro.draw_chat(g)
+    check("the scroll is clamped to the top of the thread", g.chat_scroll == 14, str(g.chat_scroll))
+
+
+def test_no_body_frame_on_the_pro_chat():
+    g, t = mkchat()
+    say(g, False, "hi", at=0)
+    g._prev_state = g.state
+    g.draw()
+    arms = [c for c in t.calls if c[0] == "rect" and c[3] == 1 and c[4] == 12]
+    check("the body frame's corner arms are not drawn on the Pro chat", arms == [], repr(arms))
+
+
 if __name__ == "__main__":
     test_pro_layout_is_active_on_the_pro()
     test_list_window_follows_the_selection()
@@ -771,6 +864,9 @@ if __name__ == "__main__":
     test_icons_have_the_designs_proportions()
     test_chat_blocks()
     test_chat_blocks_media_and_status()
+    test_chat_header_and_rows()
+    test_chat_cursor_and_updates()
+    test_no_body_frame_on_the_pro_chat()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

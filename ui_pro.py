@@ -76,6 +76,53 @@ def _sd(ui, s, x, y, fg, bg):
         ui._sdraw(s, x, y, fg, bg)
 
 
+_boldf = None      # _Bold(main font), made on first use
+
+
+class _Bold(_u._SmallText):
+    """The main font struck twice, one pixel apart. The shim's text() paints
+    whole cells, so a second text() call would erase the first; here both
+    strikes land in one framebuf (the second transparent) and go out in one
+    blit."""
+
+    def draw(self, tft, slots, x, y, fg, bg):
+        n = min(len(slots), (_u.SCREEN_W - 1 - x) // self.w)
+        if n <= 0:
+            return
+        w = n * self.w + 1
+        fbm = self._fbm
+        fb = fbm.FrameBuffer(self._buf, w, self.h, fbm.RGB565)
+        b = _u._sw565(bg)
+        fb.fill(b)
+        self._pal.pixel(0, 0, b)
+        self._pal.pixel(1, 0, _u._sw565(fg))
+        h = self.h
+        for i in range(n):
+            c = slots[i]
+            if c == 0x20:
+                continue
+            g = self._glyphs[c]
+            if g is None:
+                g = fbm.FrameBuffer(self._mv[c * h:(c + 1) * h], self.w, h, fbm.MONO_HLSB)
+                self._glyphs[c] = g
+            fb.blit(g, i * self.w, 0, -1, self._pal)
+            fb.blit(g, i * self.w + 1, 0, b, self._pal)     # key = background: ink only
+        tft.blit_buffer(memoryview(self._buf)[:w * h * 2], x, y, w, h)
+
+
+def _bold(ui, s, x, y, fg, bg):
+    global _boldf
+    if _boldf is None:
+        try:
+            _boldf = _Bold(ui.font)
+        except ImportError:
+            _boldf = False           # host tests without framebuf
+    if _boldf:
+        _boldf.draw(ui.tft, ui._tb(s), x, y, fg, bg)
+    else:
+        ui.tft.text(ui.font, ui._tb(s), x, y, fg, bg)
+
+
 def _info(entry):
     """Hops, RSSI and last-seen: what the old footer showed for the selection."""
     hops = _u._hops(entry["hops"]) + " " if entry.get("hops") else ""
@@ -593,3 +640,112 @@ def chat_lines(ui):
         _block(ui, rows, msgs[i:j], mine, "me" if mine else pname)
         i = j
     return rows
+
+
+ME_BAR_X = 233
+
+
+def _tile(ui, r, x0, y, fg, bg, expired):
+    pass                             # Task 3
+
+
+def draw_chat(ui):
+    tft = ui.tft
+    paper = ui.BG_DARK
+    ink = ui.NEON_CYAN
+    W = _u.SCREEN_W
+    CH = _u.CHAR_H
+    CW = _u.CHAR_W
+    peer = ui.peers.get(ui.selected_peer)
+    pname = _u._ascii(peer.get("name") or "?")[:20] if peer else "?"
+    phash = "[" + ui.selected_peer.hex()[:8] + "]"
+    ck = "C" + pname + phash
+    if ui._cache[1] != ck:
+        ui._cache[1] = ck
+        tft.fill_rect(0, TAB_Y, W, TAB_H, paper)
+        _bold(ui, "< " + pname, 4, TAB_Y + 3, ink, paper)
+        _sd(ui, phash, 232 - len(phash) * SW, TAB_Y + 5, ui.DIM_CYAN, paper)
+        tft.fill_rect(0, TAB_Y, W, 1, ui.DIM_CYAN)
+        tft.fill_rect(0, TAB_Y + TAB_H - 1, W, 1, ink)
+        tft.fill_rect(0, 299, W, 1, ui.DIM_CYAN)      # where the body frame's rail was
+
+    lines = ui._build_chat_lines()
+    nrows = _u.BODY_ROWS - 1
+    total = len(lines)
+    max_scroll = max(0, total - nrows)
+    if ui.chat_scroll > max_scroll:
+        ui.chat_scroll = max_scroll
+    view_end = max(0, total - ui.chat_scroll)
+    visible = lines[max(0, view_end - nrows):view_end]
+    if ui.chat_cursor >= len(visible):
+        ui.chat_cursor = len(visible) - 1
+    cur = visible[ui.chat_cursor] if ui.chat_cursor >= 0 else None
+    vimg = {}
+    vaud = {}
+    vmsg = {}
+    width = _u.SBAR_X
+    for i in range(nrows):
+        y = CHAT_Y + i * CH
+        ci = i + 2
+        if i >= len(visible):
+            if ui._cache[ci] != "-":
+                ui._cache[ci] = "-"
+                tft.fill_rect(0, y, width, CH, paper)
+            continue
+        r = visible[i]
+        kind, mine, text, mid, flags, extra, status = r
+        vmsg[i] = mid
+        tile = kind >= K_TOP
+        expired = False
+        if tile:
+            if flags & F_IMG:
+                vimg[i] = mid
+                expired = (ui.selected_peer, mid) not in ui._image_cache
+            else:
+                vaud[i] = mid
+        hl = i == ui.chat_cursor or (tile and cur is not None and cur[0] >= K_TOP
+                                     and cur[3] == mid and (cur[4] & 6) == (flags & 6))
+        ck = (chr(48 + kind) + ("m" if mine else "p") + text + "\x00" + extra + "\x00"
+              + chr(48 + flags) + chr(48 + status) + ("H" if hl else "") + ("X" if expired else ""))
+        if ui._cache[ci] == ck:
+            continue
+        ui._cache[ci] = ck
+        bg = ui.SEL_BG if hl else paper
+        fg = paper if hl else ui.BODY_FG
+        dim = paper if hl else ui.DIM_CYAN
+        x0 = ME_X if mine else PEER_X
+        xr = x0 + (ME_COLS if mine else PEER_COLS) * CW
+        tft.fill_rect(0, y, width, CH, bg)
+        tft.fill_rect(ME_BAR_X if mine else 0, y, 2, CH, fg)
+        if kind == K_HDR:
+            _sd(ui, text, x0, y + 2, dim, bg)
+        elif tile:
+            _tile(ui, r, x0, y, fg, bg, expired)
+        else:
+            tft.text(ui.font, ui._tb(text), x0, y, fg, bg)
+        x = xr
+        if kind == K_INLINE and extra:
+            x -= len(extra) * SW
+            _sd(ui, extra, x, y + 2, dim, bg)
+            x -= 4
+        if status and kind != K_BOT:
+            mk = _MARKS[status]
+            tft.text(ui.font, ui._tb(mk), x - len(mk) * CW, y, fg, bg)
+        if flags & F_LAST:
+            tft.fill_rect(0, y + CH - 1, width, 1, dim)
+    ui._visible_image_lines = vimg
+    ui._visible_audio_lines = vaud
+    ui._visible_msg_lines = vmsg
+
+    track = nrows * CH
+    if total > nrows:
+        bar_h = max(6, track * nrows // total)
+        bar_y = CHAT_Y + (max_scroll - ui.chat_scroll) * (track - bar_h) // max(1, max_scroll)
+        sk = str(bar_y) + ":" + str(bar_h)
+    else:
+        sk = "none"
+    if ui._cache[_u.FOOT_SLOT] != sk:
+        ui._cache[_u.FOOT_SLOT] = sk
+        tft.fill_rect(_u.SBAR_X, CHAT_Y, W - _u.SBAR_X, track, paper)
+        if total > nrows:
+            tft.fill_rect(_u.SBAR_X, bar_y, _u.SBAR_W, bar_h, ui.DIM_CYAN)
