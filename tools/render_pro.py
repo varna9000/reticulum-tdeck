@@ -339,6 +339,19 @@ def scene_misc(out):
     g.draw()
     t.png(os.path.join(out, "find.png"))
     g, t = mk()
+    g.state = ui.STATE_SETTINGS
+    g._settings_page = ui._SET_WIFI_SCAN
+    g._wifi_networks = [("homenet", -41), ("A-rather-long-network-name-indeed", -67), ("cafe", -80)]
+    g._settings_idx = 1
+    g.draw()
+    t.png(os.path.join(out, "wifi_scan.png"))
+    g, t = mk()
+    g.state = ui.STATE_SHELL
+    g._shell_menu = True
+    g._shell_menu_idx = 9
+    g.draw()
+    t.png(os.path.join(out, "shell_menu_end.png"))
+    g, t = mk()
     g.node_name = "Varna-Pro"
     g._bl = None
     g.unread = {b"a" * 16: 3}
@@ -363,4 +376,4 @@ if __name__ == "__main__":
     scene_setup(out)
     scene_rrc(out)
     scene_misc(out)
-    print("wrote 21 PNGs to", out)
+    print("wrote 23 PNGs to", out)
