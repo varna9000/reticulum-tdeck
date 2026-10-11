@@ -18,6 +18,8 @@ _PAGE = _u.BODY_ROWS - 2
 PENDING_MAX_MS = 1500    # how long a redraw may stay "pending" before taps count again
 DRAG_HOLD_MS = 300       # a drag's redraw waits this long after DOWN for the finger to lift
 _STAMP_MAX_AGE = 1 << 28 # ticks_diff is only valid within 2**29 ms (~6 days)
+_SWIPE_BACK_STATES = (_u.STATE_CHAT, _u.STATE_BROWSER, _u.STATE_IMAGE, _u.STATE_SHELL,
+                      _u.STATE_RRC_ROOMS, _u.STATE_RRC_CHAT)
 _drag_acc = [None, 0]    # [stroke t_down, 16 px steps not yet turned into rows]
 
 
@@ -661,7 +663,15 @@ def handle(ui, g, changed_ms):
             return True
         return _drag(ui, n * _PAGE)
     if kind == SWIPE:
-        return _swipe(ui, n, y)
+        if _swipe(ui, n, y):
+            return True
+        # Rightward, on a screen with no other use for it: back, wherever
+        # it began. The edge band is 5 mm and a thumb misses it. Setup and
+        # the node list keep their own swipes; a recording is cancelled
+        # only from the edge.
+        if n > 0 and ui.state in _SWIPE_BACK_STATES:
+            return _back(ui, False)
+        return False
     if kind == BACK:
         if _pro_list(ui) and ui._sheet is not None:
             return _u._pro.sheet_close(ui)

@@ -1455,7 +1455,32 @@ def test_touch_is_sampled_during_a_refresh():
           "_touch_backlog" in service and service.index("_touch_backlog") < service.index("touch.service("))
 
 
+def test_a_rightward_swipe_is_back_where_it_means_nothing_else():
+    # Captured on the deck 2026-10-11: strokes starting at x=28 were SWIPEs,
+    # 4 px outside the 24 px edge band, and did nothing in a chat. "Back"
+    # worked only from the bezel.
+    print("swipe right = back")
+    g = mkchat()
+    seen = keys_pressed(g)
+    check("chat: a rightward swipe from mid-screen goes back",
+          touch_ui.handle(g, (SWIPE, 100, 150, 1, 200000), 0) is True and seen == [b'\x1b'], repr(seen))
+    del seen[:]
+    check("chat: a leftward one does not", touch_ui.handle(g, (SWIPE, 150, 150, -1, 200000), 0) is False and seen == [])
+    g.cmd_buf = bytearray(b"draft")
+    check("chat with a draft: still nothing is thrown away",
+          touch_ui.handle(g, (SWIPE, 100, 150, 1, 200000), 0) is False and seen == [])
+    g = mkbrowser()
+    calls = []
+    g._browser_back = lambda: calls.append("back")
+    check("browser: one page back", touch_ui.handle(g, (SWIPE, 100, 150, 1, 200000), 0) is True and calls == ["back"], repr(calls))
+    g = mkui(ui.STATE_RECORDING)
+    seen = keys_pressed(g)
+    check("recording: only the edge swipe cancels a clip",
+          touch_ui.handle(g, (SWIPE, 100, 150, 1, 200000), 0) is False and seen == [], repr(seen))
+
+
 if __name__ == "__main__":
+    test_a_rightward_swipe_is_back_where_it_means_nothing_else()
     test_drag_holds_the_redraw_until_the_finger_lifts()
     test_touch_is_sampled_during_a_refresh()
     test_geometry_is_the_pros()
