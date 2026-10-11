@@ -630,7 +630,7 @@ def test_setup():
     check("WiFi while connected: the first tap is accepted", tap(g, 100, srow(0)) is True and g._settings_idx == 0)
     settle(g)
     check("...but only selects (a click there disconnects)", seen == [], repr(seen))
-    tap(g, 100, srow(0))
+    tap(g, 100, srow(0), t=300000)
     settle(g)
     check("a second tap on it acts", seen == [b'\r'], repr(seen))
     g = mksetup(idx=3)
@@ -1126,6 +1126,92 @@ def test_chat_layout_key_at_the_history_cap():
     g._build_chat_lines = lambda: [None] * 6
     check("the same messages taking another number of rows is a new layout too", touch_ui.layout_key(g) != k1)
 
+
+def test_setup_guards():
+    print("review: Setup one-tap guards")
+    # Disconnecting WiFi or TCP tears the session down and clears every chat:
+    # it always takes a tap that selects and a second that confirms, however
+    # the row came to be selected (Setup opens with WiFi selected).
+    g = mksetup(idx=0)
+    g._wifi_connected = True
+    seen = keys_pressed(g)
+    check("Setup just opened, WiFi connected: one tap on WiFi does not disconnect", tap(g, 100, srow(0)) is True)
+    settle(g)
+    check("...no click was sent", seen == [], repr(seen))
+    tap(g, 100, srow(0), t=300000)
+    settle(g)
+    check("the confirming tap acts", seen == [b'\r'], repr(seen))
+    g = mksetup(idx=0)
+    g._wifi_connected = True
+    seen = keys_pressed(g)
+    tap(g, 100, srow(0))
+    settle(g)
+    tap(g, 100, srow(5), t=300000)
+    settle(g)
+    del seen[:]
+    tap(g, 100, srow(0), t=400000)
+    settle(g)
+    check("a tap elsewhere in between disarms it", seen == [], repr(seen))
+    g = mksetup(idx=5)
+    g._wifi_connected = True
+    g._tcp_enabled = True
+    seen = keys_pressed(g)
+    tap(g, 100, srow(1))
+    settle(g)
+    check("TCP while on is the same teardown: first tap only selects", g._settings_idx == 1 and seen == [], repr(seen))
+    tap(g, 100, srow(1), t=300000)
+    settle(g)
+    check("...second tap acts", seen == [b'\r'], repr(seen))
+    g = mksetup(idx=5)
+    g._wifi_connected = True
+    seen = keys_pressed(g)
+    tap(g, 100, srow(1))
+    settle(g)
+    check("TCP while off opens its host page on one tap", seen == [b'\r'], repr(seen))
+    g = mksetup(idx=5)
+    g.lora_online = True
+    seen = keys_pressed(g)
+    tap(g, 100, srow(3))
+    settle(g)
+    tap(g, 100, srow(3), t=300000)
+    settle(g)
+    check("LoRa while online: a tap selects and never resets a healthy radio", g._settings_idx == 3 and seen == [], repr(seen))
+    g = mksetup(idx=5)
+    g.lora_online = False
+    seen = keys_pressed(g)
+    tap(g, 100, srow(3))
+    settle(g)
+    check("LoRa while offline: one tap resets", seen == [b'\r'], repr(seen))
+    g = mksetup(idx=5)
+    k0 = touch_ui.layout_key(g)
+    tap(g, 100, srow(5))
+    check("an acting tap is a layout change, so a tap during its refresh is dropped", touch_ui.layout_key(g) != k0)
+    k1 = touch_ui.layout_key(g)
+    g._wifi_connected = True
+    check("WiFi coming up behind the screen is one too", touch_ui.layout_key(g) != k1)
+    g = mksetup(idx=0)
+    g._wifi_connected = True
+    g._draw_settings_bottom_bar()
+    seen = keys_pressed(g)
+    check("the footer's (CLICK) hint is dead on this page: it would act on a row the finger is not on",
+          tap(g, 50, 300) is False and tap(g, 50, 312, t=300000) is False)
+    settle(g)
+    check("...nothing clicked", seen == [], repr(seen))
+    check("(BKSP)back still works", tap(g, 220, 312, t=400000) is True and seen == [b'\x08'], repr(seen))
+    g = mksetup(idx=0)
+    adj = []
+    g._settings_adjust = lambda d: adj.append(d)
+    seen = keys_pressed(g)
+    check("a swipe on a selected row with nothing to step is not swallowed",
+          touch_ui.handle(g, (SWIPE, 60, srow(0), 1, 200000), 0) is False and adj == [])
+    check("...so an edge swipe starting on it still goes back",
+          touch_ui.handle(g, (BACK, 5, srow(0), 0, 200000), 0) is True and seen == [b'\x1b'] and adj == [], repr(seen))
+    g = mksetup(idx=11, scroll=6)
+    adj = []
+    g._settings_adjust = lambda d: adj.append(d)
+    check("a swipe finds the selected row in a scrolled window (Time zone at row 5)",
+          touch_ui.handle(g, (SWIPE, 60, srow(5), -1, 200000), 0) is True and adj == [-1], repr(adj))
+
 if __name__ == "__main__":
     test_geometry_is_the_pros()
     test_hint_zones_follow_the_hints()
@@ -1171,6 +1257,7 @@ if __name__ == "__main__":
     test_layout_key_sees_a_reorder()
     test_row_edges()
     test_chat_layout_key_at_the_history_cap()
+    test_setup_guards()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

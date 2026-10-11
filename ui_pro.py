@@ -929,8 +929,7 @@ def draw_setup(ui):
         tft.text(ui.font, "< Setup", 4, TAB_Y + 3, ink, paper)
         tft.fill_rect(0, TAB_Y, W, 1, ui.DIM_CYAN)
         tft.fill_rect(0, TAB_Y + TAB_H - 1, W, 1, ink)
-        tft.fill_rect(0, TOOL_Y, W, 1, paper)          # the sub-pages' frame arms end here
-        tft.fill_rect(0, TOOL_Y + 1, W, 1, ui.DIM_CYAN)
+        tft.fill_rect(0, TOOL_Y, W, 2, paper)          # the sub-pages' frame rail and arms end here
         ui._cache[SBAR_SLOT] = ''
     ui._setup_up = True
     items = setup_items(ui)
@@ -972,4 +971,4 @@ def draw_setup(ui):
         tft.fill_rect(_u.SBAR_X, LIST_Y + sc * track // n, _u.SBAR_W, max(6, track * SETUP_ROWS // n), ui.DIM_CYAN)
     if ui._cache[_u.FOOT_SLOT] != "\x03setup":
         ui._cache[_u.FOOT_SLOT] = "\x03setup"
-        ui._draw_settings_bottom_bar()
+        ui._draw_settings_bottom_bar(False)    # back only: rows act under the finger

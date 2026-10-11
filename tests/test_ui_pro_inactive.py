@@ -114,6 +114,11 @@ for _ in range(20):
     if g._settings_idx != seen[-1]:
         seen.append(g._settings_idx)
 check("v1 Setup still walks every row", seen == list(range(ui._SET_MAIN_LAST + 1)), repr(seen))
+for _ in range(20):
+    g._settings_scroll_up()
+    if g._settings_idx != seen[-1]:
+        seen.append(g._settings_idx)
+check("...and back up", seen[ui._SET_MAIN_LAST:] == list(range(ui._SET_MAIN_LAST, -1, -1)), repr(seen))
 g.tft = Rec()
 g._cache = [''] * ui.CACHE_ROWS
 g.draw()

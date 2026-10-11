@@ -37,12 +37,24 @@ def _tap_pro_setup(ui, y):
     if i < 0 or i >= p.SETUP_ROWS:
         return False
     idx = p.SETUP_IDX[min(ui._settings_scroll + i, len(p.SETUP_IDX) - 1)]
-    was = ui._settings_idx
+    armed = getattr(ui, "_setup_armed", -1)
+    ui._setup_armed = -1
     ui._settings_idx = idx
     ui.dirty = True
-    if idx == 0 and ui._wifi_connected and was != 0:
-        return True                        # a click here disconnects: ask for a second tap
-    ui.nav_event("click")                  # one tap acts: the rows are finger-sized
+    if idx == 3 and ui.lora_online:
+        return True                        # a click would reset a healthy radio: select only
+    if (idx == 0 and ui._wifi_connected) or (idx == 1 and ui._tcp_enabled):
+        # A click here drops WiFi/TCP, which also clears every chat. It
+        # takes a tap that selects and a tap that confirms, however the row
+        # came to be selected: Setup opens with WiFi already selected.
+        if armed != idx:
+            ui._setup_armed = idx
+            return True
+    # One tap acts: the rows are finger-sized. The count goes into
+    # layout_key, so a second tap landing in this one's refresh is dropped
+    # instead of toggling the row back.
+    ui._setup_gen = getattr(ui, "_setup_gen", 0) + 1
+    ui.nav_event("click")
     return True
 
 
@@ -98,7 +110,8 @@ def layout_key(ui):
         return (st, ui.browser_path, ui.browser_scroll, ui.browser_cursor)
     if st == _u.STATE_SETTINGS:
         return (st, ui._settings_page, g(ui, "_settings_scroll", 0), g(ui, "_settings_idx", 0),
-                g(ui, "_lora_field", 0))
+                g(ui, "_lora_field", 0), g(ui, "_setup_gen", 0),
+                ui._wifi_connected, ui._tcp_enabled, ui.lora_online)
     if st == _u.STATE_SHELL:
         return (st, ui._shell_menu, g(ui, "_shell_view", 0), g(ui, "_shell_menu_idx", 0))
     if st in (_u.STATE_RRC_ROOMS, _u.STATE_RRC_CHAT):
@@ -203,6 +216,8 @@ def _tap_footer(ui, x):
     if best is None:
         return False
     if best == "click":
+        if _pro_setup(ui):
+            return False              # rows act under the finger there; this would act on another
         ui.nav_event("click")         # NOT Enter: in the shell Enter goes to the remote
         return True
     if ui.state == _u.STATE_SHELL and best == b'\x08':
@@ -481,8 +496,9 @@ def _swipe(ui, d, y):
         if page == _u._SET_MAIN and _u._pro is not None:
             p = _u._pro
             i = (y - p.LIST_Y) // p.ROW_H
-            if i < 0 or i >= p.SETUP_ROWS or ui._settings_scroll + i != p.setup_row(ui):
-                return False               # only the selected row, as below
+            if (i < 0 or i >= p.SETUP_ROWS or ui._settings_scroll + i != p.setup_row(ui)
+                    or ui._settings_idx not in (4, 7, 8, 11)):
+                return False               # only the selected row, and only one with a value to step
             ui._settings_adjust(d)
             return True
         if page == _u._SET_MAIN:

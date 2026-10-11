@@ -1073,8 +1073,9 @@ def test_setup_draw():
     g.draw_settings()
     hd = find(t, "text", "< Setup")
     check("header in the band, normal font", hd is not None and hd[2] == 4 and 20 < hd[3] and hd[3] + 16 <= 41, repr(hd))
-    check("rules close the band and the list", any(c[0] == "rect" and c[2] == 41 and c[3] == 240 and c[4] == 1 for c in t.calls)
-          and any(c[0] == "rect" and c[2] == 299 and c[3] == 240 for c in t.calls))
+    check("a rule closes the band", any(c[0] == "rect" and c[2] == 41 and c[3] == 240 and c[4] == 1 for c in t.calls))
+    check("no second rule under the last row's own (two lines 2 px apart looked like a mistake)",
+          not any(c[0] == "rect" and c[2] == 299 and c[5] != g.BG_DARK for c in t.calls))
     lab = [c for c in texts(t, "small") if c[1] in ("WiFi", "TCP", "Name", "LoRa", "Volume", "Keyboard light", "Announce", "Sleep")]
     check("eight labels in the small font, one per 32 px row", [(c[2], c[3]) for c in lab] == [(16, srow_y(i) + 3) for i in range(8)], repr(lab[:2]))
     v = find(t, "text", "Pro")
@@ -1086,7 +1087,9 @@ def test_setup_draw():
     rules = sorted(c[2] for c in t.calls if c[0] == "rect" and c[4] == 1 and c[3] == ui.SBAR_X)
     check("a rule under every row", rules == [srow_y(i) + 31 for i in range(8)], repr(rules))
     check("a scroll thumb", any(c[0] == "rect" and c[1] == ui.SBAR_X and c[5] == g.DIM_CYAN and c[4] > 1 for c in t.calls))
-    check("the footer bar is ui's own", any(c[0] == "text" and c[1] == "BKSP" and c[3] == ui.INPUT_Y for c in t.calls))
+    check("the footer bar is ui's own, back only", any(c[0] == "text" and c[1] == "BKSP" and c[3] == ui.INPUT_Y for c in t.calls))
+    check("no (CLICK)select hint: rows act under the finger, Enter on the keyboard",
+          not any(c[0] == "text" and c[1] == "CLICK" for c in t.calls) and [z[3] for z in g._hint_zones] == [b'\x08'], repr(g._hint_zones))
     check("no body frame", [c for c in t.calls if c[0] == "rect" and c[3] == 1 and c[4] == 12] == [])
     check("nothing goes through ui._sdraw", texts(t, "big") == [])
     del t.calls[:]
@@ -1139,6 +1142,48 @@ def test_setup_sub_page_round_trip():
     check("...every row", len([c for c in t.calls if c[0] == "rect" and c[1] == 0 and c[3] == ui.SBAR_X and c[4] == 31]) == 8)
     check("...and the line the frame's arms end on", any(c[0] == "rect" and c[2] == 298 and c[3] == 240 and c[5] == g.BG_DARK for c in t.calls))
 
+
+def test_setup_review_gaps():
+    print("review: setup")
+    P = ui_pro
+    g, t = mksetup()
+    g.draw()
+    check("no body frame on the Pro's Setup main page (through the real draw())",
+          [c for c in t.calls if c[0] == "rect" and c[3] == 1 and c[4] == 12] == [])
+    g, t = mksetup()
+    g.my_address = None
+    g.my_identity_hash = None
+    g.my_lxma_uri = None
+    it = P.setup_items(g)
+    check("before the identity loads the hash rows show '?'", it[12][1] == "?" and it[13][1] == "?")
+    g._settings_idx = 14
+    g.draw_settings()
+    check("...and draw", find(t, "small", "?") is not None)
+    g, t = mksetup()
+    g._settings_idx = 9
+    g._settings_scroll = 14              # what a scrolled Radio stats page leaves behind
+    g.draw_settings()
+    check("an inherited scroll past the end is clamped", g._settings_scroll == 6, str(g._settings_scroll))
+    g, t = mksetup()
+    g._settings_idx = 2
+    g.draw_settings()
+    del t.calls[:]
+    g._settings_idx = 3
+    g.draw_settings()
+    inv = sorted(c[2] for c in t.calls if c[0] == "rect" and c[4] == 31)
+    check("moving the selection inside the window repaints the two rows involved", inv == [srow_y(2), srow_y(3)], repr(inv))
+    g, t = mksetup()
+    g._tcp_enabled = True
+    g._tcp_target = "rns.example.org:4242"
+    g._wifi_connected = True
+    g._kbd_bl = True
+    g._auto_announce = True
+    it = P.setup_items(g)
+    check("TCP target, light and announce follow the state", it[1][1] == "rns.example.org:4242" and not it[1][2]
+          and it[5][1] == "ON" and it[6][1] == "AUTO", repr(it[1:7]))
+    c = g._lora_cfg
+    check("LoRa cfg shows frequency, SF and bandwidth", it[10][1] == "%dk SF%d BW%s" % (c["freq_khz"], c["sf"], c["bw"]))
+
 if __name__ == "__main__":
     test_pro_layout_is_active_on_the_pro()
     test_list_window_follows_the_selection()
@@ -1180,6 +1225,7 @@ if __name__ == "__main__":
     test_setup_draw()
     test_setup_window_and_hashes()
     test_setup_sub_page_round_trip()
+    test_setup_review_gaps()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))
