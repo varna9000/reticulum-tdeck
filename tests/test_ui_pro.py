@@ -348,8 +348,9 @@ def test_no_body_frame_on_the_pro_list():
     g._draw_frame()
     check("the old body frame is not drawn over the tab bar and toolbar", t.calls == [], repr(t.calls[:2]))
     g.state = ui.STATE_SETTINGS
+    g._settings_page = ui._SET_RADIO
     g._draw_frame()
-    check("other screens keep it", len(t.calls) > 0)
+    check("other screens keep it (a Setup sub-page here; Setup's main page has its own rules too)", len(t.calls) > 0)
 
 
 # --- Task 4: top bar --------------------------------------------------------------
@@ -990,6 +991,154 @@ def test_chat_status_does_not_reflow():
     else:
         check("an inline row leaves room for the mark and the time", True)
 
+
+# --- piece C: Setup -------------------------------------------------------------
+
+def mksetup():
+    g, t = mkui()
+    g.state = ui.STATE_SETTINGS
+    g._prev_state = ui.STATE_SETTINGS
+    g._settings_page = ui._SET_MAIN
+    g._settings_idx = 0
+    g._settings_scroll = 0
+    g.node_name = "Pro"
+    g.my_address = "93481a35" * 4
+    g.my_identity_hash = "0123456789abcdef" * 2
+    g.my_lxma_uri = "lxma://x"
+    g.lora_online = True
+    g._cache = [''] * ui.CACHE_ROWS
+    return g, t
+
+
+def srow_y(i):
+    return ui_pro.LIST_Y + 32 * i
+
+
+def test_setup_items():
+    print("setup: rows")
+    P = ui_pro
+    g, t = mksetup()
+    it = P.setup_items(g)
+    check("fourteen rows, one per shown idx", len(it) == 14 == len(P.SETUP_IDX) and P.SETUP_IDX == (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14))
+    check("labels", [x[0] for x in it] == ["WiFi", "TCP", "Name", "LoRa", "Volume", "Keyboard light", "Announce", "Sleep",
+                                           "Wake", "Radio stats", "LoRa cfg", "Time zone", "Addr", "Id"], repr([x[0] for x in it]))
+    check("offline WiFi: says so and opens the scan", it[0][1] == "not connected" and it[0][2] is True, repr(it[0]))
+    check("TCP off without WiFi: no sub-page", it[1][1] == "OFF" and not it[1][2])
+    check("name and its marker", it[2][1] == "Pro" and it[2][2])
+    check("LoRa online", it[3][1] == "Online" and not it[3][2])
+    check("volume bar", it[4][1] == "[" + "#" * g._volume + "." * (10 - g._volume) + "] " + str(g._volume))
+    check("sleep / wake / tz come from ui's own labels", it[7][1] == g._timeout_label() and it[8][1] == g._wake_label()
+          and it[11][1] == ui._tz_label(g._tz_min))
+    check("radio stats and LoRa cfg open pages", it[9][2] and it[10][2] and "SF" in it[10][1])
+    check("the hashes are whole and small", it[12][1] == g.my_address and it[12][3] and it[13][1] == g.my_identity_hash and it[13][3])
+    check("Addr opens its QR when there is a contact URI", it[12][2] is True and not it[13][2])
+    g._wifi_connected = True
+    g._wifi_ssid_current = "home"
+    g._wifi_ip = "10.0.0.7"
+    g.lora_online = False
+    g.my_lxma_uri = None
+    it = P.setup_items(g)
+    check("connected WiFi: ssid [ip], no marker (a click disconnects)", it[0][1] == "home [10.0.0.7]" and not it[0][2], repr(it[0]))
+    check("TCP then offers its host page", it[1][2] is True)
+    check("LoRa offline says what selecting does", it[3][1].startswith("OFFLINE") and "reset" in it[3][1])
+    check("no URI, no QR", not it[12][2])
+
+
+def test_setup_step():
+    P = ui_pro
+    g, t = mksetup()
+    seen = [0]
+    for _ in range(20):
+        g._settings_scroll_down()
+        if g._settings_idx != seen[-1]:
+            seen.append(g._settings_idx)
+    check("down walks the shown rows, skipping the hash continuation rows, and stops", seen == list(P.SETUP_IDX), repr(seen))
+    seen = [g._settings_idx]
+    for _ in range(20):
+        g._settings_scroll_up()
+        if g._settings_idx != seen[-1]:
+            seen.append(g._settings_idx)
+    check("up walks them back", seen == list(reversed(P.SETUP_IDX)), repr(seen))
+    g._settings_idx = 13
+    check("an idx the Pro does not show counts as the row before it", P.setup_row(g) == 12)
+    g._settings_scroll_down()
+    check("...and steps on from there", g._settings_idx == 14)
+
+
+def test_setup_draw():
+    print("setup: drawing")
+    P = ui_pro
+    g, t = mksetup()
+    g._settings_idx = 4
+    g.draw_settings()
+    hd = find(t, "text", "< Setup")
+    check("header in the band, normal font", hd is not None and hd[2] == 4 and 20 < hd[3] and hd[3] + 16 <= 41, repr(hd))
+    check("rules close the band and the list", any(c[0] == "rect" and c[2] == 41 and c[3] == 240 and c[4] == 1 for c in t.calls)
+          and any(c[0] == "rect" and c[2] == 299 and c[3] == 240 for c in t.calls))
+    lab = [c for c in texts(t, "small") if c[1] in ("WiFi", "TCP", "Name", "LoRa", "Volume", "Keyboard light", "Announce", "Sleep")]
+    check("eight labels in the small font, one per 32 px row", [(c[2], c[3]) for c in lab] == [(16, srow_y(i) + 3) for i in range(8)], repr(lab[:2]))
+    v = find(t, "text", "Pro")
+    check("the value under its label in the main font", v is not None and v[2] == 16 and v[3] == srow_y(2) + 15, repr(v))
+    sel = [c for c in texts(t) if c[1].startswith("[#")]
+    check("the selected row is inverted", len(sel) == 1 and sel[0][4] == g.BG_DARK and sel[0][5] == g.SEL_BG and sel[0][3] == srow_y(4) + 15, repr(sel))
+    marks = sorted(c[3] // 1 for c in t.calls if c[0] == "icon" and c[1] is ui._SUBPAGE)
+    check("sub-page markers on WiFi (offline) and Name", len(marks) == 2 and srow_y(0) < marks[0] < srow_y(1) and srow_y(2) < marks[1] < srow_y(3), repr(marks))
+    rules = sorted(c[2] for c in t.calls if c[0] == "rect" and c[4] == 1 and c[3] == ui.SBAR_X)
+    check("a rule under every row", rules == [srow_y(i) + 31 for i in range(8)], repr(rules))
+    check("a scroll thumb", any(c[0] == "rect" and c[1] == ui.SBAR_X and c[5] == g.DIM_CYAN and c[4] > 1 for c in t.calls))
+    check("the footer bar is ui's own", any(c[0] == "text" and c[1] == "BKSP" and c[3] == ui.INPUT_Y for c in t.calls))
+    check("no body frame", [c for c in t.calls if c[0] == "rect" and c[3] == 1 and c[4] == 12] == [])
+    check("nothing goes through ui._sdraw", texts(t, "big") == [])
+    del t.calls[:]
+    g.draw_settings()
+    check("a second draw draws nothing", t.calls == [], repr(t.calls[:3]))
+    g._volume = (g._volume + 1) % 10
+    g.draw_settings()
+    ys = set(c[3] for c in texts(t)) | set(c[3] for c in texts(t, "small"))
+    check("a changed value redraws only its row", ys and all(srow_y(4) <= y < srow_y(5) for y in ys), repr(sorted(ys)))
+
+
+def test_setup_window_and_hashes():
+    P = ui_pro
+    g, t = mksetup()
+    g._settings_idx = 14
+    g.draw_settings()
+    check("the window follows the selection to the last row", g._settings_scroll == 6, str(g._settings_scroll))
+    a = find(t, "small", g.my_address)
+    i = find(t, "small", g.my_identity_hash)
+    check("both hashes whole, on one small-font line each", a is not None and i is not None and a[3] == srow_y(6) + 17 and i[3] == srow_y(7) + 17
+          and a[2] + 32 * P.SW <= 216, repr((a, i)))
+    check("the Id row is the selected one", i[4] == g.BG_DARK and i[5] == g.SEL_BG)
+    g._settings_idx = 2
+    g._settings_scroll = 6
+    g.draw_settings()
+    check("a selection above the window pulls it up", g._settings_scroll == 2, str(g._settings_scroll))
+    g._settings_idx = 12
+    g._settings_scroll = 0              # what closing the QR page leaves
+    g.draw_settings()
+    check("a jump from a closing sub-page is followed", g._settings_scroll == 5, str(g._settings_scroll))
+
+
+def test_setup_sub_page_round_trip():
+    g, t = mksetup()
+    g.draw_settings()
+    del t.calls[:]
+    g._settings_page = ui._SET_RADIO
+    g._settings_scroll = 0
+    g._cache = [''] * ui.CACHE_ROWS
+    g.draw()
+    check("leaving for a sub-page clears the header band's top lines (the old page's rows start at y 26)",
+          any(c[0] == "rect" and c[1] == 0 and c[2] <= 21 and c[2] + c[4] >= 26 and c[3] == 240 and c[5] == g.BG_DARK for c in t.calls))
+    check("the sub-page has the body frame", len([c for c in t.calls if c[0] == "rect" and c[3] == 1 and c[4] == 12]) == 4)
+    del t.calls[:]
+    g._settings_page = ui._SET_MAIN
+    g._settings_idx = 9
+    g._cache = [''] * ui.CACHE_ROWS
+    g.draw()
+    check("coming back repaints the band", find(t, "text", "< Setup") is not None)
+    check("...every row", len([c for c in t.calls if c[0] == "rect" and c[1] == 0 and c[3] == ui.SBAR_X and c[4] == 31]) == 8)
+    check("...and the line the frame's arms end on", any(c[0] == "rect" and c[2] == 298 and c[3] == 240 and c[5] == g.BG_DARK for c in t.calls))
+
 if __name__ == "__main__":
     test_pro_layout_is_active_on_the_pro()
     test_list_window_follows_the_selection()
@@ -1026,6 +1175,11 @@ if __name__ == "__main__":
     test_chat_tile_cut_by_the_window()
     test_recording_screen()
     test_chat_status_does_not_reflow()
+    test_setup_items()
+    test_setup_step()
+    test_setup_draw()
+    test_setup_window_and_hashes()
+    test_setup_sub_page_round_trip()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

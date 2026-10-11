@@ -104,6 +104,20 @@ for st, nm in ((ui.STATE_CHAT, "chat"), (ui.STATE_RECORDING, "recording")):
     arms = [r for r in g.tft.rects if r[2] == 1 and r[3] == 12]
     rails = [r for r in g.tft.rects if r[0] == 0 and r[2] == ui.SCREEN_W and r[3] == 1 and r[1] == ui.NAV_H]
     check("v1 %s still has its body frame" % nm, len(arms) == 4 and len(rails) >= 1, "%d %d" % (len(arms), len(rails)))
+g.tft = T()
+g.state = ui.STATE_SETTINGS
+g._settings_page = ui._SET_MAIN
+g._settings_idx = 0
+seen = [0]
+for _ in range(20):
+    g._settings_scroll_down()
+    if g._settings_idx != seen[-1]:
+        seen.append(g._settings_idx)
+check("v1 Setup still walks every row", seen == list(range(ui._SET_MAIN_LAST + 1)), repr(seen))
+g.tft = Rec()
+g._cache = [''] * ui.CACHE_ROWS
+g.draw()
+check("v1 Setup still has its body frame", len([r for r in g.tft.rects if r[2] == 1 and r[3] == 12]) == 4)
 print()
 if fails:
     print("%d FAILED" % len(fails))

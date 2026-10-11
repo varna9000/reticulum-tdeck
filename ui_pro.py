@@ -850,3 +850,126 @@ def draw_recording(ui):
     s = "BKSP=cancel" if warm else "Enter=send  BKSP=cancel"
     tft.fill_rect(0, 299, W, 1, ui.DIM_CYAN)
     tft.text(ui.font, _u._pad(s.center(_u.COLS)), 0, _u.INPUT_Y, ui.DIM_CYAN, paper)
+
+
+# --- Setup main page -----------------------------------------------------------
+# Two-line rows a finger can hit: the label small, the value under it. ui.py
+# keeps its own row numbering (_settings_idx: its click handler and the
+# "back to row N" jumps use it); on a 30-column screen that numbering spends
+# rows 13 and 15 on the second halves of the two hashes, which this layout
+# shows whole on one small-font line, so those two are never selected here.
+
+SETUP_IDX = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14)
+SETUP_ROWS = 8
+
+
+def setup_row(ui):
+    """The shown row of ui._settings_idx (an idx with no row of its own
+    counts as the row before it)."""
+    idx = ui._settings_idx
+    r = 0
+    for k in range(len(SETUP_IDX)):
+        if SETUP_IDX[k] <= idx:
+            r = k
+    return r
+
+
+def setup_step(ui, d):
+    r = setup_row(ui)
+    if 0 <= r + d < len(SETUP_IDX):
+        r += d
+    ui._settings_idx = SETUP_IDX[r]
+
+
+def setup_items(ui):
+    """(label, value, opens a sub-page, value in the small font), in
+    SETUP_IDX order. The values are ui._draw_settings_main's."""
+    if ui._wifi_connected:
+        wifi = ui._wifi_ssid_current + (" [" + ui._wifi_ip + "]" if ui._wifi_ip else "")
+    else:
+        wifi = "not connected"
+    v = ui._volume
+    c = ui._lora_cfg
+    return (
+        ("WiFi", wifi, not ui._wifi_connected, False),
+        ("TCP", ui._tcp_target if ui._tcp_enabled else "OFF",
+         bool(ui._wifi_connected and not ui._tcp_enabled), False),
+        ("Name", ui.node_name, True, False),
+        ("LoRa", "Online" if ui.lora_online else "OFFLINE - select to reset", False, False),
+        ("Volume", "[" + "#" * v + "." * (10 - v) + "] " + str(v), False, False),
+        ("Keyboard light", "ON" if ui._kbd_bl else "OFF", False, False),
+        ("Announce", "AUTO" if ui._auto_announce else "manual", False, False),
+        ("Sleep", ui._timeout_label(), False, False),
+        ("Wake", ui._wake_label(), False, False),
+        ("Radio stats", "view", True, False),
+        ("LoRa cfg", "%dk SF%d BW%s" % (c["freq_khz"], c["sf"], c["bw"]), True, False),
+        ("Time zone", _u._tz_label(ui._tz_min), False, False),
+        ("Addr", ui.my_address or "?", bool(ui.my_lxma_uri), True),
+        ("Id", ui.my_identity_hash or "?", False, True),
+    )
+
+
+def settings_page(ui):
+    """Called before any Setup page draws. The sub-pages keep ui.py's layout,
+    whose first row starts at y 26: when one replaces the main page, clear
+    what this layout's header band left above that."""
+    if ui._setup_up and ui._settings_page != _u._SET_MAIN:
+        ui._setup_up = False
+        ui.tft.fill_rect(0, TAB_Y, _u.SCREEN_W, _u.BODY_Y - TAB_Y, ui.BG_DARK)
+
+
+def draw_setup(ui):
+    tft = ui.tft
+    paper = ui.BG_DARK
+    ink = ui.NEON_CYAN
+    W = _u.SCREEN_W
+    if ui._cache[1] != "S<":
+        ui._cache[1] = "S<"
+        tft.fill_rect(0, TAB_Y, W, TAB_H, paper)
+        tft.text(ui.font, "< Setup", 4, TAB_Y + 3, ink, paper)
+        tft.fill_rect(0, TAB_Y, W, 1, ui.DIM_CYAN)
+        tft.fill_rect(0, TAB_Y + TAB_H - 1, W, 1, ink)
+        tft.fill_rect(0, TOOL_Y, W, 1, paper)          # the sub-pages' frame arms end here
+        tft.fill_rect(0, TOOL_Y + 1, W, 1, ui.DIM_CYAN)
+        ui._cache[SBAR_SLOT] = ''
+    ui._setup_up = True
+    items = setup_items(ui)
+    n = len(items)
+    sel = setup_row(ui)
+    sc = ui._settings_scroll
+    if sel < sc:
+        sc = sel
+    elif sel >= sc + SETUP_ROWS:
+        sc = sel - SETUP_ROWS + 1
+    sc = max(0, min(sc, n - SETUP_ROWS))
+    ui._settings_scroll = sc
+    width = _u.SBAR_X
+    for i in range(SETUP_ROWS):
+        y = LIST_Y + i * ROW_H
+        label, value, sub, small = items[sc + i]
+        on = sc + i == sel
+        ck = ("\x01" if on else "") + label + "\x00" + value + ("\x02" if sub else "")
+        if ui._cache[i + 2] == ck:
+            continue
+        ui._cache[i + 2] = ck
+        bg = ui.SEL_BG if on else paper
+        fg = paper if on else ink
+        dim = paper if on else ui.DIM_CYAN
+        tft.fill_rect(0, y, width, ROW_H - 1, bg)
+        tft.fill_rect(0, y + ROW_H - 1, width, 1, ui.DIM_CYAN)
+        _sd(ui, label, MARGIN, y + 3, dim, bg)
+        if small:
+            _sd(ui, value[:33], MARGIN, y + 17, fg, bg)
+        elif value:
+            tft.text(ui.font, ui._tb(value[:25 if sub else 27]), MARGIN, y + 15, fg, bg)
+        if sub:
+            ui._bitmap(_u._SUBPAGE, 222, y + (ROW_H - _u._SUBPAGE[1]) // 2, fg)
+    ck = (n, sc)
+    if ui._cache[SBAR_SLOT] != ck:
+        ui._cache[SBAR_SLOT] = ck
+        track = SETUP_ROWS * ROW_H
+        tft.fill_rect(_u.SBAR_X, LIST_Y, W - _u.SBAR_X, track, paper)
+        tft.fill_rect(_u.SBAR_X, LIST_Y + sc * track // n, _u.SBAR_W, max(6, track * SETUP_ROWS // n), ui.DIM_CYAN)
+    if ui._cache[_u.FOOT_SLOT] != "\x03setup":
+        ui._cache[_u.FOOT_SLOT] = "\x03setup"
+        ui._draw_settings_bottom_bar()

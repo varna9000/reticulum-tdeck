@@ -647,6 +647,7 @@ class UI:
         self._sheet_scroll = 0
         self._tools_up = False        # ui_pro: its toolbar is on the panel
         self._chat_nvis = BODY_ROWS - 1   # chat rows on screen (ui_pro shows fewer: gaps)
+        self._setup_up = False        # ui_pro: its Setup main page is on the panel
         self._cache = [''] * CACHE_ROWS
         self._nav_bat_cache = ''
         self._nav_mid_cache = ''
@@ -1298,8 +1299,9 @@ class UI:
         """Neon body frame — top/bottom rails + short corner arms. Drawn last
         each redraw (over content) so it stays crisp on every screen and the
         corners never get chewed by full-width rows or the scrollbar."""
-        if _pro is not None and self.state in (STATE_NODES, STATE_CHAT, STATE_RECORDING):
-            return      # the Pro's list, chat and recording screens have their own rules
+        if _pro is not None and (self.state in (STATE_NODES, STATE_CHAT, STATE_RECORDING)
+                                 or (self.state == STATE_SETTINGS and self._settings_page == _SET_MAIN)):
+            return      # the Pro's list, chat, recording and Setup screens have their own rules
         _cx = self.NEON_CYAN
         _L = 12  # corner arm length
         _top = NAV_H                  # right under the navbar, no gap
@@ -4077,6 +4079,8 @@ class UI:
     # --- Settings drawing ---
 
     def draw_settings(self):
+        if _pro is not None:
+            _pro.settings_page(self)
         if self._settings_page == _SET_MAIN:
             self._draw_settings_main()
         elif self._settings_page == _SET_WIFI_SCAN:
@@ -4125,6 +4129,8 @@ class UI:
         return ("msgs", "all", "never")[self._wake_mode]
 
     def _draw_settings_main(self):
+        if _pro is not None:
+            return _pro.draw_setup(self)
         self._draw_row_cached(1, "Setup", BODY_Y, self.NEON_CYAN)
 
         if self._wifi_connected:
@@ -4804,7 +4810,9 @@ class UI:
 
     def _settings_scroll_up(self):
         if self._settings_page == _SET_MAIN:
-            if self._settings_idx > 0:
+            if _pro is not None:
+                _pro.setup_step(self, -1)
+            elif self._settings_idx > 0:
                 self._settings_idx -= 1
         elif self._settings_page == _SET_WIFI_SCAN:
             if self._settings_idx > 0:
@@ -4823,7 +4831,9 @@ class UI:
         if self._settings_page == _SET_MAIN:
             # WiFi TCP Name LoRa Vol KbBL Announce Sleep Wake Radio LoRaCfg
             # TimeZone Addr Id
-            if self._settings_idx < _SET_MAIN_LAST:
+            if _pro is not None:
+                _pro.setup_step(self, 1)
+            elif self._settings_idx < _SET_MAIN_LAST:
                 self._settings_idx += 1
         elif self._settings_page == _SET_WIFI_SCAN:
             if self._settings_idx < len(self._wifi_networks) - 1:
