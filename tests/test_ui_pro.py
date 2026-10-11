@@ -84,11 +84,6 @@ class RecTFT:
         return lambda *a, **k: None
 
 
-class _FakeBold:
-    def draw(self, tft, slots, x, y, fg, bg):
-        tft.calls.append(("bold", bytes(slots).decode("latin-1"), x, y, fg, bg))
-
-
 class _FakeSmall:
     """Stands in for ui._SmallText(spleen_6x12): records instead of blitting."""
     w = 6
@@ -111,7 +106,6 @@ def mkui():
     # ui_pro is recorded as "big" so a test can see it.
     g._sdraw = lambda s, x, y, fg, bg: t.calls.append(("big", s, x, y, fg, bg))
     ui_pro._small = _FakeSmall()
-    ui_pro._boldf = _FakeBold()
     g._bitmap = lambda icon, x, y, c: t.calls.append(("icon", icon, x, y, c))
     return g, t
 
@@ -760,8 +754,8 @@ def test_chat_header_and_rows():
     say(g, False, "hey, are you on the mesh tonight? asking for a friend", at=0)   # rows 0..2
     say(g, True, "yes", at=30, status=2)                                           # row 3
     ui_pro.draw_chat(g)
-    hd = find(t, "bold", "< Alex")
-    check("header: bold '< name' in the band under the top bar", hd is not None and 20 < hd[3] and hd[3] + 16 <= 41, repr(hd))
+    hd = find(t, "text", "< Alex")
+    check("header: '< name' in the normal font (bold was tried on the panel and rejected), in the band under the top bar", hd is not None and 20 < hd[3] and hd[3] + 16 <= 41, repr(hd))
     hs = find(t, "small", "[" + PEER.hex()[:8] + "]")
     check("header: hash in the small font, right-aligned", hs is not None and hs[2] + 10 * P.SW == 232, repr(hs))
     check("header: a rule closes the band", any(c[0] == "rect" and c[2] == 41 and c[3] == 240 and c[4] == 1 for c in t.calls))
@@ -783,6 +777,7 @@ def test_chat_header_and_rows():
     check("a rule under the last row of each block only", rules == [crow_y(2) + 15, crow_y(3) + 15], repr(rules))
     check("rows below the thread are blanked", any(c[0] == "rect" and c[2] == crow_y(4) and c[4] == 16 for c in t.calls))
     check("nothing goes through ui._sdraw", texts(t, "big") == [])
+    check("there is no bold text path any more", not hasattr(ui_pro, "_bold") and not hasattr(ui_pro, "_Bold"))
     check("every row maps to its message", sorted(g._visible_msg_lines) == [0, 1, 2, 3])
     del t.calls[:]
     ui_pro.draw_chat(g)
@@ -909,8 +904,8 @@ def test_recording_screen():
     g._rec_warm_secs = 0
     g._cache = [''] * ui.CACHE_ROWS
     ui_pro.draw_recording(g)
-    ti = find(t, "bold", "* Recording *")
-    check("title, bold, in the send half", ti is not None and 42 <= ti[3] < 70, repr(ti))
+    ti = find(t, "text", "* Recording *")
+    check("title in the send half", ti is not None and 42 <= ti[3] < 70, repr(ti))
     s = find(t, "text", "tap to SEND")
     c = find(t, "text", "tap to CANCEL")
     check("send above the divider, cancel below", s is not None and c is not None and s[3] + 16 < P.REC_MID < c[3], repr((s, c)))
@@ -926,12 +921,12 @@ def test_recording_screen():
     g._rec_warming = True
     g._rec_warm_secs = 2
     ui_pro.draw_recording(g)
-    check("warming: the title counts", find(t, "bold", "Warming mic... 2s") is not None)
+    check("warming: the title counts", find(t, "text", "Warming mic... 2s") is not None)
     check("warming: nothing to send yet", find(t, "text", "tap to SEND") is None and find(t, "text", "tap to CANCEL") is not None)
     del t.calls[:]
     g._rec_warm_secs = 3
     ui_pro.draw_recording(g)
-    check("a new second redraws the title only", find(t, "bold", "Warming mic... 3s") is not None and find(t, "text", "tap to CANCEL") is None)
+    check("a new second redraws the title only", find(t, "text", "Warming mic... 3s") is not None and find(t, "text", "tap to CANCEL") is None)
 
 
 

@@ -76,53 +76,6 @@ def _sd(ui, s, x, y, fg, bg):
         ui._sdraw(s, x, y, fg, bg)
 
 
-_boldf = None      # _Bold(main font), made on first use
-
-
-class _Bold(_u._SmallText):
-    """The main font struck twice, one pixel apart. The shim's text() paints
-    whole cells, so a second text() call would erase the first; here both
-    strikes land in one framebuf (the second transparent) and go out in one
-    blit."""
-
-    def draw(self, tft, slots, x, y, fg, bg):
-        n = min(len(slots), (_u.SCREEN_W - 1 - x) // self.w)
-        if n <= 0:
-            return
-        w = n * self.w + 1
-        fbm = self._fbm
-        fb = fbm.FrameBuffer(self._buf, w, self.h, fbm.RGB565)
-        b = _u._sw565(bg)
-        fb.fill(b)
-        self._pal.pixel(0, 0, b)
-        self._pal.pixel(1, 0, _u._sw565(fg))
-        h = self.h
-        for i in range(n):
-            c = slots[i]
-            if c == 0x20:
-                continue
-            g = self._glyphs[c]
-            if g is None:
-                g = fbm.FrameBuffer(self._mv[c * h:(c + 1) * h], self.w, h, fbm.MONO_HLSB)
-                self._glyphs[c] = g
-            fb.blit(g, i * self.w, 0, -1, self._pal)
-            fb.blit(g, i * self.w + 1, 0, b, self._pal)     # key = background: ink only
-        tft.blit_buffer(memoryview(self._buf)[:w * h * 2], x, y, w, h)
-
-
-def _bold(ui, s, x, y, fg, bg):
-    global _boldf
-    if _boldf is None:
-        try:
-            _boldf = _Bold(ui.font)
-        except ImportError:
-            _boldf = False           # host tests without framebuf
-    if _boldf:
-        _boldf.draw(ui.tft, ui._tb(s), x, y, fg, bg)
-    else:
-        ui.tft.text(ui.font, ui._tb(s), x, y, fg, bg)
-
-
 def _info(entry):
     """Hops, RSSI and last-seen: what the old footer showed for the selection."""
     hops = _u._hops(entry["hops"]) + " " if entry.get("hops") else ""
@@ -701,7 +654,7 @@ def draw_chat(ui):
     if ui._cache[1] != ck:
         ui._cache[1] = ck
         tft.fill_rect(0, TAB_Y, W, TAB_H, paper)
-        _bold(ui, "< " + pname, 4, TAB_Y + 3, ink, paper)
+        tft.text(ui.font, ui._tb("< " + pname), 4, TAB_Y + 3, ink, paper)
         _sd(ui, phash, 232 - len(phash) * SW, TAB_Y + 5, ui.DIM_CYAN, paper)
         tft.fill_rect(0, TAB_Y, W, 1, ui.DIM_CYAN)
         tft.fill_rect(0, TAB_Y + TAB_H - 1, W, 1, ink)
@@ -828,7 +781,7 @@ def draw_recording(ui):
     if ui._cache[1] != title:
         ui._cache[1] = title
         tft.fill_rect(0, TAB_Y, W, 44, paper)
-        _bold(ui, title, (W - len(title) * CW) // 2, 46, ink, paper)
+        tft.text(ui.font, title, (W - len(title) * CW) // 2, 46, ink, paper)
     ck = "W" if warm else "R"
     if ui._cache[2] == ck:
         return

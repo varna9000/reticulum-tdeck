@@ -130,11 +130,6 @@ class Small:
         tft.glyphs(self.f, slots, x, y, 1 if lum(fg) > 60 else 0, 1 if lum(bg) > 60 else 0, self.bold)
 
 
-class Bold(Small):
-    f = font8
-    bold = True
-
-
 def mk():
     _clock[0] = 100000
     t = FB()
@@ -147,7 +142,6 @@ def mk():
     g.snr = 7
     g.bat_v = 4.0
     ui_pro._small = Small()
-    ui_pro._boldf = Bold()
     ui._clock_valid = lambda: True
     ui._fmt_clock = lambda: "09:41"
     return g, t
