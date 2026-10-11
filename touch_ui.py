@@ -303,6 +303,23 @@ def _tap_pro_list(ui, x, y):
     return True
 
 
+def _tap_pro_chat(ui, y):
+    """The Pro's chat: tiles are the only tap targets in the body. A tap on
+    text does nothing -- the time is on every block, so a selection would buy
+    a 700 ms refresh and no information."""
+    i = (y - _u._pro.CHAT_Y) // _u.CHAR_H
+    mid = ui._visible_image_lines.get(i)
+    if mid is not None:
+        if (ui.selected_peer, mid) not in ui._image_cache:
+            return False                   # expired: nothing to open
+    elif i not in ui._visible_audio_lines:
+        return False
+    ui.chat_cursor = i
+    ui.dirty = True
+    ui._chat_open_cursor_media()
+    return True
+
+
 def _tap(ui, x, y):
     st = ui.state
     if _pro_list(ui):
@@ -336,6 +353,8 @@ def _tap(ui, x, y):
             ui.handle_key(b's')
             return True
         return _tap_header(ui, x)
+    if st == _u.STATE_CHAT and _u._pro is not None:
+        return _tap_pro_chat(ui, y)
     rows = _rows(ui)
     if rows is not None and rows[0] <= x < rows[1]:
         if _tap_row(ui, rows, y):

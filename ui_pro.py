@@ -681,7 +681,7 @@ def _tile(ui, r, x0, y, fg, bg, expired):
     off = 7 if top else -9           # the icon's 16 rows start 7 px into the tile
     for dx, dy, w in icon[2]:
         yy = dy + off
-        if 0 < yy < h:
+        if 0 <= yy < h:
             tft.fill_rect(x0 + 6 + dx, y + yy, w, 1, fg)
 
 
@@ -794,18 +794,22 @@ def draw_chat(ui):
 
 REC_MID = 178
 
+# Drawn at twice their size (see _bitmap2), so they read from arm's length.
 _SEND = _u._icon((
-    "................##", "..............####", "...........#######", ".........########.", ".......##########.",
-    ".....############.", "...##############.", ".###############..", "...#############..", "......#########...",
-    ".........######...", ".........######...", "..........####....", "..........####....", "...........###....",
-    "...........##.....", "...........##.....", "............#....."))
+    "...........##", ".........####", ".......#####.", ".....#######.", "...########..", ".##########..",
+    "...#######...", "......####...", "......####...", ".......##....", ".......##....", ".......#....."))
 _CROSS = _u._icon((
-    ".#........#.", "###......###", ".###....###.", "..###..###..", "...######...", "....####....",
-    "....####....", "...######...", "..###..###..", ".###....###.", "###......###", ".#........#."))
+    "#.......#", "##.....##", ".##...##.", "..##.##..", "...###...", "..##.##..", ".##...##.", "##.....##",
+    "#.......#"))
+
+
+def _bitmap2(ui, icon, x, y, c):
+    for dx, dy, w in icon[2]:
+        ui.tft.fill_rect(x + 2 * dx, y + 2 * dy, 2 * w, 2, c)
 
 
 def _disc(tft, cx, cy, r, c):
-    rr = r * r
+    rr = r * r + r                   # (r + 0.5)^2: no one-pixel nubs at the poles
     for dy in range(-r, r + 1):
         w = int((rr - dy * dy) ** 0.5)
         tft.fill_rect(cx - w, cy + dy, 2 * w + 1, 1, c)
@@ -831,13 +835,13 @@ def draw_recording(ui):
     cx = W // 2
     if not warm:
         _disc(tft, cx, 104, 28, ink)
-        ui._bitmap(_SEND, cx - 10, 95, paper)
+        _bitmap2(ui, _SEND, cx - 14, 92, paper)
         s = "tap to SEND"
         tft.text(ui.font, s, (W - len(s) * CW) // 2, 140, ink, paper)
     tft.fill_rect(12, REC_MID, W - 24, 1, ink)
     _disc(tft, cx, 222, 22, ink)
     _disc(tft, cx, 222, 19, paper)
-    ui._bitmap(_CROSS, cx - 6, 216, ink)
+    _bitmap2(ui, _CROSS, cx - 9, 213, ink)
     s = "tap to CANCEL"
     tft.text(ui.font, s, (W - len(s) * CW) // 2, 252, ink, paper)
     ui._hint_zones = []

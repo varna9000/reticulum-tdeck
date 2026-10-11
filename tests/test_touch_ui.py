@@ -490,15 +490,19 @@ def test_chat():
     g = mkchat()
     opened = []
     g._chat_open_cursor_media = lambda: opened.append(g.chat_cursor)
-    check("tap line 4", tap(g, 100, row_y(4)) is True)
+    g._visible_image_lines = {4: 77, 5: 77}
+    g._visible_audio_lines = {8: 78, 9: 78}
+    g._image_cache = {(g.selected_peer, 77): b"jpg"}
+    check("tap on plain text does nothing", tap(g, 100, row_y(2)) is False and g.chat_cursor == -1 and g.dirty is False)
+    check("tap on an image tile's top row opens it", tap(g, 100, row_y(4)) is True and opened == [4] and g.chat_cursor == 4, repr(opened))
     settle(g)
-    check("the cursor lands on it", g.chat_cursor == 4, str(g.chat_cursor))
-    tap(g, 100, row_y(2))
+    check("...and on its bottom row", tap(g, 100, row_y(5)) is True and opened == [4, 5], repr(opened))
     settle(g)
-    check("tap a line above: cursor moves up", g.chat_cursor == 2, str(g.chat_cursor))
-    tap(g, 100, row_y(2))
+    check("tap on a voice tile plays it", tap(g, 100, row_y(9)) is True and opened == [4, 5, 9], repr(opened))
     settle(g)
-    check("tap the cursor line: open its media", opened == [2], repr(opened))
+    g._image_cache = {}
+    g.chat_cursor = -1
+    check("an expired image tile does nothing", tap(g, 100, row_y(4)) is False and opened == [4, 5, 9] and g.chat_cursor == -1)
     g = mkchat(40)
     check("finger down 3 steps: older messages come into view",
           touch_ui.handle(g, (DRAG, 100, 100, 3, 200000), 0) is True and g.chat_scroll == 3 and g.chat_cursor == -1,
