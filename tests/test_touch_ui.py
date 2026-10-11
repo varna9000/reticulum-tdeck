@@ -499,6 +499,8 @@ def test_chat():
     check("...and on its bottom row", tap(g, 100, row_y(5)) is True and opened == [4, 5], repr(opened))
     settle(g)
     check("tap on a voice tile plays it", tap(g, 100, row_y(9)) is True and opened == [4, 5, 9], repr(opened))
+    check("...without parking the cursor on it (the tile would stay inverted and the mic hint vanish)",
+          g.chat_cursor == 5, str(g.chat_cursor))
     settle(g)
     g._image_cache = {}
     g.chat_cursor = -1
@@ -1068,6 +1070,19 @@ def test_row_edges():
     tap(g, 216, nrow_y(1))
     check("x 216 opens the sheet", g._sheet is not None)
 
+
+def test_chat_layout_key_at_the_history_cap():
+    print("review: chat layout key")
+    g = mkchat(5)
+    P = g.selected_peer
+    g.chat_history = {P: [(False, "a", 0, 0, False, False, 1), (False, "b", 0, 0, False, False, 2)]}
+    k0 = touch_ui.layout_key(g)
+    g.chat_history[P] = [(False, "b", 0, 0, False, False, 2), (False, "c", 0, 0, False, False, 3)]
+    check("a full history rolling by one message is a new layout (same length, new rows)", touch_ui.layout_key(g) != k0)
+    k1 = touch_ui.layout_key(g)
+    g._build_chat_lines = lambda: [None] * 6
+    check("the same messages taking another number of rows is a new layout too", touch_ui.layout_key(g) != k1)
+
 if __name__ == "__main__":
     test_geometry_is_the_pros()
     test_hint_zones_follow_the_hints()
@@ -1112,6 +1127,7 @@ if __name__ == "__main__":
     test_sheet_taps()
     test_layout_key_sees_a_reorder()
     test_row_edges()
+    test_chat_layout_key_at_the_history_cap()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

@@ -591,7 +591,9 @@ def _block(ui, rows, msgs, mine, name):
     tm = _u._fmt_time(first[2])
     if len(msgs) == 1 and not first[4] and not first[5] and "\n" not in first[1]:
         st = first[3] if (mine and first[3] in _MARKS) else 0
-        right = (len(tm) * SW + 4 if tm else 0) + (len(_MARKS[st]) * _u.CHAR_W + 4 if st else 0)
+        # My rows always keep two columns for the delivery mark: a proof
+        # arriving must change one row's mark, not reflow the thread.
+        right = (len(tm) * SW + 4 if tm else 0) + (2 * _u.CHAR_W + 4 if mine else 0)
         line = name + ": " + first[1].replace("\r", "")
         if len(line) * _u.CHAR_W <= cols * _u.CHAR_W - right:
             rows.append((K_INLINE, mine, line, first[6], F_LAST, tm, st))
@@ -613,7 +615,7 @@ def _block(ui, rows, msgs, mine, name):
             rows.append((K_TOP, mine, "voice", m[6], F_VOICE, cap, 0))
             rows.append((K_BOT, mine, "voice", m[6], F_VOICE, cap, 0))
         if text:
-            w = cols - (len(_MARKS[st]) + 1 if st else 0)
+            w = cols - 3 if mine else cols      # mark columns, kept whatever the status
             for para in text.replace("\r", "").split("\n"):
                 for wl in ui._wrap_text(para, w):
                     rows.append((K_TEXT, mine, wl, m[6], 0, "", 0))

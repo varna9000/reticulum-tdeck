@@ -67,8 +67,12 @@ def layout_key(ui):
                 g(ui, "_find_scroll", 0), g(ui, "_find_sel", 0), len(g(ui, "_find_res", ())),
                 ui._sheet, vis)
     if st == _u.STATE_CHAT:
+        hist = ui.chat_history.get(ui.selected_peer, ())
+        # The last message's id and the row count, not just the history's
+        # length: a full history drops one message for each it gains, and
+        # every row moves under the finger with the length unchanged.
         return (st, ui.selected_peer, ui.chat_scroll, ui.chat_cursor, len(ui.cmd_buf) > 0,
-                len(ui.chat_history.get(ui.selected_peer, ())))
+                len(hist), hist[-1][6] if hist else 0, len(ui._build_chat_lines()))
     if st == _u.STATE_BROWSER:
         return (st, ui.browser_path, ui.browser_scroll, ui.browser_cursor)
     if st == _u.STATE_SETTINGS:
@@ -314,6 +318,14 @@ def _tap_pro_chat(ui, y):
             return False                   # expired: nothing to open
     elif i not in ui._visible_audio_lines:
         return False
+    else:
+        # A voice clip plays where it is: borrow the cursor for the call and
+        # put it back, or the tile stays inverted and the mic hint is gone.
+        old = ui.chat_cursor
+        ui.chat_cursor = i
+        ui._chat_open_cursor_media()
+        ui.chat_cursor = old
+        return True
     ui.chat_cursor = i
     ui.dirty = True
     ui._chat_open_cursor_media()

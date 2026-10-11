@@ -83,7 +83,27 @@ g.state = ui.STATE_RECORDING
 g._rec_warming = False
 g._cache = [''] * ui.CACHE_ROWS
 g.draw()
-check("v1 chat and recording screens draw the old way", True)
+
+
+class Rec:
+    def __init__(self):
+        self.rects = []
+
+    def fill_rect(self, x, y, w, h, c):
+        self.rects.append((x, y, w, h))
+
+    def __getattr__(self, n):
+        return lambda *a, **k: None
+
+
+for st, nm in ((ui.STATE_CHAT, "chat"), (ui.STATE_RECORDING, "recording")):
+    g.tft = Rec()
+    g.state = st
+    g._cache = [''] * ui.CACHE_ROWS
+    g.draw()
+    arms = [r for r in g.tft.rects if r[2] == 1 and r[3] == 12]
+    rails = [r for r in g.tft.rects if r[0] == 0 and r[2] == ui.SCREEN_W and r[3] == 1 and r[1] == ui.NAV_H]
+    check("v1 %s still has its body frame" % nm, len(arms) == 4 and len(rails) >= 1, "%d %d" % (len(arms), len(rails)))
 print()
 if fails:
     print("%d FAILED" % len(fails))

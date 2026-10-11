@@ -727,7 +727,8 @@ def test_chat_blocks_media_and_status():
     g, t = mkchat()
     say(g, True, "this is my rather long message that will wrap for sure", at=0, status=1)
     r = g._build_chat_lines()
-    check("my mark is on the message's last text row only", [x[6] for x in r] == [0, 0, 1][:len(r)] or [x[6] for x in r][-1] == 1 and sum(x[6] for x in r) == 1, repr(r))
+    check("my mark is on the message's last text row only",
+          [x[6] for x in r][-1] == 1 and [x[6] for x in r].count(0) == len(r) - 1, repr(r))
     check("my text is narrower", all(len(x[2]) <= P.ME_COLS for x in r if x[0] == P.K_TEXT))
     g, t = mkchat()
     say(g, True, "ok", at=0, status=2)
@@ -933,6 +934,43 @@ def test_recording_screen():
     check("a new second redraws the title only", find(t, "bold", "Warming mic... 3s") is not None and find(t, "text", "tap to CANCEL") is None)
 
 
+
+def test_chat_status_does_not_reflow():
+    print("review: chat reflow / widths")
+    P = ui_pro
+    for text in ("x" * n for n in range(8, 26)):
+        shapes = []
+        for st in (1, 2, 3, 4, 5, 0):
+            g, t = mkchat()
+            say(g, True, text, at=0, status=st)
+            shapes.append(kinds(g._build_chat_lines()))
+        if any(s != shapes[0] for s in shapes):
+            check("a %d-char message keeps its rows whatever its status" % len(text), False, repr(shapes))
+            break
+    else:
+        check("my message keeps its rows whatever its delivery status", True)
+    g, t = mkchat()
+    say(g, True, "w" * 60, at=0, status=2)
+    r = [x for x in g._build_chat_lines() if x[0] == P.K_TEXT]
+    check("my text wraps inside my column, two columns kept for the mark",
+          max(len(x[2]) for x in r) == P.ME_COLS - 3, repr([len(x[2]) for x in r]))
+    g, t = mkchat()
+    say(g, False, "w" * 60, at=0)
+    r = [x for x in g._build_chat_lines() if x[0] == P.K_TEXT]
+    check("the peer's text uses its full column", max(len(x[2]) for x in r) == P.PEER_COLS, repr([len(x[2]) for x in r]))
+    for n in range(10, 24):
+        g, t = mkchat()
+        say(g, True, "y" * n, at=0, status=2)
+        r = g._build_chat_lines()
+        if r[0][0] == P.K_INLINE:
+            px = P.ME_X + len(r[0][2]) * 8
+            limit = P.ME_X + P.ME_COLS * 8 - len(r[0][5]) * P.SW - 4 - 2 * 8 - 4
+            if px > limit:
+                check("an inline row leaves room for the mark and the time", False, "%d chars: %d > %d" % (n, px, limit))
+                break
+    else:
+        check("an inline row leaves room for the mark and the time", True)
+
 if __name__ == "__main__":
     test_pro_layout_is_active_on_the_pro()
     test_list_window_follows_the_selection()
@@ -968,6 +1006,7 @@ if __name__ == "__main__":
     test_chat_tiles()
     test_chat_tile_cut_by_the_window()
     test_recording_screen()
+    test_chat_status_does_not_reflow()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))
