@@ -742,18 +742,43 @@ def test_rrc():
     g._rrc_panel_scroll = 0
     clicked = []
     orig_click = rrc_ui.panel_click
-    rrc_ui.panel_click = lambda u: clicked.append(u._rrc_panel_idx)
+    rrc_ui.panel_click = lambda u: clicked.append(u._rrc_panel_idx) or True
     try:
-        py = rrc_ui.PANEL_Y + 22 + 2 * ui.CHAR_H + ui.CHAR_H // 2
         px = rrc_ui.PANEL_X + 40
-        tap(g, px, py)
-        settle(g)
-        check("panel: tap row 2 selects it", g._rrc_panel_idx == 2 and clicked == [], "%d %r" % (g._rrc_panel_idx, clicked))
-        tap(g, px, py)
-        settle(g)
-        check("panel: tap again acts on it", clicked == [2], repr(clicked))
+        r0 = rrc_ui.PANEL_Y + 22                       # 32 px rows on the Pro
+        check("panel: one tap on row 2 selects it and acts", tap(g, px, r0 + 2 * 32 + 16) is True
+              and g._rrc_panel_idx == 2 and clicked == [2], "%d %r" % (g._rrc_panel_idx, clicked))
+        check("panel: the last pixel line of a row is that row", tap(g, px, r0 + 31, t=300000) is True and clicked == [2, 0], repr(clicked))
+        n = len(clicked)
+        check("panel: a tap on the title band does nothing", tap(g, px, rrc_ui.PANEL_Y + 8, t=400000) is False
+              and g._rrc_panel is True and len(clicked) == n)
+        check("panel: a tap on the foot band does nothing", tap(g, px, rrc_ui.PANEL_Y + rrc_ui.PANEL_H - 10, t=500000) is False
+              and g._rrc_panel is True and len(clicked) == n)
+        check("panel: a tap on an empty slot does nothing (4 rows, 5 slots)", tap(g, px, r0 + 4 * 32 + 16, t=600000) is False
+              and len(clicked) == n)
     finally:
         rrc_ui.panel_click = orig_click
+    g._rrc_panel_idx = 0
+    touch_ui.handle(g, (DRAG, px, 150, 1, 700000), 0)
+    settle(g)
+    check("panel: a 16 px drag is half a row", g._rrc_panel_idx == 0, str(g._rrc_panel_idx))
+    touch_ui.handle(g, (DRAG, px, 150, 1, 700000), 0)
+    settle(g)
+    check("panel: the second step moves one row", g._rrc_panel_idx == 1, str(g._rrc_panel_idx))
+    g._rrc_rooms = [("r%d" % k, "") for k in range(12)]
+    g._rrc_panel_idx = 0
+    touch_ui.handle(g, (FLICK, px, 150, 1, 800000), 0)
+    settle(g)
+    check("panel: a flick pages four rows", g._rrc_panel_idx == 4, str(g._rrc_panel_idx))
+    k0 = touch_ui.layout_key(g)
+    g._rrc_rooms = [("x%d" % k, "") for k in range(12)]
+    check("panel: the list changing under the same cursor is a new layout", touch_ui.layout_key(g) != k0)
+    k1 = touch_ui.layout_key(g)
+    g._rrc_rooms = g._rrc_rooms + [("late", "")]
+    check("...and so is it growing", touch_ui.layout_key(g) != k1)
+    g._rrc_rooms = [("mesh", "chatter"), ("ops", "operators"), ("bg", "bg")]
+    g._rrc_panel_idx = 0
+    g._rrc_panel_scroll = 0
     check("panel: a tap outside the box closes it",
           tap(g, 120, rrc_ui.PANEL_Y + rrc_ui.PANEL_H + 20) is True and g._rrc_panel is False)
     g._rrc_panel = True
@@ -943,7 +968,7 @@ def test_untested_lists_follow_their_scroll():
     g._rrc_list_seen = True
     g._rrc_panel_scroll = 3
     g._rrc_panel_idx = 3
-    tap(g, rrc_ui.PANEL_X + 40, rrc_ui.PANEL_Y + 22 + 2 * ui.CHAR_H + 8)
+    tap(g, rrc_ui.PANEL_X + 40, rrc_ui.PANEL_Y + 22 + 2 * 32 + 8)
     settle(g)
     check("panel: row 2 of a panel scrolled by 3 is row 5", g._rrc_panel_idx == 5, str(g._rrc_panel_idx))
     g = mkui(ui.STATE_RRC_CHAT)

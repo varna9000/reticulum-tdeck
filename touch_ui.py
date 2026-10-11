@@ -25,6 +25,12 @@ def _pro_list(ui):
     return _u._pro is not None and ui.state == _u.STATE_NODES and not ui._find
 
 
+def _pro_panel(ui):
+    """An RRC panel is open on the Pro layout: five 32 px rows."""
+    return (_u._pro is not None and ui._rrc_panel
+            and ui.state in (_u.STATE_RRC_ROOMS, _u.STATE_RRC_CHAT))
+
+
 def _pro_setup(ui):
     """The Pro's own Setup main page is up (ui_pro.py): 32 px rows, one tap acts."""
     return (_u._pro is not None and ui.state == _u.STATE_SETTINGS
@@ -115,8 +121,15 @@ def layout_key(ui):
     if st == _u.STATE_SHELL:
         return (st, ui._shell_menu, g(ui, "_shell_view", 0), g(ui, "_shell_menu_idx", 0))
     if st in (_u.STATE_RRC_ROOMS, _u.STATE_RRC_CHAT):
+        lst = None
+        if ui._rrc_panel:
+            # One tap acts on a panel row on the Pro, so what the list holds
+            # is part of the layout: a member joining or a /list reply must
+            # not move another row under a finger already on its way down.
+            src = ui._rrc_rooms if g(ui, "_rrc_panel_kind", None) == "rooms" else ui._rrc_roster
+            lst = tuple(src)
         return (st, ui._rrc_panel, g(ui, "_rrc_panel_kind", None), g(ui, "_rrc_panel_scroll", 0),
-                g(ui, "_rrc_panel_idx", 0), ui._rrc_prompt)
+                g(ui, "_rrc_panel_idx", 0), ui._rrc_prompt, lst)
     return (st,)
 
 
@@ -401,6 +414,16 @@ def _tap(ui, x, y):
         if not inside:
             mod.panel_close(ui)
             return True
+        if _u._pro is not None:
+            # The Pro's panel has 32 px two-line rows and one tap acts. The
+            # title and foot bands and empty slots are not targets.
+            i = (y - prow[2]) // _u._pro.ROW_H
+            if i < 0 or i >= prow[3] or prow[4] + i >= prow[6]:
+                return False
+            ui._rrc_panel_idx = prow[4] + i
+            ui.dirty = True
+            mod.panel_click(ui)
+            return True
         return _tap_row(ui, prow, y)
     if y < _u.BODY_Y + _u.CHAR_H:
         # Navbar + first body row. On the node list the navbar's right third
@@ -525,7 +548,7 @@ def handle(ui, g, changed_ms):
     if kind == LONG:
         return _long(ui, x, y)
     if kind == DRAG:
-        if _pro_list(ui) or _pro_setup(ui):
+        if _pro_list(ui) or _pro_setup(ui) or _pro_panel(ui):
             if _drag_acc[0] != t_down:
                 _drag_acc[0] = t_down
                 _drag_acc[1] = 0
@@ -539,6 +562,10 @@ def handle(ui, g, changed_ms):
             return True
         return _drag(ui, n)
     if kind == FLICK:
+        if _pro_panel(ui):
+            import rrc_ui
+            _steps(ui, n * (rrc_ui.PANEL_ROWS - 1))
+            return True
         if _pro_list(ui) or _pro_setup(ui):
             if ui._sheet is not None:
                 return False
