@@ -221,11 +221,15 @@ def test_margin_pill_and_star():
     p3 = find(t, "small", "3")
     p12 = find(t, "small", "12")
     check("one-digit pill in the margin on the name line", p3 is not None and p3[2] < 16 and p3[3] == row_y(0) + 2, repr(p3))
-    check("two-digit pill is exactly the margin wide", p12 is not None and p12[2] == 2 and p12[2] + 2 * ui_pro.SW + 2 == 16, repr(p12))
+    check("a two-digit pill leaves 2 px of paper before the name",
+          p12 is not None and p12[2] == 1 and p12[2] + 2 * ui_pro.SW + 1 == ui_pro.MARGIN - 2, repr(p12))
+    blk = [c for c in t.calls if c[0] == "rect" and c[2] == row_y(1) + 2 and c[4] == ui_pro.SH]
+    check("...and its block is 14 px from the panel edge", len(blk) == 1 and blk[0][1] == 0 and blk[0][3] == 14, repr(blk))
     check("the pill is inverse to its row", p3[4] == g.BG_DARK)
-    stars = [c for c in t.calls if c[0] == "icon" and c[1] is ui._STAR]
-    check("stars on the second line of rows 1 and 2",
-          sorted(c[3] for c in stars) == [row_y(1) + 19, row_y(2) + 19] and all(c[2] < 16 for c in stars), repr(stars))
+    stars = [c for c in t.calls if c[0] == "icon" and c[1] is ui_pro._STAR]
+    check("stars on the second line of rows 1 and 2, clear of the row's rule",
+          sorted(c[3] for c in stars) == [row_y(1) + 18, row_y(2) + 18]
+          and all(c[2] >= 0 and c[2] + 12 <= 16 for c in stars), repr(stars))
     check("a row can carry both", find(t, "small", "12")[3] == row_y(1) + 2)
     g.unread[k[0]] = 250
     g._cache = [''] * ui.CACHE_ROWS
@@ -529,7 +533,7 @@ def test_small_text_is_ui_pros_own_6x12():
           len(line2) > 0 and all((c[3] - ui_pro.LIST_Y) % 32 + ui_pro.SH <= 31 for c in line2))
     p12 = find(t, "small", "12")
     check("a two-digit pill stays inside the 16 px margin",
-          p12 is not None and p12[2] - 2 >= 0 and p12[2] + 2 * ui_pro.SW + 2 <= ui_pro.MARGIN, repr(p12))
+          p12 is not None and p12[2] - 1 >= 0 and p12[2] + 2 * ui_pro.SW + 1 <= ui_pro.MARGIN, repr(p12))
     a = find(t, "small", "tap outside to close")
     b = find(t, "small", "(BKSP)close")
     check("the sheet's footer texts do not overlap",
@@ -596,6 +600,31 @@ def test_lane_repaint_reaches_the_panel_edge():
     check("the lane's clear runs to x 239 (Find inks its selected row that far)",
           len(lane) == 1 and lane[0][1] + lane[0][3] == ui.SCREEN_W, repr(lane))
 
+
+def test_icons_have_the_designs_proportions():
+    print("review: icons")
+    # The canvas draws tab icons in a 14 px square and toolbar / sheet icons
+    # in an 11..13 px square. Hand-drawn 7 px tall ones looked squashed.
+    for ic in ui_pro._TAB_ICONS:
+        check("tab icon %dx%d fills its square" % ic[:2], 13 <= ic[0] <= 14 and 11 <= ic[1] <= 14)
+    for ic, label, key in ui_pro._TOOLS:
+        check("%s icon %dx%d is square" % ((label,) + ic[:2]), ic[0] == 11 and 10 <= ic[1] <= 11)
+    check("the row's star is 12x12", ui_pro._STAR[:2] == (12, 12))
+    g, t = mkui()
+    for tab in (0, 1, 2, 3):
+        g.node_tab = tab
+        for label, kl, key, ic in ui_pro.sheet_items(g):
+            check("sheet icon for %s (%dx%d)" % ((label,) + ic[:2]), 11 <= ic[0] <= 14 and 9 <= ic[1] <= 14)
+    g, t = mkui()
+    peers(g, 2)
+    ui_pro.draw_tab_bar(g)
+    ui_pro.draw_toolbar(g)
+    ic = [c for c in t.calls if c[0] == "icon"]
+    check("tab icons stay inside the tab bar",
+          all(ui_pro.TAB_Y < c[3] and c[3] + c[1][1] < ui_pro.LIST_Y for c in ic if c[3] < ui_pro.LIST_Y))
+    check("toolbar icons stay inside the toolbar",
+          all(ui_pro.TOOL_Y < c[3] and c[3] + c[1][1] <= ui.SCREEN_H for c in ic if c[3] >= ui_pro.TOOL_Y))
+
 if __name__ == "__main__":
     test_pro_layout_is_active_on_the_pro()
     test_list_window_follows_the_selection()
@@ -622,6 +651,7 @@ if __name__ == "__main__":
     test_selection_stays_in_the_window()
     test_find_clears_the_toolbar_band()
     test_lane_repaint_reaches_the_panel_edge()
+    test_icons_have_the_designs_proportions()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))
