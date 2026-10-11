@@ -1217,3 +1217,125 @@ def sleep_tick(ui):
         # live screen on a sleeping panel): give the box up until the next
         # sleep screen instead.
         ui._sleep_shown = None
+
+
+# --- the other lists: Lookup results, WiFi scan, shell menu ---------------------------
+# Same two-line row as the node list and Setup: a finger-sized 32 px, the main
+# line in the main font, a small line under it, the selected row inverted.
+
+FIND_ROWS = 7          # between Lookup's title row (y 42) and its count row (y 282)
+FIND_Y = 58
+MENU_ROWS = 8
+
+
+def _row2(ui, slot, y, top, sub, on):
+    """One two-line list row, cached in ui._cache[slot]. top None = an empty slot."""
+    if top is None:
+        if ui._cache[slot] != "\x04-":
+            ui._cache[slot] = "\x04-"
+            ui.tft.fill_rect(0, y, _u.SBAR_X, ROW_H, ui.BG_DARK)
+        return
+    ck = "\x04" + ("\x01" if on else "") + top + "\x00" + sub
+    if ui._cache[slot] == ck:
+        return
+    ui._cache[slot] = ck
+    tft = ui.tft
+    paper = ui.BG_DARK
+    bg = ui.SEL_BG if on else paper
+    tft.fill_rect(0, y, _u.SBAR_X, ROW_H - 1, bg)
+    tft.fill_rect(0, y + ROW_H - 1, _u.SBAR_X, 1, ui.DIM_CYAN)
+    tft.text(ui.font, ui._tb(top[:27]), MARGIN, y + 1, paper if on else ui.NEON_CYAN, bg)
+    if sub:
+        _sd(ui, sub[:36], MARGIN, y + 18, paper if on else ui.DIM_CYAN, bg)
+
+
+def _lane(ui, key, y0, rows, total, top):
+    """Scroll lane beside a two-line list; `key` is its cache slot."""
+    ck = (y0, total, top)
+    if ui._cache[key] == ck:
+        return
+    ui._cache[key] = ck
+    track = rows * ROW_H
+    ui.tft.fill_rect(_u.SBAR_X, y0, _u.SCREEN_W - _u.SBAR_X, track, ui.BG_DARK)
+    if total > rows:
+        ui.tft.fill_rect(_u.SBAR_X, y0 + top * track // total, _u.SBAR_W, max(6, track * rows // total), ui.DIM_CYAN)
+
+
+def _drop_thin_rows(ui, first, last):
+    """These slots hold ui.py's 16 px rows on this screen's other states
+    (messages, "Scanning..."); the two-line rows have just painted over them,
+    so they must redraw when that state comes back."""
+    for i in range(first, last + 1):
+        ui._cache[i] = ''
+
+
+def draw_find_rows(ui, res):
+    """Lookup results: the name over its hash and when it was last heard."""
+    top = ui._find_scroll
+    for i in range(FIND_ROWS):
+        idx = top + i
+        y = FIND_Y + i * ROW_H
+        if idx >= len(res):
+            _row2(ui, 3 + i, y, None, "", False)
+            continue
+        dest, name, ts = res[idx]
+        _row2(ui, 3 + i, y, _u._ascii(name or "?"), dest.hex()[:8] + "  " + _u._age(ts), idx == ui._find_sel)
+    _drop_thin_rows(ui, 3 + FIND_ROWS, _u.BODY_ROWS - 1)
+    _lane(ui, 1, FIND_Y, FIND_ROWS, len(res), top)
+
+
+def draw_wifi_rows(ui):
+    """WiFi scan: the network over its signal strength."""
+    nets = ui._wifi_networks
+    top = ui._settings_scroll
+    for i in range(MENU_ROWS):
+        idx = top + i
+        y = LIST_Y + i * ROW_H
+        if idx >= len(nets):
+            _row2(ui, 2 + i, y, None, "", False)
+            continue
+        ssid, rssi = nets[idx]
+        _row2(ui, 2 + i, y, _u._ascii(ssid) or "(hidden)", str(rssi) + " dBm", idx == ui._settings_idx)
+    _drop_thin_rows(ui, 2 + MENU_ROWS + 1, _u.BODY_ROWS)
+    _lane(ui, 2 + MENU_ROWS, LIST_Y, MENU_ROWS, len(nets), top)
+
+
+def shell_menu_top(ui):
+    """First visible item of the shell menu. Derived from the cursor, three
+    rows above it where the list allows, so keys, drags and taps agree on
+    what is on screen without a scroll position of its own."""
+    n = len(_u._SHELL_CTRL_ITEMS)
+    return max(0, min(ui._shell_menu_idx - 3, n - MENU_ROWS))
+
+
+def _shell_item(ui, i):
+    """(name, what it does or its current value) for menu item i."""
+    label, kind, _ = _u._SHELL_CTRL_ITEMS[i]
+    if kind == "font":
+        sf = ui._shell_font
+        return "Font", "%dx%d" % (sf.cols if sf else _u.COLS, sf.rows if sf else _u.BODY_ROWS)
+    if kind == "mode":
+        return label, "line" if ui._shell_line_mode else "char"
+    if kind == "quit":
+        return label, "leave this session"
+    p = label.find("  ")
+    if p < 0:
+        return label, ""
+    return label[:p], label[p:].strip()
+
+
+def draw_shell_menu(ui):
+    rrc_header(ui, "< Control keys", "")
+    top = shell_menu_top(ui)
+    n = len(_u._SHELL_CTRL_ITEMS)
+    for i in range(MENU_ROWS):
+        idx = top + i
+        if idx >= n:
+            _row2(ui, 2 + i, LIST_Y + i * ROW_H, None, "", False)
+            continue
+        name, what = _shell_item(ui, idx)
+        _row2(ui, 2 + i, LIST_Y + i * ROW_H, name, what, idx == ui._shell_menu_idx)
+    _lane(ui, 2 + MENU_ROWS, LIST_Y, MENU_ROWS, n, top)
+    if ui._cache[_u.FOOT_SLOT] != "\x02menuP":
+        ui._cache[_u.FOOT_SLOT] = "\x02menuP"
+        ui._draw_hints((("ENT", "send"), ("BKSP", "close")))

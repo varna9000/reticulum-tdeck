@@ -185,6 +185,20 @@ src = open(os.path.join(ROOT, "ui.py")).read()
 i0 = src.index("sleep_tick(self)")
 check("the screen-off loop reaches ui_pro only behind the _pro test",
       src[i0 - 80:i0].rstrip().endswith("if _pro is not None:\n                    _pro.") and src.count("sleep_tick(") == 1, src[i0 - 80:i0 + 20])
+check("v1 Lookup keeps its thin rows", g._find_rows() == ui.BODY_ROWS - 3)
+g.state = ui.STATE_SHELL
+g._shell_menu = True
+g._shell_menu_idx = 0
+ls = v1_lines(ui._SET_MAIN)
+g.tft = type(g.tft)()
+g._cache = [''] * ui.CACHE_ROWS
+g.draw()
+ls = [s for s, x, y in g.tft.texts]
+check("v1 shell menu is the old one, CLICK and all", "Control keys (trackball):" in ls and "CLICK" in ls and any(s.startswith("> Ctrl-C   interrupt") for s in ls), repr(ls[:6]))
+g.state = ui.STATE_SETTINGS
+g._has_trackball = True                  # the real v1 has one (this fixture is built without)
+ls = v1_lines(ui._SET_WIFI_SCAN, _wifi_networks=[("home", -40)], _settings_idx=0)
+check("v1 Setup footer still says CLICK", "CLICK" in ls and "ENT" not in ls, repr(ls))
 print()
 if fails:
     print("%d FAILED" % len(fails))

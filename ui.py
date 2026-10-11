@@ -2691,6 +2691,8 @@ class UI:
         self.dirty = True
 
     def _find_rows(self):
+        if _pro is not None:
+            return _pro.FIND_ROWS      # two-line rows there
         return BODY_ROWS - 3
 
     def _find_move(self, d):
@@ -2878,8 +2880,10 @@ class UI:
                     else:
                         cur = cur + " " + w if cur else w
                 msg.append(cur)
-            top = (rows - len(msg)) // 2
-        for i in range(rows):
+            top = (BODY_ROWS - 3 - len(msg)) // 2
+        if _pro is not None and res:
+            _pro.draw_find_rows(self, res)
+        for i in range(0 if (_pro is not None and res) else BODY_ROWS - 3):
             slot = i + 3
             y = BODY_Y + (i + 2) * CHAR_H
             if not res:
@@ -3513,6 +3517,8 @@ class UI:
         # "close": already closed above
 
     def _draw_shell_menu(self):
+        if _pro is not None:
+            return _pro.draw_shell_menu(self)
         self._draw_row_cached(1, "Control keys (trackball):", BODY_Y, self.NEON_CYAN)
         rows = BODY_ROWS - 1
         n = len(_SHELL_CTRL_ITEMS)
@@ -4372,7 +4378,9 @@ class UI:
         self.tft.fill_rect(0, INPUT_Y, SCREEN_W, CHAR_H, self.BG_DARK)
         self._hint_zones = []
         x = SCREEN_W - CHAR_W - len("(BKSP)back") * CHAR_W
-        for kx, key, rest in ((0, "CLICK", "select"), (x, "BKSP", "back"))[0 if select else 1:]:
+        # The select key is the ball's click where there is a ball.
+        for kx, key, rest in ((0, "CLICK" if self._has_trackball else "ENT", "select"),
+                              (x, "BKSP", "back"))[0 if select else 1:]:
             self.tft.text(self.font, "(", kx, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
             self.tft.text(self.font, key, kx + CHAR_W, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
             self.tft.text(self.font, ")" + rest, kx + (len(key) + 1) * CHAR_W, INPUT_Y,
@@ -4391,6 +4399,8 @@ class UI:
             self._draw_row_cached(2, msg, BODY_Y + CHAR_H, self.DIM_CYAN)
             for i in range(2, BODY_ROWS):
                 self._draw_row_cached(i + 1, "", BODY_Y + i * CHAR_H, self.NEON_CYAN)
+        elif _pro is not None:
+            _pro.draw_wifi_rows(self)
         else:
             visible_start = self._settings_scroll
             visible = self._wifi_networks[visible_start:visible_start + BODY_ROWS - 1]
@@ -4871,7 +4881,7 @@ class UI:
         elif self._settings_page == _SET_WIFI_SCAN:
             if self._settings_idx < len(self._wifi_networks) - 1:
                 self._settings_idx += 1
-                max_visible = BODY_ROWS - 2  # header row + 0-indexed
+                max_visible = _pro.MENU_ROWS if _pro is not None else BODY_ROWS - 2  # header row + 0-indexed
                 if self._settings_idx >= self._settings_scroll + max_visible:
                     self._settings_scroll = self._settings_idx - max_visible + 1
         elif self._settings_page == _SET_RADIO:

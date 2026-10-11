@@ -123,8 +123,8 @@ def test_settings_bar_and_chat_footer_record_zones():
     g = mkui(ui.STATE_SETTINGS)
     g._draw_settings_bottom_bar()
     z = g._hint_zones
-    check("settings bar: select on the left, back on the right",
-          [k for _, _, _, k in z] == ["click", b'\x08'] and z[0][1] == 0 and z[1][2] <= ui.SCREEN_W, repr(z))
+    check("settings bar: select (Enter: no trackball here) on the left, back on the right",
+          [k for _, _, _, k in z] == [b'\r', b'\x08'] and z[0][1] == 0 and z[1][2] <= ui.SCREEN_W, repr(z))
     g = mkui(ui.STATE_CHAT)
     g.selected_peer = b"\x01" * 16
     g.cmd_buf = bytearray()

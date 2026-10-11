@@ -229,9 +229,9 @@ def _tap_footer(ui, x):
             dist, best = d, key
     if best is None:
         return False
+    if _pro_setup(ui) and best in ("click", b'\r'):
+        return False                  # rows act under the finger there; this would act on another
     if best == "click":
-        if _pro_setup(ui):
-            return False              # rows act under the finger there; this would act on another
         ui.nav_event("click")         # NOT Enter: in the shell Enter goes to the remote
         return True
     if ui.state == _u.STATE_SHELL and best == b'\x08':

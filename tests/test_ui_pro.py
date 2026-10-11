@@ -1230,7 +1230,7 @@ def test_setup_sub_pages_fit_30_columns():
     g.draw()
     rows = body_lines(t)
     check("WiFi scan: every row fits", rows and all(c[2] + len(c[1].rstrip()) * 8 <= 240 for c in rows), repr([c[1] for c in rows]))
-    check("WiFi scan: the signal strength is on screen", any("-67dBm" in c[1] for c in rows) and any("-40dBm" in c[1] for c in rows))
+    check("WiFi scan: the signal strength is on screen", find(t, "small", "-67 dBm") is not None and find(t, "small", "-40 dBm") is not None)
     g, t = mksetup()
     g._settings_page = ui._SET_LORA
     g._lora_applying = ""
@@ -1662,6 +1662,158 @@ def test_sleep_review():
     g.sleep_screen()
     check("a negative reading shows no battery line", not any("V" in c[1] for c in texts(t, "small") if "asleep" not in c[1]))
 
+
+# --- piece F: Lookup, WiFi scan, shell menu ----------------------------------------
+
+def mkfind(n=10, q=""):
+    g, t = mkui()
+    peers(g, 2)
+    snap = [(bytes([0x40 + i]) * 16, "node%02d" % i, 1700000000) for i in range(n)]
+    g.on_contact_snapshot = lambda tab: snap
+    g._find_open()
+    for ch in q.encode():
+        g.handle_key(bytes([ch]))
+    g._cache = [''] * ui.CACHE_ROWS
+    return g, t
+
+
+def frow_y(i):
+    return 58 + 32 * i
+
+
+def test_find_rows():
+    print("lists: Lookup")
+    P = ui_pro
+    g, t = mkfind()
+    check("seven two-line rows fit between the title and the count row", g._find_rows() == 7 == P.FIND_ROWS and frow_y(7) == 282)
+    g._find_sel = 1
+    g._draw_find()
+    names = [c for c in texts(t) if c[1].startswith("node")]
+    check("names in the main font, one per 32 px row", [(c[1], c[2], c[3]) for c in names] == [("node%02d" % i, 16, frow_y(i) + 1) for i in range(7)],
+          repr(names[:2]))
+    sub = [c for c in texts(t, "small") if c[1].startswith("40404040")]
+    check("hash and last-heard under the name, small", len(sub) == 1 and sub[0][2] == 16 and sub[0][3] == frow_y(0) + 18 and len(sub[0][1]) > 9, repr(sub))
+    check("the selected row is inverted", names[1][4] == g.BG_DARK and names[1][5] == g.SEL_BG and names[0][5] == g.BG_DARK)
+    rules = sorted(c[2] for c in t.calls if c[0] == "rect" and c[4] == 1 and c[1] == 0 and frow_y(0) <= c[2] < 282 and c[3] == ui.SBAR_X)
+    check("a rule under each row", rules == [frow_y(i) + 31 for i in range(7)], repr(rules))
+    check("nothing goes through ui._sdraw in the rows", not any(frow_y(0) <= c[3] < 282 for c in texts(t, "big")))
+    del t.calls[:]
+    g._draw_find()
+    check("cached", not any(c[0] in ("text", "small") and frow_y(0) <= c[3] < 282 for c in t.calls))
+    for _ in range(8):
+        g._find_move(1)
+    check("the window follows the cursor over seven rows", g._find_sel == 9 and g._find_scroll == 3, "%d %d" % (g._find_sel, g._find_scroll))
+    g, t = mkfind(3)
+    g._draw_find()
+    n = len(g._find_res)                  # the three heard plus the two already listed
+    blank = sorted(c[2] for c in t.calls if c[0] == "rect" and c[4] == 32 and c[5] == g.BG_DARK and frow_y(0) <= c[2] < 282)
+    check("slots past the end are blanked", n == 5 and blank == [frow_y(5), frow_y(6)], "%d %r" % (n, blank))
+    g, t = mkfind(10)
+    g._draw_find()
+    for ch in b"zzz":
+        g.handle_key(bytes([ch]))
+    del t.calls[:]
+    g._draw_find()
+    msg = [c for c in texts(t) if 58 <= c[3] < 282 and c[1].strip()]
+    wiped = sorted(set(c[3] for c in t.calls if c[0] in ("text", "rect") and 58 <= (c[3] if c[0] == "text" else c[2]) < 282))
+    check("no match: the message is drawn", len(msg) >= 1, repr(msg))
+    rows16 = set()
+    for c in t.calls:
+        if c[0] == "rect" and c[4] == 16 and 58 <= c[2] < 282:
+            rows16.add(c[2])
+        if c[0] == "text" and 58 <= c[3] < 282:
+            rows16.add(c[3])
+    check("...and every 16 px row of the results area is repainted (no half of a two-line row left)",
+          rows16 >= set(range(58, 282, 16)), repr(sorted(rows16)))
+    for _ in range(3):
+        g.handle_key(b"\x08")
+    del t.calls[:]
+    g._draw_find()
+    back = [c for c in texts(t) if c[1].startswith("node")]
+    check("back to results: all seven rows repaint", len(back) == 7, str(len(back)))
+
+
+def wrow_y(i):
+    return 42 + 32 * i
+
+
+def test_wifi_rows():
+    print("lists: WiFi scan")
+    g, t = mksetup()
+    g._settings_page = ui._SET_WIFI_SCAN
+    g._wifi_networks = [("net%02d" % i, -40 - i) for i in range(12)]
+    g._wifi_scanning = False
+    g._settings_idx = 2
+    g._settings_scroll = 0
+    g.draw()
+    names = [c for c in texts(t) if c[1].startswith("net")]
+    check("eight networks, names in the main font on 32 px rows",
+          [(c[1], c[2], c[3]) for c in names] == [("net%02d" % i, 16, wrow_y(i) + 1) for i in range(8)], repr(names[:2]))
+    sig = find(t, "small", "-42 dBm")
+    check("signal under the name, small", sig is not None and sig[2] == 16 and sig[3] == wrow_y(2) + 18, repr(sig))
+    check("the selected row is inverted", names[2][5] == g.SEL_BG and names[0][5] == g.BG_DARK)
+    for _ in range(7):
+        g._settings_scroll_down()
+    check("the window follows the cursor over eight rows", g._settings_idx == 9 and g._settings_scroll == 2,
+          "%d %d" % (g._settings_idx, g._settings_scroll))
+    g._wifi_networks = []
+    g._wifi_scanning = True
+    g._settings_idx = 0
+    g._settings_scroll = 0
+    g._cache = [''] * ui.CACHE_ROWS
+    del t.calls[:]
+    g.draw()
+    check("scanning: the old message page", any("Scanning" in c[1] for c in texts(t)))
+    g._wifi_networks = [("home", -40)]
+    g._wifi_scanning = False
+    g._cache = [''] * ui.CACHE_ROWS
+    del t.calls[:]
+    g.draw()
+    blank = sorted(c[2] for c in t.calls if c[0] == "rect" and c[4] == 32 and c[5] == g.BG_DARK and c[1] == 0)
+    check("a short list blanks the other seven slots", blank == [wrow_y(i) for i in range(1, 8)], repr(blank))
+    bar = [c[1] for c in texts(t) if c[3] == ui.INPUT_Y]
+    check("the footer names ENT, not CLICK, on a board with no trackball", "ENT" in bar and "CLICK" not in bar, repr(bar))
+
+
+def test_shell_menu():
+    print("lists: shell menu")
+    P = ui_pro
+    g, t = mkui()
+    g.state = ui.STATE_SHELL
+    g._prev_state = g.state
+    g._shell_menu = True
+    g._shell_menu_idx = 0
+    g._shell_line_mode = True
+    g._cache = [''] * ui.CACHE_ROWS
+    g.draw_shell()
+    hd = find(t, "text", "< Control keys")
+    check("a '< Control keys' band, no mention of a trackball", hd is not None and 20 < hd[3] < 41
+          and not any("trackball" in c[1] for c in texts(t)), repr(hd))
+    n0 = find(t, "text", "Ctrl-C")
+    d0 = find(t, "small", "interrupt")
+    check("an item: its name over what it does", n0 is not None and n0[2] == 16 and n0[3] == wrow_y(0) + 1
+          and d0 is not None and d0[3] == wrow_y(0) + 18, repr((n0, d0)))
+    check("the cursor row is inverted", n0[5] == g.SEL_BG)
+    shown = [c[1] for c in texts(t) if c[2] == 16 and wrow_y(0) <= c[3] < 298]
+    check("eight of the eleven items show", shown == ["Ctrl-C", "Ctrl-D", "Ctrl-Z", "Tab", "Up", "Down", "Esc", "Line/Char mode"], repr(shown))
+    check("the mode row says which mode", find(t, "small", "line") is not None)
+    ft = [c[1] for c in texts(t) if c[3] == ui.INPUT_Y]
+    check("the footer names ENT", "ENT" in ft and "CLICK" not in ft, repr(ft))
+    del t.calls[:]
+    g.draw_shell()
+    check("cached", t.calls == [], repr(t.calls[:2]))
+    check("window: top of the list", P.shell_menu_top(g) == 0)
+    g._shell_menu_idx = 10
+    check("window: the last item pulls it to the end", P.shell_menu_top(g) == 3)
+    g._shell_menu_idx = 5
+    check("window: mid-list keeps three rows above the cursor", P.shell_menu_top(g) == 2)
+    g._shell_menu_idx = 9
+    del t.calls[:]
+    g.draw_shell()
+    q = find(t, "text", "Quit shell")
+    f = [c for c in texts(t, "small") if "x" in c[1] and c[1][0].isdigit()]
+    check("scrolled: Quit shell is on screen and selected, Font shows the grid", q is not None and q[5] == g.SEL_BG and len(f) == 1, repr((q, f)))
+
 if __name__ == "__main__":
     test_pro_layout_is_active_on_the_pro()
     test_list_window_follows_the_selection()
@@ -1714,6 +1866,9 @@ if __name__ == "__main__":
     test_sleep_screen()
     test_sleep_tick()
     test_sleep_review()
+    test_find_rows()
+    test_wifi_rows()
+    test_shell_menu()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))
