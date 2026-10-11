@@ -1324,7 +1324,7 @@ def test_rrc_header_band():
     check("a long hub name is cut short of the status", st is not None and hd[2] + len(hd[1]) * 8 <= st[2] - 6, repr((hd, st)))
     g, t, R = mkrrc()
     R.draw_room(g)
-    hd = find(t, "text", "#mesh")
+    hd = find(t, "text", "< #mesh")
     ct = find(t, "small", "7 users")
     check("room: '#room' in the band and the member count small on the right",
           hd is not None and hd[2] == 4 and 20 < hd[3] < 41 and ct is not None and ct[2] + 7 * P.SW == 232, repr((hd, ct)))
@@ -1414,6 +1414,53 @@ def test_rrc_panel_members():
     check("a scroll thumb inside the box, a gap away from the frame", any(c[0] == "rect" and c[1] == 225 and c[3] == 3 and 80 <= c[2] < 240 and c[5] != g.BG_DARK for c in t.calls))
     check("nothing goes through ui._sdraw", texts(t, "big") == [])
 
+
+def test_rrc_review_gaps():
+    print("review: rrc")
+    P = ui_pro
+    g, t, R = mkrrc(ui.STATE_RRC_ROOMS)
+    g._rrc_status = "rate limited - hold on"
+    R.draw_rooms(g)
+    check("the console status is shown whole (the band holds 24 small characters)", find(t, "small", "rate limited - hold on") is not None,
+          repr(texts(t, "small")))
+    g, t, R = mkrrc()
+    R.draw_room(g)
+    check("the room band starts with a back arrow, like the chat and Setup", find(t, "text", "< #mesh") is not None, repr(texts(t)[:3]))
+    g, t, R = mkrrc()
+    g._rrc_room = "\u043c\u0435\u0448\x07"
+    g._rrc_roster = [(b"\x01" * 6, "\u0432\u0435\u0441\u043d\u0430\x1b[31m"), (b"\x02" * 6, "x" * 60)]
+    g._rrc_panel = True
+    g._rrc_panel_kind = "members"
+    g._rrc_panel_idx = 1
+    R.draw_room(g)
+    bad = [c for c in t.calls if c[0] in ("text", "small") and any(ord(ch) < 32 or ord(ch) > 255 for ch in c[1])]
+    check("hub strings reach the display as glyph bytes: no control characters, nothing above one byte", bad == [], repr(bad[:2]))
+    longn = [c for c in texts(t) if c[1].startswith("xxxx")]
+    check("an over-long nick is cut inside the box", len(longn) == 1 and longn[0][2] + len(longn[0][1]) * 8 <= 224, repr(longn))
+    check("the selected member row is inverted", longn[0][4] == g.BG_DARK and longn[0][5] == g.SEL_BG)
+    h = find(t, "small", "010101010101")
+    check("a real roster key is 6 bytes: 12 hex shown", h is not None, repr(texts(t, "small")))
+    g, t, R = mkrrc()
+    for k in range(30):
+        g.rrc_line("msg", "alex", "line %d" % k)
+    g._rrc_panel = True
+    g._rrc_panel_kind = "members"
+    g._cache = [''] * ui.CACHE_ROWS
+    del t.calls[:]
+    R.draw_room(g)
+    under = [c for c in texts(t) if c[2] == 0 and 58 <= c[3] < 266]
+    above = [c for c in texts(t) if c[2] == 0 and c[3] == 42]
+    check("scrollback rows the box covers are skipped; the one above it is drawn", under == [] and len(above) == 1, repr((under[:1], above)))
+    comp = [c for c in texts(t) if c[3] == ui.INPUT_Y]
+    check("the composer line is still drawn", len(comp) == 1 and comp[0][1].startswith(">"), repr(comp))
+    g, t, R = mkrrc(ui.STATE_RRC_ROOMS)
+    g._rrc_rooms = []
+    g._rrc_list_seen = True
+    g._rrc_panel = True
+    g._rrc_panel_kind = "rooms"
+    R.draw_rooms(g)
+    check("an answered, empty list says so", find(t, "text", "hub lists no public rooms") is not None)
+
 if __name__ == "__main__":
     test_pro_layout_is_active_on_the_pro()
     test_list_window_follows_the_selection()
@@ -1461,6 +1508,7 @@ if __name__ == "__main__":
     test_rrc_header_band()
     test_rrc_panel_rooms()
     test_rrc_panel_members()
+    test_rrc_review_gaps()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

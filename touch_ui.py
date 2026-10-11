@@ -127,7 +127,8 @@ def layout_key(ui):
             # is part of the layout: a member joining or a /list reply must
             # not move another row under a finger already on its way down.
             src = ui._rrc_rooms if g(ui, "_rrc_panel_kind", None) == "rooms" else ui._rrc_roster
-            lst = tuple(src)
+            sc = g(ui, "_rrc_panel_scroll", 0)
+            lst = (len(src), tuple(src[max(0, sc - 1):sc + 5]))   # the rows on screen (the picker's first is the join row)
         return (st, ui._rrc_panel, g(ui, "_rrc_panel_kind", None), g(ui, "_rrc_panel_scroll", 0),
                 g(ui, "_rrc_panel_idx", 0), ui._rrc_prompt, lst)
     return (st,)
@@ -255,6 +256,8 @@ def _tap_header(ui, x):
     if st in (_u.STATE_RRC_ROOMS, _u.STATE_RRC_CHAT):
         if ui._rrc_prompt:
             return False
+        if _u._pro is not None and x < 40 and not ui._rrc_panel:
+            return _back(ui, True)    # the "<" at the left of the band, as on chat and Setup
         ui.nav_event("click")         # the room / member panel, as the ball's click
         return True
     if st == _u.STATE_SHELL:
@@ -407,6 +410,13 @@ def _tap(ui, x, y):
     if _pro_setup(ui) and _u._pro.LIST_Y <= y < _u._pro.TOOL_Y:
         return _tap_pro_setup(ui, y)
     if y >= _u.SEP_Y - 6:
+        if _pro_panel(ui):
+            # Outside the box closes it. The footer's (ENT) hint must not
+            # reach Enter here: with a panel up Enter acts on its cursor row,
+            # so the hint that opened the picker would join a room.
+            import rrc_ui
+            rrc_ui.panel_close(ui)
+            return True
         return _tap_footer(ui, x)
     mod, prow = _panel(ui)
     if prow is not None:

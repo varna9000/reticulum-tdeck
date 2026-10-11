@@ -729,7 +729,7 @@ def test_rrc():
     orig = rrc_ui.panel_toggle
     rrc_ui.panel_toggle = lambda u, kind: toggled.append(kind)
     try:
-        check("header tap toggles the room picker", tap(g, 30, ui.BODY_Y + 4) is True)
+        check("header tap toggles the room picker", tap(g, 150, ui.BODY_Y + 4) is True)
         settle(g)
         check("...through the click path", toggled == ["rooms"], repr(toggled))
     finally:
@@ -1239,6 +1239,62 @@ def test_setup_guards():
     check("a swipe finds the selected row in a scrolled window (Time zone at row 5)",
           touch_ui.handle(g, (SWIPE, 60, srow(5), -1, 200000), 0) is True and adj == [-1], repr(adj))
 
+
+def test_rrc_review():
+    print("review: rrc")
+    import rrc_ui
+    g = mkui(ui.STATE_RRC_ROOMS)
+    g._rrc_prompt = False
+    g._rrc_rooms = [("mesh", "chatter"), ("ops", "")]
+    g._rrc_list_seen = True
+    g._rrc_panel = True
+    g._rrc_panel_kind = "rooms"
+    g._rrc_panel_idx = 1
+    g._rrc_panel_scroll = 0
+    g._draw_hints((("BKSP", "exit"), ("ENT", "rooms")))
+    joined = []
+    g.on_rrc_join = lambda room: joined.append(room)
+    seen = keys_pressed(g)
+    check("picker open: a tap on the footer's (ENT)rooms hint closes it", tap(g, 150, 310) is True and g._rrc_panel is False)
+    settle(g)
+    check("...and joins nothing", joined == [] and seen == [], repr((joined, seen)))
+    g = mkui(ui.STATE_RRC_CHAT)
+    g._rrc_prompt = False
+    g._rrc_input = ""
+    g._rrc_roster = [(b"\x01" * 6, "alex")]
+    g._rrc_panel = True
+    g._rrc_panel_kind = "members"
+    check("member panel open: a tap on the composer line closes it too", tap(g, 150, 310) is True and g._rrc_panel is False)
+    g._rrc_panel = True
+    g._rrc_panel_idx = 0
+    k0 = touch_ui.layout_key(g)
+    g._rrc_roster = [(b"\x02" * 6, "late")] + g._rrc_roster
+    check("a member joining under the open panel is a new layout", touch_ui.layout_key(g) != k0)
+    g._rrc_roster = [(bytes([i]) * 6, "n%d" % i) for i in range(40)]
+    k1 = touch_ui.layout_key(g)
+    g._rrc_roster = g._rrc_roster[:30] + [(b"\xff" * 6, "x")] + g._rrc_roster[31:]
+    check("a change far off screen (same length) is not", touch_ui.layout_key(g) == k1)
+    # The "<" at the left of the band is back, as on the chat and Setup; the
+    # rest of the band opens the panel.
+    g = mkui(ui.STATE_RRC_CHAT)
+    g._rrc_panel = False
+    g._rrc_prompt = False
+    g._rrc_input = ""
+    keys = []
+    toggled = []
+    orig_hk, orig_tg = rrc_ui.handle_key, rrc_ui.panel_toggle
+    rrc_ui.handle_key = lambda u, ch, key: keys.append(ch) or True
+    rrc_ui.panel_toggle = lambda u, kind: toggled.append(kind)
+    try:
+        check("room: a tap on the '<' leaves (Backspace)", tap(g, 12, 30) is True and keys == [8] and toggled == [], repr((keys, toggled)))
+        tap(g, 150, 30, t=300000)
+        settle(g)
+        check("room: a tap on the rest of the band opens the member panel", toggled == ["members"] and keys == [8], repr((keys, toggled)))
+        g._rrc_input = "draft"
+        check("room with a draft: the '<' does nothing", tap(g, 12, 30, t=400000) is False and keys == [8])
+    finally:
+        rrc_ui.handle_key, rrc_ui.panel_toggle = orig_hk, orig_tg
+
 if __name__ == "__main__":
     test_geometry_is_the_pros()
     test_hint_zones_follow_the_hints()
@@ -1285,6 +1341,7 @@ if __name__ == "__main__":
     test_row_edges()
     test_chat_layout_key_at_the_history_cap()
     test_setup_guards()
+    test_rrc_review()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

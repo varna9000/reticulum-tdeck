@@ -218,8 +218,10 @@ def draw_rooms(ui):
     if ui._rrc_hub_name:
         # The status gets all but ~8 columns of hub name: cut at 10 it read
         # "rate limit" / "send faile", which says nothing.
-        _draw_header(ui, ui._rrc_hub_name,
-                     ui._rrc_status[:COLS - 13] if ui._rrc_status else "")
+        st = ui._rrc_status or ""
+        # The Pro's band puts the status in the small font and has room for
+        # it whole; the v1 row has to cut it.
+        _draw_header(ui, ui._rrc_hub_name, st if _u._pro is not None else st[:COLS - 13])
     else:
         # Before WELCOME there is no hub name, and the connect status is the
         # only thing on this screen worth reading. Give it the whole row:
@@ -951,7 +953,7 @@ def draw_room(ui):
     # gets the same clearance from its "<" glyph; this row has no glyph, so
     # it pays for the space directly.
     if _u._pro is not None:
-        _u._pro.rrc_header(ui, room, count)
+        _u._pro.rrc_header(ui, "< " + room, count)
         _draw_scrollback(ui)
         if ui._rrc_panel:
             draw_panel(ui)
