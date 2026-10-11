@@ -1209,8 +1209,61 @@ def test_setup_sub_pages_have_a_back_header():
     g._settings_page = ui._SET_WIFI_SCAN
     g._wifi_err = "wrong password, try again please"
     g.draw()
-    hd = [c for c in texts(t) if c[1].startswith("< ")]
-    check("a long header is cut to the panel", len(hd) == 1 and 4 + len(hd[0][1]) * 8 <= 240, repr(hd))
+    hd = [c for c in texts(t, "small") if c[1].startswith("< ")]
+    check("a header too long for the main font goes small and whole",
+          len(hd) == 1 and 4 + len(hd[0][1]) * ui_pro.SW <= 240 and hd[0][1].endswith("(r)escan"), repr(hd))
+    check("...and is not also drawn big", [c for c in texts(t) if c[1].startswith("< ")] == [])
+
+
+def body_lines(t):
+    return [c for c in texts(t) if ui_pro.LIST_Y <= c[3] < 298]
+
+
+def test_setup_sub_pages_fit_30_columns():
+    print("device pass: sub-pages on a 30-column screen")
+    # These pages were laid out for the v1's 40 columns; on the Pro their
+    # long lines ran off the right edge.
+    g, t = mksetup()
+    g._settings_page = ui._SET_WIFI_SCAN
+    g._wifi_networks = [("A-rather-long-network-name-here", -67), ("home", -40)]
+    g._settings_idx = 1
+    g.draw()
+    rows = body_lines(t)
+    check("WiFi scan: every row fits", rows and all(c[2] + len(c[1].rstrip()) * 8 <= 240 for c in rows), repr([c[1] for c in rows]))
+    check("WiFi scan: the signal strength is on screen", any("-67dBm" in c[1] for c in rows) and any("-40dBm" in c[1] for c in rows))
+    g, t = mksetup()
+    g._settings_page = ui._SET_LORA
+    g._lora_applying = ""
+    g.draw()
+    rows = body_lines(t)
+    joined = " ".join(c[1].strip() for c in rows)
+    check("LoRa cfg: every row fits", all(c[2] + len(c[1].rstrip()) * 8 <= 240 for c in rows), repr([c[1] for c in rows]))
+    check("LoRa cfg: the hint is whole, wrapped", "must match every peer you talk to" in joined, joined)
+    g._lora_applying = "failed"
+    g._cache = [''] * ui.CACHE_ROWS
+    del t.calls[:]
+    g.draw()
+    joined = " ".join(c[1].strip() for c in body_lines(t))
+    check("LoRa cfg: the failure text is whole too", "apply FAILED -- radio unchanged" in joined, joined)
+    hd = [c for c in texts(t) + texts(t, "small") if c[1].startswith("<")]
+    check("a page title that already starts with '<' gets one arrow, not two", len(hd) == 1 and hd[0][1].startswith("< LoRa"), repr(hd))
+    g, t = mksetup()
+    g._settings_page = ui._SET_RADIO
+    g.get_radio_stats = lambda: [("LoRa", "online"), ("RF", "868000kHz SF8 17dBm"), ("LBT", "12 waits 3 forced"),
+                                 ("identities", "42"), ("sleep", "light 12 key 3 lora 9 timer 4 usb 0")]
+    g.draw()
+    rows = body_lines(t)
+    joined = " ".join(c[1].strip() for c in rows)
+    check("Radio stats: every row fits", all(c[2] + len(c[1].rstrip()) * 8 <= 240 for c in rows), repr([c[1] for c in rows]))
+    check("Radio stats: nothing is cut off", "17dBm" in joined and "3 forced" in joined and "usb 0" in joined and "42" in joined, joined)
+    check("Radio stats: short rows stay on one line", any(c[1].strip().startswith("LoRa") and "online" in c[1] for c in rows))
+    check("Radio stats: the scroll range counts the wrapped rows", g._radio_rows == len(rows), "%d %d" % (g._radio_rows, len(rows)))
+    g, t = mksetup()
+    g._settings_page = ui._SET_WIFI_PASS
+    g._wifi_ssid = "A-rather-long-network-name"
+    g.draw()
+    hd = [c for c in texts(t) + texts(t, "small") if c[1].startswith("< Connect")]
+    check("WiFi password: the header shows the network name", len(hd) == 1 and "A-rather-long-network" in hd[0][1], repr(hd))
 
 if __name__ == "__main__":
     test_pro_layout_is_active_on_the_pro()
@@ -1255,6 +1308,7 @@ if __name__ == "__main__":
     test_setup_sub_page_round_trip()
     test_setup_review_gaps()
     test_setup_sub_pages_have_a_back_header()
+    test_setup_sub_pages_fit_30_columns()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

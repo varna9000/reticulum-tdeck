@@ -131,6 +131,26 @@ g.cmd_buf = bytearray(b"x")
 g._cache = [''] * ui.CACHE_ROWS
 g.draw()
 check("v1 sub-page header is the old row at BODY_Y", any(s == "Node Name" and y == ui.BODY_Y for s, x, y in g.tft.texts), repr(g.tft.texts[:3]))
+
+
+def v1_lines(page, **kw):
+    g.tft = type(g.tft)()
+    g._settings_page = page
+    for k, v in kw.items():
+        setattr(g, k, v)
+    g._cache = [''] * ui.CACHE_ROWS
+    g.draw()
+    return [s for s, x, y in g.tft.texts]
+
+
+ls = v1_lines(ui._SET_WIFI_SCAN, _wifi_networks=[("home", -40)], _settings_idx=3)
+check("v1 WiFi scan rows are unchanged", "  {:<28}{}dBm".format("home", -40) in ls, repr(ls[:4]))
+ls = v1_lines(ui._SET_LORA, _lora_applying="")
+check("v1 LoRa cfg hint is still one row", "  must match every peer you talk to" in ls, repr(ls))
+g.get_radio_stats = lambda: [("RF", "868000kHz SF8 17dBm and a very long tail")]
+ls = v1_lines(ui._SET_RADIO, _settings_scroll=0)
+check("v1 Radio stats rows are unchanged (14-column labels, cut at the edge)",
+      ("  " + ui._pad("RF", 14) + "868000kHz SF8 17dBm and a very long tail")[:ui.COLS].rstrip() in ls and g._radio_rows == 1, repr(ls))
 print()
 if fails:
     print("%d FAILED" % len(fails))

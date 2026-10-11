@@ -245,9 +245,27 @@ def scene_setup(out):
     g._settings_page = ui._SET_RADIO
     g._settings_scroll = 0
     g.cmd_buf = bytearray()
+    g.get_radio_stats = lambda: [
+        ("LoRa", "online"), ("RF", "868000kHz SF8 17dBm"), ("last RX", "-87dBm snr 7.5"),
+        ("TX", "12 pkts 2048B"), ("RX", "240 pkts 51200B"), ("CRC err", "0"),
+        ("LBT", "12 waits 3 forced"), ("paths", "31"), ("identities", "42"), ("announces", "118"),
+        ("uptime", "3h12m"), ("sleep", "light 12 key 3 lora 9 timer 4"), ("battery", "87% 4.08V"),
+        ("free mem", "5321kB"), ("clock", "mesh-synced")]
     g._cache = [''] * ui.CACHE_ROWS
     g.draw()
     t.png(os.path.join(out, "setup_radio.png"))
+    g._settings_page = ui._SET_LORA
+    g._lora_applying = ""
+    g._cache = [''] * ui.CACHE_ROWS
+    g.draw()
+    t.png(os.path.join(out, "setup_lora.png"))
+    g._settings_page = ui._SET_WIFI_SCAN
+    g._wifi_networks = [("homenet", -41), ("A-rather-long-network-name", -67), ("cafe", -80)]
+    g._settings_idx = 1
+    g._settings_scroll = 0
+    g._cache = [''] * ui.CACHE_ROWS
+    g.draw()
+    t.png(os.path.join(out, "setup_wifi.png"))
 
 
 if __name__ == "__main__":
@@ -257,4 +275,4 @@ if __name__ == "__main__":
     scene_chat(out)
     scene_rec(out)
     scene_setup(out)
-    print("wrote 10 PNGs to", out)
+    print("wrote 12 PNGs to", out)

@@ -930,7 +930,11 @@ def sub_header(ui, text):
     tft = ui.tft
     W = _u.SCREEN_W
     tft.fill_rect(0, TAB_Y, W, TAB_H, ui.BG_DARK)
-    tft.text(ui.font, ui._tb("< " + text[:27]), 4, TAB_Y + 3, ui.NEON_CYAN, ui.BG_DARK)
+    s = text if text.startswith("<") else "< " + text      # some titles bring their own arrow
+    if len(s) <= 29:
+        tft.text(ui.font, ui._tb(s), 4, TAB_Y + 3, ui.NEON_CYAN, ui.BG_DARK)
+    else:
+        _sd(ui, s[:39], 4, TAB_Y + 5, ui.NEON_CYAN, ui.BG_DARK)   # too long for the main font
     tft.fill_rect(0, TAB_Y + TAB_H - 1, W, 1, ui.NEON_CYAN)
     return True
 

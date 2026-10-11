@@ -4247,6 +4247,21 @@ class UI:
                 stats = self.get_radio_stats()
             except Exception:
                 stats = [("error", "")]
+        if COLS < 40:
+            # A narrow screen: shorter label column, and a value that still
+            # does not fit goes on its own row(s) under the label.
+            lines = []
+            for label, value in stats:
+                line = "  " + _pad(str(label), 11) + str(value)
+                if len(line) <= COLS:
+                    lines.append(line)
+                else:
+                    lines.append("  " + str(label))
+                    for w in self._wrap_text(str(value), COLS - 4):
+                        lines.append("    " + w)
+        else:
+            lines = ["  " + _pad(str(label), 14) + str(value) for label, value in stats]
+        stats = lines
         self._radio_rows = len(stats)
         _rows = BODY_ROWS - 1
         # clamp scroll to content (stats count varies as the page refreshes)
@@ -4261,9 +4276,7 @@ class UI:
         for i in range(_rows):
             y = BODY_Y + (i + 1) * CHAR_H
             if i < len(visible):
-                label, value = visible[i]
-                line = "  " + _pad(str(label), 14) + str(value)
-                self._draw_row_cached(i + 2, line, y, self.NEON_CYAN)
+                self._draw_row_cached(i + 2, visible[i], y, self.NEON_CYAN)
             else:
                 self._draw_row_cached(i + 2, "", y, self.NEON_CYAN)
         self._draw_settings_bottom_bar()
@@ -4298,7 +4311,11 @@ class UI:
         body = [(fl, fi) for fi, fl in enumerate(self._lora_field_lines())]
         body.append(("", None))
         body.append((apply_line, 5))
-        body.append((status, None))
+        if COLS < 40:
+            for s in self._wrap_text(status, COLS - 2):   # too long for a narrow screen
+                body.append((s, None))
+        else:
+            body.append((status, None))
 
         for i in range(BODY_ROWS - 1):
             y = BODY_Y + (i + 1) * CHAR_H
@@ -4368,7 +4385,8 @@ class UI:
                 y = BODY_Y + (i + 1) * CHAR_H
                 if i < len(visible):
                     ssid, rssi = visible[i]
-                    line = "  {:<28}{}dBm".format(ssid[:28], rssi)
+                    _w = COLS - 12             # 28 on the v1; leaves the signal on screen
+                    line = "  " + _pad(ssid[:_w], _w) + str(rssi) + "dBm"
                     abs_idx = visible_start + i
                     if abs_idx == self._settings_idx:
                         cache_key = '\x01' + line
