@@ -268,6 +268,47 @@ def scene_setup(out):
     t.png(os.path.join(out, "setup_wifi.png"))
 
 
+def scene_rrc(out):
+    import rrc_ui
+    g, t = mk()
+    g.state = ui.STATE_RRC_ROOMS
+    g._rrc_hub_name = "Varna Transport Hub and friends"
+    g._rrc_status = "connected"
+    for s in ("*** Welcome to Varna Hub", "*** 4 rooms, 7 users online", "*** be kind, keep it short please, this line is long",
+              "#mesh (7)\n#ops (2)\n#bg (3)"):
+        g.rrc_line("notice", None, s)
+    g._rrc_rooms = [("mesh", "general LoRa chatter"), ("ops", "hub operators"), ("bg", ""),
+                    ("a-room-with-a-very-long-name-indeed", "a topic that is far too long to fit on one small line"),
+                    ("trading", "swap & sell"), ("late", "")]
+    g._rrc_list_seen = True
+    g.draw()
+    t.png(os.path.join(out, "rrc_console.png"))
+    rrc_ui.panel_toggle(g, "rooms")
+    g.draw()
+    t.png(os.path.join(out, "rrc_rooms.png"))
+    rrc_ui.panel_close(g)
+    g.state = ui.STATE_RRC_CHAT
+    g._rrc_room = "mesh"
+    g._rrc_members = 7
+    g._rrc_members_exact = False
+    g._rrc_lines = []
+    g._rrc_flat = None
+    for nick, s in (("kpn3o", "anyone on 868 tonight"), ("alex", "yes, SF8 from the mast, snr 7 here, 2 hops"),
+                    ("vesna", "o/"), ("a-very-long-nickname-here", "hello from a long nick")):
+        g.rrc_line("msg", nick, s)
+    g.rrc_line("notice", None, "*** vesna joined")
+    g._rrc_roster = [(bytes([0x93, 0x48, 0x1a, 0x35]) * 4, "alex"), (b"\xaa\xcf\x70\x98" * 4, "kpn3o"),
+                     (b"\xc0\xff\xee\x42" * 4, None), (b"\x96\x99\xf9\x8b" * 4, "a-very-long-nickname-here-x"),
+                     (b"\x63\x35\xc5\xb9" * 4, "bigv"), (b"\x11" * 16, "wraith"), (b"\x22" * 16, "vesna")]
+    g._rrc_input = "vesna: welcome"
+    g.draw()
+    t.png(os.path.join(out, "rrc_room.png"))
+    rrc_ui.panel_toggle(g, "members")
+    g._rrc_panel_idx = 3
+    g.draw()
+    t.png(os.path.join(out, "rrc_members.png"))
+
+
 if __name__ == "__main__":
     out = sys.argv[1] if len(sys.argv) > 1 else "."
     os.makedirs(out, exist_ok=True)
@@ -275,4 +316,5 @@ if __name__ == "__main__":
     scene_chat(out)
     scene_rec(out)
     scene_setup(out)
-    print("wrote 12 PNGs to", out)
+    scene_rrc(out)
+    print("wrote 16 PNGs to", out)

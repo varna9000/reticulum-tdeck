@@ -544,7 +544,7 @@ if _u._pro is not None:
     # The Pro draws the panel itself (ui_pro.draw_rrc_panel): five two-line
     # 32 px rows a finger can hit, in a taller box. Everything here that
     # windows or skips by these two follows.
-    PANEL_H = 204
+    PANEL_H = 208      # ends on a scrollback row boundary: 58 + 208 = 42 + 14 * 16
     PANEL_ROWS = 5
 _PANEL_TEXT_X = PANEL_X + 8
 _PANEL_HASH_X = PANEL_X + PANEL_W - 8 - 10 * CHAR_W

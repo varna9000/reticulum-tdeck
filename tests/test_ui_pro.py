@@ -1334,7 +1334,7 @@ def test_rrc_panel_rooms():
     print("rrc: panel")
     P = ui_pro
     g, t, R = mkrrc(ui.STATE_RRC_ROOMS)
-    check("the Pro panel has five rows in a taller box", R.PANEL_ROWS == 5 and R.PANEL_H == 204 and R.PANEL_Y == 58 and R.PANEL_X == 8)
+    check("the Pro panel has five rows in a taller box", R.PANEL_ROWS == 5 and R.PANEL_H == 208 and R.PANEL_Y == 58 and R.PANEL_X == 8)
     g._rrc_panel = True
     g._rrc_panel_kind = "rooms"
     g._rrc_panel_idx = 1
@@ -1344,7 +1344,11 @@ def test_rrc_panel_rooms():
     check("...and the count", find(t, "small", "3 rooms") is not None or find(t, "text", "3 rooms") is not None)
     frame = [c for c in t.calls if c[0] == "rect" and c[1] == 8 and c[2] == 58 and c[3] == 224 and c[4] == 1]
     check("the box starts at 8,58 and is 224 wide", len(frame) == 1, repr(frame))
-    check("...and 204 tall", any(c[0] == "rect" and c[1] == 8 and c[2] == 58 + 203 and c[3] == 224 for c in t.calls))
+    check("...and 208 tall, ending on a scrollback row boundary (no sliver of the row under its edge)",
+          any(c[0] == "rect" and c[1] == 8 and c[2] == 58 + 207 and c[3] == 224 for c in t.calls) and (58 + 208 - 42) % 16 == 0)
+    strips = [c for c in t.calls if c[0] == "rect" and c[2] == 58 and c[4] == 208 and c[5] == g.BG_DARK and c[3] == 8]
+    check("the strips beside the box are cleared (the rows under it are not redrawn, and their first letters showed)",
+          sorted(c[1] for c in strips) == [0, 232], repr(strips))
     j = find(t, "text", "+ join by name...")
     check("the join action is the first row, on one line", j is not None and j[2] == 16 and prow_y(0) < j[3] < prow_y(0) + 16, repr(j))
     n = find(t, "text", "#mesh")
@@ -1360,7 +1364,7 @@ def test_rrc_panel_rooms():
           len(lt) == 1 and lt[0][2] + len(lt[0][1]) * P.SW <= 224, repr(lt))
     rules = sorted(c[2] for c in t.calls if c[0] == "rect" and c[4] == 1 and c[1] == 10 and prow_y(0) <= c[2] < 240)
     check("a rule under each of the four rows the list has; the empty fifth slot is blank", rules == [prow_y(i) + 31 for i in range(4)], repr(rules))
-    ft = [c for c in texts(t) if c[3] == 242]
+    ft = [c for c in texts(t) if 242 <= c[3] < 250]
     check("foot band: how to close and what Enter does", "".join(c[1] for c in ft).replace(" ", "") .find("BKSP") >= 0
           and any("join" in c[1] for c in ft) and all(c[5] == g.SEL_BG for c in ft), repr(ft))
     under = [c for c in texts(t) if 58 <= c[3] < 262 and c[2] == 0]
@@ -1398,7 +1402,7 @@ def test_rrc_panel_members():
           and h is not None and h[3] == prow_y(0) + 18, repr((a, h)))
     q = [c for c in texts(t) if c[1] == "?" and c[3] == prow_y(1) + 1]
     check("a member who never spoke is '?'", len(q) == 1, repr(q))
-    check("foot band names the mention", any("mention" in c[1] and c[3] == 242 for c in texts(t)))
+    check("foot band names the mention", any("mention" in c[1] and 242 <= c[3] < 250 for c in texts(t)))
     g._rrc_roster = [(bytes([i]) * 16, "n%d" % i) for i in range(12)]
     g._rrc_pc = {}
     g._rrc_panel_idx = 0
@@ -1407,7 +1411,7 @@ def test_rrc_panel_members():
     check("five visible rows drive the panel's scrolling", g._rrc_panel_idx == 6 and g._rrc_panel_scroll == 2, "%d %d" % (g._rrc_panel_idx, g._rrc_panel_scroll))
     del t.calls[:]
     R.draw_room(g)
-    check("a scroll thumb inside the box", any(c[0] == "rect" and c[1] == 226 and c[3] == 4 and 80 <= c[2] < 240 and c[5] != g.BG_DARK for c in t.calls))
+    check("a scroll thumb inside the box, a gap away from the frame", any(c[0] == "rect" and c[1] == 225 and c[3] == 3 and 80 <= c[2] < 240 and c[5] != g.BG_DARK for c in t.calls))
     check("nothing goes through ui._sdraw", texts(t, "big") == [])
 
 if __name__ == "__main__":

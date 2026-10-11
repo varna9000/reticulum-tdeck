@@ -1048,6 +1048,10 @@ def draw_rrc_panel(ui):
     if R._pc(ui, "chrome", key):
         ui._rrc_pc = {"chrome": key}       # the fill below wipes every other part
         tft.fill_rect(X, Y, W, H, paper)
+        # The scrollback rows under the box are not redrawn while it is up;
+        # clear what shows of them beside it.
+        tft.fill_rect(0, Y, X, H, paper)
+        tft.fill_rect(X + W, Y, _u.SCREEN_W - X - W, H, paper)
         for i in range(2):
             tft.fill_rect(X + i, Y + i, W - 2 * i, 1, ink)
             tft.fill_rect(X + i, Y + H - 1 - i, W - 2 * i, 1, ink)
@@ -1098,12 +1102,12 @@ def draw_rrc_panel(ui):
     if R._pc(ui, "sb", (len(rows), top)):
         ty = Y + 22
         th = n_rows * ROW_H
-        tft.fill_rect(X + W - 6, ty, 4, th, paper)
+        tft.fill_rect(X + W - 7, ty, 3, th, paper)
         if len(rows) > n_rows:
-            tft.fill_rect(X + W - 6, ty + th * top // len(rows), 4, max(6, th * n_rows // len(rows)), ink)
+            tft.fill_rect(X + W - 7, ty + th * top // len(rows), 3, max(6, th * n_rows // len(rows)), ink)
     if R._pc(ui, "foot", action):
-        fy = Y + H - 22
-        tft.fill_rect(X + 2, fy, W - 4, 20, band)
-        tft.text(ui.font, "(BKSP)close", MARGIN, fy + 2, paper, band)
+        fy = Y + H - 24
+        tft.fill_rect(X + 2, fy, W - 4, 22, band)
+        tft.text(ui.font, "(BKSP)close", MARGIN, fy + 3, paper, band)
         s = "(ENT)" + action
-        tft.text(ui.font, s, X + W - 8 - len(s) * _u.CHAR_W, fy + 2, paper, band)
+        tft.text(ui.font, s, X + W - 8 - len(s) * _u.CHAR_W, fy + 3, paper, band)
