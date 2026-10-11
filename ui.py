@@ -2850,6 +2850,8 @@ class UI:
         ql = q.lower()
         y = BODY_Y + CHAR_H
         title = self._FIND_TITLES[self.node_tab]
+        if _pro is not None:
+            title = "Lookup" + title[4:]      # its toolbar button there is Lookup (L)
         if self._cache[2] != title:
             self._cache[2] = title
             self.tft.fill_rect(0, y, SCREEN_W, CHAR_H, self.TAB_BG)

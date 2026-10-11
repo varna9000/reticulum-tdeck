@@ -186,6 +186,7 @@ i0 = src.index("sleep_tick(self)")
 check("the screen-off loop reaches ui_pro only behind the _pro test",
       src[i0 - 80:i0].rstrip().endswith("if _pro is not None:\n                    _pro.") and src.count("sleep_tick(") == 1, src[i0 - 80:i0 + 20])
 check("v1 Lookup keeps its thin rows", g._find_rows() == ui.BODY_ROWS - 3)
+check("v1 keeps its Find titles", ui.UI._FIND_TITLES[0].startswith("Find peer"))
 g.state = ui.STATE_SHELL
 g._shell_menu = True
 g._shell_menu_idx = 0

@@ -1688,6 +1688,8 @@ def test_find_rows():
     check("seven two-line rows fit between the title and the count row", g._find_rows() == 7 == P.FIND_ROWS and frow_y(7) == 282)
     g._find_sel = 1
     g._draw_find()
+    ti = [c[1] for c in texts(t) if c[3] == 42]
+    check("the title says Lookup, as the toolbar does", len(ti) == 1 and ti[0].startswith("Lookup peer") and "Find" not in ti[0], repr(ti))
     names = [c for c in texts(t) if c[1].startswith("node")]
     check("names in the main font, one per 32 px row", [(c[1], c[2], c[3]) for c in names] == [("node%02d" % i, 16, frow_y(i) + 1) for i in range(7)],
           repr(names[:2]))
