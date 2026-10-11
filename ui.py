@@ -2935,8 +2935,11 @@ class UI:
             self._cache[BODY_ROWS] = n + keys
             y = BODY_Y + (BODY_ROWS - 1) * CHAR_H
             self._row("", y, self.DIM_CYAN)
-            self._stext(n, 8, y, self.DIM_CYAN)
-            self._stext(keys, SCREEN_W - 8 - len(keys) * self.SW, y, self.DIM_CYAN)
+            if _pro is not None:
+                _pro.find_count_row(self, n, keys, y)   # 30 columns: needs the small font
+            else:
+                self._stext(n, 8, y, self.DIM_CYAN)
+                self._stext(keys, SCREEN_W - 8 - len(keys) * self.SW, y, self.DIM_CYAN)
         if self._cache[INPUT_SLOT] != "F" + q:
             self._cache[INPUT_SLOT] = "F" + q
             self._draw_input_line(q)

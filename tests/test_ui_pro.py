@@ -1883,6 +1883,33 @@ def test_lists_review():
     bar = [c[1] for c in texts(t) if c[3] == ui.INPUT_Y]
     check("Radio stats has nothing to select: its footer offers only back", "ENT" not in bar and "BKSP" in bar, repr(bar))
 
+
+def test_find_count_row_fits():
+    print("device pass: Lookup count row")
+    # Seen on the device as "2490=listen": with a microphone the key hints are
+    # 25 characters, and in the main font they ran over the "249 heard" count.
+    P = ui_pro
+    g, t = mkfind(10)
+    g._find_snap = [(bytes([i % 250]) * 16, "n", 0) for i in range(2490)]
+    g.on_listen_start = lambda: None
+    g._cache = [''] * ui.CACHE_ROWS
+    g._draw_find()
+    y = ui.BODY_Y + (ui.BODY_ROWS - 1) * ui.CHAR_H
+    row = [c for c in t.calls if c[0] in ("text", "small", "big") and y <= c[3] < y + 16 and c[1].strip()]
+    cnt = [c for c in row if "heard" in c[1]]
+    keys = [c for c in row if "listen" in c[1]]
+    check("the count and the key hints are both drawn, in the small font", len(cnt) == 1 and len(keys) == 1
+          and cnt[0][0] == "small" and keys[0][0] == "small", repr(row))
+    check("...and do not overlap", cnt[0][2] + len(cnt[0][1]) * P.SW < keys[0][2], repr((cnt, keys)))
+    check("...and the hints end inside the panel", keys[0][2] + len(keys[0][1]) * P.SW <= 236, repr(keys))
+    for n in ("1600/3200 heard", "16000/32000 heard", "123456/1234567 heard"):
+        del t.calls[:]
+        P.find_count_row(g, n, "0=listen Ent=add Bsp=back", y)
+        sm = texts(t, "small")
+        check("a searched count (%s) still clears the hints" % n,
+              len(sm) == 2 and sm[0][2] + len(sm[0][1]) * P.SW < sm[1][2] and sm[0][1][0].isdigit()
+              and sm[1][1] == "0=listen Ent=add Bsp=back", repr(sm))
+
 if __name__ == "__main__":
     test_pro_layout_is_active_on_the_pro()
     test_list_window_follows_the_selection()
@@ -1939,6 +1966,7 @@ if __name__ == "__main__":
     test_wifi_rows()
     test_shell_menu()
     test_lists_review()
+    test_find_count_row_fits()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

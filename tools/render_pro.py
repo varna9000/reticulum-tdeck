@@ -333,7 +333,9 @@ def scene_misc(out):
     snap = [(bytes([0x40 + i]) * 16, n, 1700000000) for i, n in enumerate(
         ("Alexander the Great of Varna and Burgas", "alex", "Alexa home node", "Tula Group", "malex"))]
     g.on_contact_snapshot = lambda tab: snap
+    g.on_listen_start = lambda: None      # the Pro has a microphone: the longest key hints
     g._find_open()
+    g._find_snap = g._find_snap * 400     # a busy mesh: a four-digit "heard" count
     for ch in b"alex":
         g.handle_key(bytes([ch]))
     g.draw()

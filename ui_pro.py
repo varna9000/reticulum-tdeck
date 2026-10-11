@@ -1287,6 +1287,18 @@ def draw_find_rows(ui, res):
     _lane(ui, 3 + FIND_ROWS, FIND_Y, FIND_ROWS, len(res), top)
 
 
+def find_count_row(ui, n, keys, y):
+    """Lookup's "N heard" count and its key hints. ui.py draws them with its
+    small font, which on this board is the main one: with a microphone the
+    hints are 25 characters and ran over the count ("2490=listen")."""
+    kx = _u.SBAR_X - 3 - len(keys) * SW
+    room = (kx - 4) // SW - 1               # characters left of the hints, one blank between
+    if len(n) > room:
+        n = n.replace(" heard", "")         # the word goes before a digit does
+    _sd(ui, n[:max(0, room)], 4, y + 2, ui.DIM_CYAN, ui.BG_DARK)
+    _sd(ui, keys, kx, y + 2, ui.DIM_CYAN, ui.BG_DARK)
+
+
 def draw_wifi_rows(ui):
     """WiFi scan: the network over its signal strength."""
     nets = ui._wifi_networks
