@@ -115,6 +115,13 @@ def power_up():
     # it; the V1.0 sheet shows a pull-down). Nothing here reads the GPS, so
     # hold it off: it would otherwise run through every sleep.
     Pin(config.GPS_EN, Pin.OUT).value(0)
+    # ...and take our serial line off it. GPIO 43 is the chip's default UART0
+    # TX and comes out of the boot ROM driven high, straight into the GPS
+    # module's receive pin: with the module's supply off that fed it through
+    # the pin instead (bench 2026-10-11, battery: light sleep 25 mA with the
+    # pad live, 5 mA with it isolated; no other pad on the board mattered).
+    # Nothing here uses UART0 -- the REPL is USB -- so park it as an input.
+    Pin(config.GPS_TX, Pin.IN, Pin.PULL_DOWN)
     if HAS_AUDIO:              # True here only when the config or the saved profile says so
         # The DAC sits in the module slot, behind its own power enable.
         Pin(getattr(config, "AUDIO_EN", 41), Pin.OUT).value(1)
@@ -456,7 +463,9 @@ _kbd_int = Pin(config.KBD_INT, Pin.IN, Pin.PULL_UP)
 #     (5-6 mA with every other pad still held). Nothing else on the board
 #     cares: panel, radio, I2C, the INT lines, touch reset, keyboard light,
 #     vibration, GPS/modem/SD, USB, mic, BCLK and DOUT each add nothing.
-#   * the flash/PSRAM pads without ESP-IDF's sleep pull-ups: ~20 mA.
+#   * the GPS serial line, GPIO 43, driven high into the switched-off GPS:
+#     20 mA. That one is parked in power_up(), awake or asleep.
+# The flash/PSRAM pads get ESP-IDF's sleep pull-ups as well (0.5 mA here).
 SLEEP_MSPI_STANDBY = True
 
 

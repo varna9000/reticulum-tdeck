@@ -456,6 +456,14 @@ for mod, want_pins in (("board_tdeck_pro", True), ("board_tdeck_v1", False)):
     check(mod + (" lets the I2S LRCK pad go in sleep" if want_pins else " isolates no pads of its own"),
           ("def sleep_isolate_pins" in src) == want_pins)
 
+# Bench 2026-10-11: GPIO 43 (the chip's default UART0 TX, wired to the GPS
+# module's receive pin) idles high and feeds the switched-off GPS: 20 mA,
+# asleep and awake. The board parks it as an input at power-up.
+src = open(os.path.join(ROOT, "board_tdeck_pro.py")).read()
+pu = src[src.index("def power_up():"):src.index("power_up()\n\n")]
+check("the Pro parks the GPS serial line at power-up", "Pin(config.GPS_TX, Pin.IN, Pin.PULL_DOWN)" in pu, pu[-400:])
+check("...after switching the GPS off", pu.index("config.GPS_EN") < pu.index("config.GPS_TX"))
+
 if _failures:
     print("\n%d FAILED: %s" % (len(_failures), ", ".join(_failures)))
     sys.exit(1)

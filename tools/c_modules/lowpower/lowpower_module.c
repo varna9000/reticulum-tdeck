@@ -60,9 +60,11 @@ static bool mspi_standby = false;
 // battery: stock light sleep 7 mA, ours 40 mA --
 //   * a pad left DRIVING a chip that would otherwise idle: the I2S LRCK line
 //     kept the PCM5102A awake, 13 mA. The board lists such pads.
-//   * the flash/PSRAM pads: without the sleep pull-ups (the PSRAM/flash
-//     "leakage workarounds" and MSPI_NEED_ALL_IO_PU) the memories do not sit
-//     in standby, ~20 mA.
+//   * the flash/PSRAM pads: ESP-IDF's sleep pull-ups for them (the
+//     PSRAM/flash "leakage workarounds" and MSPI_NEED_ALL_IO_PU). Measured
+//     at 0.5 mA on the Pro; kept because it is what ESP-IDF intends.
+// (The Pro's other 20 mA was a pad driving an unpowered chip, GPIO 43 into
+// the GPS; that one is parked by the board at power-up, not here.)
 // The select is re-applied on every sleep: cheap, and nothing else may have
 // cleared it in between.
 static void lp_apply_sleep_pads(void) {
