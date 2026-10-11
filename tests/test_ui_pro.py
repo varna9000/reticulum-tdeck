@@ -1184,6 +1184,34 @@ def test_setup_review_gaps():
     c = g._lora_cfg
     check("LoRa cfg shows frequency, SF and bandwidth", it[10][1] == "%dk SF%d BW%s" % (c["freq_khz"], c["sf"], c["bw"]))
 
+
+def test_setup_sub_pages_have_a_back_header():
+    print("device pass: sub-page headers")
+    # Found on the device: the Name page had no header to tap and Backspace
+    # deletes the name there, so there was no visible way back.
+    for page, title in ((ui._SET_NODE_NAME, "Node Name"), (ui._SET_TCP_HOST, "TCP Server Address"),
+                        (ui._SET_LORA_FREQ, "LoRa Frequency (kHz)"), (ui._SET_RADIO, None), (ui._SET_LORA, None),
+                        (ui._SET_WIFI_SCAN, None)):
+        g, t = mksetup()
+        g._settings_page = page
+        g.cmd_buf = bytearray(b"Pro")
+        g.draw()
+        hd = [c for c in texts(t) if c[1].startswith("< ") and 20 < c[3] and c[3] + 16 <= 41]
+        check("page %d has a '< title' header in the band" % page, len(hd) == 1 and hd[0][2] == 4
+              and (title is None or hd[0][1] == "< " + title), repr(hd))
+        check("page %d: a rule under it" % page, any(c[0] == "rect" and c[2] == 41 and c[3] == 240 and c[4] == 1 for c in t.calls))
+        old = [c for c in texts(t) if c[3] == ui.BODY_Y and c[2] == 0]
+        check("page %d: the old header row is not drawn under it" % page, old == [], repr(old))
+        del t.calls[:]
+        g.draw()
+        check("page %d: the header is cached" % page, not any(c[0] == "text" and c[1].startswith("< ") for c in t.calls))
+    g, t = mksetup()
+    g._settings_page = ui._SET_WIFI_SCAN
+    g._wifi_err = "wrong password, try again please"
+    g.draw()
+    hd = [c for c in texts(t) if c[1].startswith("< ")]
+    check("a long header is cut to the panel", len(hd) == 1 and 4 + len(hd[0][1]) * 8 <= 240, repr(hd))
+
 if __name__ == "__main__":
     test_pro_layout_is_active_on_the_pro()
     test_list_window_follows_the_selection()
@@ -1226,6 +1254,7 @@ if __name__ == "__main__":
     test_setup_window_and_hashes()
     test_setup_sub_page_round_trip()
     test_setup_review_gaps()
+    test_setup_sub_pages_have_a_back_header()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

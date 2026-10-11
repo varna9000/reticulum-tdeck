@@ -237,6 +237,17 @@ def scene_setup(out):
     g._settings_idx = 14
     g.draw()
     t.png(os.path.join(out, "setup_end.png"))
+    g._settings_page = ui._SET_NODE_NAME
+    g.cmd_buf = bytearray(b"Pro")
+    g._cache = [''] * ui.CACHE_ROWS
+    g.draw()
+    t.png(os.path.join(out, "setup_name.png"))
+    g._settings_page = ui._SET_RADIO
+    g._settings_scroll = 0
+    g.cmd_buf = bytearray()
+    g._cache = [''] * ui.CACHE_ROWS
+    g.draw()
+    t.png(os.path.join(out, "setup_radio.png"))
 
 
 if __name__ == "__main__":
@@ -246,4 +257,4 @@ if __name__ == "__main__":
     scene_chat(out)
     scene_rec(out)
     scene_setup(out)
-    print("wrote 8 PNGs to", out)
+    print("wrote 10 PNGs to", out)

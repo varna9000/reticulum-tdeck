@@ -123,6 +123,14 @@ g.tft = Rec()
 g._cache = [''] * ui.CACHE_ROWS
 g.draw()
 check("v1 Setup still has its body frame", len([r for r in g.tft.rects if r[2] == 1 and r[3] == 12]) == 4)
+g.tft = Rec2 = type("Rec2", (), {"__init__": lambda s: setattr(s, "texts", []),
+                              "text": lambda s, f, x, a, b, *k: s.texts.append((x if isinstance(x, str) else bytes(x).decode("latin-1"), a, b)),
+                              "__getattr__": lambda s, n: (lambda *a, **k: None)})()
+g._settings_page = ui._SET_NODE_NAME
+g.cmd_buf = bytearray(b"x")
+g._cache = [''] * ui.CACHE_ROWS
+g.draw()
+check("v1 sub-page header is the old row at BODY_Y", any(s == "Node Name" and y == ui.BODY_Y for s, x, y in g.tft.texts), repr(g.tft.texts[:3]))
 print()
 if fails:
     print("%d FAILED" % len(fails))

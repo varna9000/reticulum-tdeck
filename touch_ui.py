@@ -278,9 +278,9 @@ def _back(ui, from_header):
             return True
         return False
     if st == _u.STATE_SETTINGS:
-        if ui._settings_page in ui._TEXT_ENTRY_PAGES:
-            return False              # Esc there cancels what was typed
-        ui.handle_key(b'\x1b')
+        if ui._settings_page in ui._TEXT_ENTRY_PAGES and not from_header:
+            return False              # Esc there cancels what was typed: not on a stray edge swipe
+        ui.handle_key(b'\x1b')       # a tap on the "< title" header is deliberate
         return True
     if st == _u.STATE_SHELL:
         if ui._shell_menu:

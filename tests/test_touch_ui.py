@@ -661,8 +661,10 @@ def test_setup():
     check("edge swipe goes back", touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is True and seen == [b'\x1b'], repr(seen))
     del seen[:]
     g._settings_page = g._TEXT_ENTRY_PAGES[0]
-    check("on a text-entry page back does nothing (it would discard the entry)",
+    check("on a text-entry page an edge swipe does nothing (it would discard the entry by accident)",
           touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is False and seen == [], repr(seen))
+    check("...but a tap on its '< title' header is a deliberate cancel (the Pro has no Esc key)",
+          tap(g, 30, 30) is True and seen == [b'\x1b'], repr(seen))
 
 
 def test_find():

@@ -918,6 +918,23 @@ def settings_page(ui):
         ui.tft.fill_rect(0, TAB_Y, _u.SCREEN_W, _u.BODY_Y - TAB_Y, ui.BG_DARK)
 
 
+def sub_header(ui, text):
+    """A Setup sub-page's title row, as the same band the main page has:
+    "< title" with a rule under it. Tapping it leaves the page -- the only
+    way back a finger has, and on the text pages the only obvious one at
+    all: Backspace edits there and this board has no Esc key."""
+    ck = "H" + text
+    if ui._cache[1] == ck:
+        return False
+    ui._cache[1] = ck
+    tft = ui.tft
+    W = _u.SCREEN_W
+    tft.fill_rect(0, TAB_Y, W, TAB_H, ui.BG_DARK)
+    tft.text(ui.font, ui._tb("< " + text[:27]), 4, TAB_Y + 3, ui.NEON_CYAN, ui.BG_DARK)
+    tft.fill_rect(0, TAB_Y + TAB_H - 1, W, 1, ui.NEON_CYAN)
+    return True
+
+
 def draw_setup(ui):
     tft = ui.tft
     paper = ui.BG_DARK

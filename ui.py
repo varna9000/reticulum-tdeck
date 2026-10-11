@@ -1221,6 +1221,8 @@ class UI:
         rows would be skipped right after a cache wipe — leaving stale
         pixels from a previous page (e.g. radio stats rows under a shorter
         settings menu)."""
+        if _pro is not None and idx == 1 and y == BODY_Y and self.state == STATE_SETTINGS:
+            return _pro.sub_header(self, text)   # a "< title" band a finger can tap
         key = text or ' '
         if self._cache[idx] == key:
             return False
