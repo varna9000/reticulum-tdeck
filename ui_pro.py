@@ -645,8 +645,44 @@ def chat_lines(ui):
 ME_BAR_X = 233
 
 
+# Tile icons: 20 px wide, drawn over the tile's two rows.
+_PIC = _u._icon((
+    ".##################.", "#..................#", "#..................#", "#...###............#",
+    "#..#####...........#", "#..#####...........#", "#...###......#.....#", "#...........###....#",
+    "#.....#....#####...#", "#....###..#######..#", "#...#####.########.#", "#..#################",
+    "#.##################", "#..................#", "#..................#", ".##################."))
+_WAVE = _u._icon((
+    ".........##.........", ".........##.........", ".....##..##.........", ".....##..##..##.....",
+    ".....##..##..##.....", ".##..##..##..##.....", ".##..##..##..##..##.", ".##..##..##..##..##.",
+    ".##..##..##..##..##.", ".##..##..##..##..##.", ".##..##..##..##.....", ".....##..##..##.....",
+    ".....##..##..##.....", ".....##..##.........", ".........##.........", ".........##........."))
+
+TILE_W = 150
+
+
 def _tile(ui, r, x0, y, fg, bg, expired):
-    pass                             # Task 3
+    """One 16 px half of a media tile; the two halves stack into a 30 px
+    framed box, so a tile cut by the window's edge still draws what is in
+    view."""
+    tft = ui.tft
+    top = r[0] == K_TOP
+    h = 16 if top else 14
+    if top:
+        tft.text(ui.font, r[2], x0 + 32, y, fg, bg)
+        if expired:
+            tft.fill_rect(x0 + 32, y + 8, len(r[2]) * _u.CHAR_W, 1, fg)
+        tft.fill_rect(x0, y, TILE_W, 1, fg)
+    else:
+        _sd(ui, "expired" if expired else r[5], x0 + 32, y, fg, bg)
+        tft.fill_rect(x0, y + 13, TILE_W, 1, fg)
+    tft.fill_rect(x0, y, 1, h, fg)
+    tft.fill_rect(x0 + TILE_W - 1, y, 1, h, fg)
+    icon = _PIC if r[4] & F_IMG else _WAVE
+    off = 7 if top else -9           # the icon's 16 rows start 7 px into the tile
+    for dx, dy, w in icon[2]:
+        yy = dy + off
+        if 0 < yy < h:
+            tft.fill_rect(x0 + 6 + dx, y + yy, w, 1, fg)
 
 
 def draw_chat(ui):

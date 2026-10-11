@@ -835,6 +835,70 @@ def test_no_body_frame_on_the_pro_chat():
     check("the body frame's corner arms are not drawn on the Pro chat", arms == [], repr(arms))
 
 
+def test_chat_tiles():
+    print("chat: tiles")
+    P = ui_pro
+    g, t = mkchat()
+    mid = say(g, False, "[image 12k] nice", at=0, image=b"jpg")      # rows: hdr, top, bot, text
+    vid = say(g, True, "[voice 3s]", at=700, status=2, audio=b"c2")  # rows: hdr, top, bot
+    # RecTFT records icons through ui._bitmap only; tiles draw icon runs as rects
+    ui_pro.draw_chat(g)
+    ti = find(t, "text", "image")
+    check("image tile title on its top row, right of the icon", ti is not None and ti[3] == crow_y(1) and ti[2] == P.PEER_X + 32, repr(ti))
+    cap = find(t, "small", "12k")
+    check("caption in the small font on the bottom row", cap is not None and cap[3] == crow_y(2) and cap[2] == P.PEER_X + 32, repr(cap))
+    frame = [c for c in t.calls if c[0] == "rect" and c[3] == P.TILE_W and c[4] == 1 and c[1] == P.PEER_X]
+    check("frame: top line on the top row, bottom line inside the bottom row",
+          sorted(c[2] for c in frame) == [crow_y(1), crow_y(2) + 13], repr(frame))
+    sides = [c for c in t.calls if c[0] == "rect" and c[3] == 1 and c[1] in (P.PEER_X, P.PEER_X + P.TILE_W - 1) and crow_y(1) <= c[2] < crow_y(3)]
+    check("frame: both sides on both rows", len(sides) == 4, repr(sides))
+    icon = [c for c in t.calls if c[0] == "rect" and c[4] == 1 and P.PEER_X + 6 <= c[1] < P.PEER_X + 26 and c[3] <= 20
+            and crow_y(1) < c[2] < crow_y(3) and c[2] not in (crow_y(1), crow_y(2) + 13)]
+    check("the icon spans both rows", any(c[2] < crow_y(2) for c in icon) and any(c[2] >= crow_y(2) for c in icon), str(len(icon)))
+    vt = find(t, "text", "voice")
+    check("my voice tile is indented like my text", vt is not None and vt[2] == P.ME_X + 32 and vt[3] == crow_y(5), repr(vt))
+    check("its caption", find(t, "small", "3s - tap to play") is not None)
+    mk = [c for c in texts(t) if c[1] == "\xfb"]
+    check("a text-less message shows its mark on the tile's top row", len(mk) == 1 and mk[0][3] == crow_y(5), repr(mk))
+    check("tile rows are in the image map", g._visible_image_lines == {1: mid, 2: mid}, repr(g._visible_image_lines))
+    check("...and the audio map", g._visible_audio_lines == {5: vid, 6: vid}, repr(g._visible_audio_lines))
+    del t.calls[:]
+    g.chat_cursor = 2
+    ui_pro.draw_chat(g)
+    inv = [c for c in t.calls if c[0] == "rect" and c[4] == 16 and c[5] == g.SEL_BG]
+    check("the cursor on one half inverts both halves", sorted(c[2] for c in inv) == [crow_y(1), crow_y(2)], repr(inv))
+    opened = []
+    g._enter_image_view = lambda m: opened.append(m)
+    g._chat_open_cursor_media()
+    check("Enter on the bottom half opens the image", opened == [mid], repr(opened))
+    g._image_cache.clear()
+    del t.calls[:]
+    ui_pro.draw_chat(g)
+    check("an expired image says so", find(t, "small", "expired") is not None and find(t, "small", "12k") is None)
+    check("...and its title is struck through",
+          any(c[0] == "rect" and c[4] == 1 and c[1] == P.PEER_X + 32 and c[3] == 5 * 8 and c[2] == crow_y(1) + 8 for c in t.calls))
+
+
+def test_chat_tile_cut_by_the_window():
+    P = ui_pro
+    g, t = mkchat()
+    mid = say(g, False, "[image 12k]", at=0, image=b"jpg")           # hdr, top, bot
+    for k in range(15):
+        say(g, True, "line %d" % k, at=1000 + 700 * k)               # 15 inline rows
+    ui_pro.draw_chat(g)                                              # 18 rows: window shows rows 2..17
+    check("only the tile's bottom half is in view", g._visible_image_lines == {0: mid}, repr(g._visible_image_lines))
+    check("the half draws its caption and no title", find(t, "small", "12k") is not None and find(t, "text", "image") is None)
+    g.chat_cursor = 0
+    opened = []
+    g._enter_image_view = lambda m: opened.append(m)
+    g._chat_open_cursor_media()
+    check("and still opens", opened == [mid])
+    g.chat_scroll = 1
+    del t.calls[:]
+    ui_pro.draw_chat(g)
+    check("scrolled one row up, both halves are drawn", find(t, "text", "image") is not None and g._visible_image_lines == {0: mid, 1: mid})
+
+
 if __name__ == "__main__":
     test_pro_layout_is_active_on_the_pro()
     test_list_window_follows_the_selection()
@@ -867,6 +931,8 @@ if __name__ == "__main__":
     test_chat_header_and_rows()
     test_chat_cursor_and_updates()
     test_no_body_frame_on_the_pro_chat()
+    test_chat_tiles()
+    test_chat_tile_cut_by_the_window()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))
