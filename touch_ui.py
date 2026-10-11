@@ -311,7 +311,14 @@ def _tap_pro_chat(ui, y):
     """The Pro's chat: tiles are the only tap targets in the body. A tap on
     text does nothing -- the time is on every block, so a selection would buy
     a 700 ms refresh and no information."""
-    i = (y - _u._pro.CHAT_Y) // _u.CHAR_H
+    i = -1
+    ys = getattr(ui, "_chat_ys", ())       # where draw_chat put each row: blocks have gaps
+    for k in range(len(ys)):
+        if ys[k] <= y < ys[k] + _u.CHAR_H:
+            i = k
+            break
+    if i < 0:
+        return False
     mid = ui._visible_image_lines.get(i)
     if mid is not None:
         if (ui.selected_peer, mid) not in ui._image_cache:
@@ -401,7 +408,7 @@ def _scroll_content(ui, n):
     brings earlier content into view. True if this screen is such content."""
     st = ui.state
     if st == _u.STATE_CHAT:
-        top = max(0, len(ui._build_chat_lines()) - (_u.BODY_ROWS - 1))
+        top = ui._chat_max_scroll()
         ui.chat_scroll = max(0, min(top, ui.chat_scroll + n))
         ui.chat_cursor = -1
         ui.dirty = True

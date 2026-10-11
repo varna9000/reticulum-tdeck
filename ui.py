@@ -646,6 +646,7 @@ class UI:
         self._sheet = None
         self._sheet_scroll = 0
         self._tools_up = False        # ui_pro: its toolbar is on the panel
+        self._chat_nvis = BODY_ROWS - 1   # chat rows on screen (ui_pro shows fewer: gaps)
         self._cache = [''] * CACHE_ROWS
         self._nav_bat_cache = ''
         self._nav_mid_cache = ''
@@ -1735,6 +1736,12 @@ class UI:
                                      img["w"], strip_h)
 
     # --- Chat screen ---
+
+    def _chat_max_scroll(self):
+        """How many lines the chat can be scrolled back."""
+        if _pro is not None:
+            return _pro.chat_max_scroll(self)
+        return max(0, len(self._build_chat_lines()) - (BODY_ROWS - 1))
 
     def _invalidate_chat_lines(self):
         """Invalidate cached chat lines — call when messages change."""
@@ -4597,8 +4604,7 @@ class UI:
                 # left/right = page through chat history
                 _page = BODY_ROWS - 2
                 if left:
-                    self.chat_scroll = min(self.chat_scroll + _page,
-                                           max(0, len(self._build_chat_lines()) - (BODY_ROWS - 1)))
+                    self.chat_scroll = min(self.chat_scroll + _page, self._chat_max_scroll())
                 else:
                     self.chat_scroll = max(0, self.chat_scroll - _page)
                 self.chat_cursor = -1
@@ -4710,7 +4716,7 @@ class UI:
                 self._rrc_scroll_chat += 1
         elif self.state == STATE_CHAT:
             # Move cursor up; scroll viewport when cursor reaches top
-            _chat_rows = BODY_ROWS - 1
+            _chat_rows = self._chat_nvis
             if self.chat_cursor < 0:
                 self.chat_cursor = _chat_rows - 1  # activate at bottom
             elif self.chat_cursor > 0:
@@ -4718,7 +4724,7 @@ class UI:
             else:
                 # Cursor at top — scroll viewport up (bounded so the view
                 # never shrinks past the oldest full window)
-                if self.chat_scroll < max(0, len(self._build_chat_lines()) - _chat_rows):
+                if self.chat_scroll < self._chat_max_scroll():
                     self.chat_scroll += 1
         else:
             # A state that wants trackball scrolling must claim it above --
@@ -4782,7 +4788,7 @@ class UI:
                 self._rrc_scroll_chat -= 1
         elif self.state == STATE_CHAT:
             # Move cursor down; scroll viewport when cursor reaches bottom
-            _chat_rows = BODY_ROWS - 1
+            _chat_rows = self._chat_nvis
             if self.chat_cursor < 0:
                 self.chat_cursor = 0  # activate at top
             elif self.chat_cursor < _chat_rows - 1:

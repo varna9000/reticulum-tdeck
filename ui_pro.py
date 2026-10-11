@@ -513,6 +513,9 @@ K_BOT = 4          # lower half
 F_LAST = 1         # last row of its block: carries the rule
 F_IMG = 2
 F_VOICE = 4
+F_FIRST = 8        # first row of its block: a gap is left above it
+GAP = 6            # px of paper between blocks (no rules: tried on the panel, cramped)
+CHAT_H = 256       # the body: what sixteen bare rows fill
 CHAT_Y = 42
 PEER_X = 6
 PEER_COLS = 28
@@ -549,9 +552,9 @@ def _block(ui, rows, msgs, mine, name):
         right = (len(tm) * SW + 4 if tm else 0) + (2 * _u.CHAR_W + 4 if mine else 0)
         line = name + ": " + first[1].replace("\r", "")
         if len(line) * _u.CHAR_W <= cols * _u.CHAR_W - right:
-            rows.append((K_INLINE, mine, line, first[6], F_LAST, tm, st))
+            rows.append((K_INLINE, mine, line, first[6], F_LAST | F_FIRST, tm, st))
             return
-    rows.append((K_HDR, mine, name + (" \xfa " + tm if tm else ""), first[6], 0, "", 0))
+    rows.append((K_HDR, mine, name + (" \xfa " + tm if tm else ""), first[6], F_FIRST, "", 0))
     for m in msgs:
         text, caps = _markers(m[1]) if (m[4] or m[5]) else (m[1], {})
         st = m[3] if (mine and m[3] in _MARKS) else 0
@@ -578,6 +581,38 @@ def _block(ui, rows, msgs, mine, name):
             rows[mark_at] = (r[0], r[1], r[2], r[3], r[4], r[5], st)
     r = rows[-1]
     rows[-1] = (r[0], r[1], r[2], r[3], r[4] | F_LAST, r[5], r[6])
+
+
+def _fit_up(lines, end):
+    """First row of the window that ends before row `end`: as many rows as
+    fit in the body, counting the gap above every block but the top one."""
+    h = 0
+    s = end
+    ch = _u.CHAR_H
+    while s > 0:
+        cost = ch + (GAP if (s < end and lines[s][4] & F_FIRST) else 0)
+        if h + cost > CHAT_H:
+            break
+        h += cost
+        s -= 1
+    return s
+
+
+def chat_max_scroll(ui):
+    """How far up the thread scrolls: until its first row is at the top.
+    With gaps the window holds fewer than sixteen rows, so ui.py's
+    `rows - 16` would leave the oldest lines out of reach."""
+    lines = ui._build_chat_lines()
+    h = 0
+    n = 0
+    ch = _u.CHAR_H
+    for k in range(len(lines)):
+        cost = ch + (GAP if (k and lines[k][4] & F_FIRST) else 0)
+        if h + cost > CHAT_H:
+            break
+        h += cost
+        n = k + 1
+    return len(lines) - n
 
 
 def chat_lines(ui):
@@ -663,11 +698,12 @@ def draw_chat(ui):
     lines = ui._build_chat_lines()
     nrows = _u.BODY_ROWS - 1
     total = len(lines)
-    max_scroll = max(0, total - nrows)
+    max_scroll = chat_max_scroll(ui)
     if ui.chat_scroll > max_scroll:
         ui.chat_scroll = max_scroll
     view_end = max(0, total - ui.chat_scroll)
-    visible = lines[max(0, view_end - nrows):view_end]
+    visible = lines[_fit_up(lines, view_end):view_end]
+    ui._chat_nvis = len(visible) or 1      # ui.py's cursor keys step over this many rows
     if ui.chat_cursor >= len(visible):
         ui.chat_cursor = len(visible) - 1
     cur = visible[ui.chat_cursor] if ui.chat_cursor >= 0 else None
@@ -675,16 +711,24 @@ def draw_chat(ui):
     vaud = {}
     vmsg = {}
     width = _u.SBAR_X
+    ys = []
+    y = CHAT_Y - CH
     for i in range(nrows):
-        y = CHAT_Y + i * CH
         ci = i + 2
         if i >= len(visible):
-            if ui._cache[ci] != "-":
-                ui._cache[ci] = "-"
-                tft.fill_rect(0, y, width, CH, paper)
+            # The first free slot clears everything under the thread; the
+            # rest have nothing left to do.
+            ck = "-" + str(y + CH) if i == len(visible) else "-"
+            if ui._cache[ci] != ck:
+                ui._cache[ci] = ck
+                if i == len(visible) and y + CH < CHAT_Y + CHAT_H:
+                    tft.fill_rect(0, y + CH, width, CHAT_Y + CHAT_H - y - CH, paper)
             continue
         r = visible[i]
         kind, mine, text, mid, flags, extra, status = r
+        gap = GAP if (i and flags & F_FIRST) else 0
+        y += CH + gap
+        ys.append(y)
         vmsg[i] = mid
         tile = kind >= K_TOP
         expired = False
@@ -697,10 +741,13 @@ def draw_chat(ui):
         hl = i == ui.chat_cursor or (tile and cur is not None and cur[0] >= K_TOP
                                      and cur[3] == mid and (cur[4] & 6) == (flags & 6))
         ck = (chr(48 + kind) + ("m" if mine else "p") + text + "\x00" + extra + "\x00"
-              + chr(48 + flags) + chr(48 + status) + ("H" if hl else "") + ("X" if expired else ""))
+              + chr(48 + flags) + chr(48 + status) + ("H" if hl else "") + ("X" if expired else "")
+              + str(y) + ("g" if gap else ""))
         if ui._cache[ci] == ck:
             continue
         ui._cache[ci] = ck
+        if gap:
+            tft.fill_rect(0, y - gap, width, gap, paper)
         bg = ui.SEL_BG if hl else paper
         fg = paper if hl else ui.BODY_FG
         dim = paper if hl else ui.DIM_CYAN
@@ -722,15 +769,15 @@ def draw_chat(ui):
         if status and kind != K_BOT:
             mk = _MARKS[status]
             tft.text(ui.font, ui._tb(mk), x - len(mk) * CW, y, fg, bg)
-        if flags & F_LAST:
-            tft.fill_rect(0, y + CH - 1, width, 1, dim)
+    ui._chat_ys = ys                       # row tops, for the touch layer
     ui._visible_image_lines = vimg
     ui._visible_audio_lines = vaud
     ui._visible_msg_lines = vmsg
 
-    track = nrows * CH
-    if total > nrows:
-        bar_h = max(6, track * nrows // total)
+    track = CHAT_H
+    nvis = len(visible)
+    if total > nvis:
+        bar_h = max(6, track * nvis // total)
         bar_y = CHAT_Y + (max_scroll - ui.chat_scroll) * (track - bar_h) // max(1, max_scroll)
         sk = str(bar_y) + ":" + str(bar_h)
     else:
@@ -738,7 +785,7 @@ def draw_chat(ui):
     if ui._cache[_u.FOOT_SLOT] != sk:
         ui._cache[_u.FOOT_SLOT] = sk
         tft.fill_rect(_u.SBAR_X, CHAT_Y, W - _u.SBAR_X, track, paper)
-        if total > nrows:
+        if total > nvis:
             tft.fill_rect(_u.SBAR_X, bar_y, _u.SBAR_W, bar_h, ui.DIM_CYAN)
 
 

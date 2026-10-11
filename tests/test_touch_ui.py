@@ -481,7 +481,8 @@ def mkchat(lines=40):
     g.cmd_buf = bytearray()
     g.chat_cursor = -1
     g.chat_scroll = 0
-    g._build_chat_lines = lambda: [None] * lines
+    rows = [(2, False, "x", i, 0, "", 0) for i in range(lines)]     # ui_pro text rows, one block
+    g._build_chat_lines = lambda: rows
     return g
 
 
@@ -493,18 +494,26 @@ def test_chat():
     g._visible_image_lines = {4: 77, 5: 77}
     g._visible_audio_lines = {8: 78, 9: 78}
     g._image_cache = {(g.selected_peer, 77): b"jpg"}
-    check("tap on plain text does nothing", tap(g, 100, row_y(2)) is False and g.chat_cursor == -1 and g.dirty is False)
-    check("tap on an image tile's top row opens it", tap(g, 100, row_y(4)) is True and opened == [4] and g.chat_cursor == 4, repr(opened))
+    # Row tops as ui_pro.draw_chat leaves them: 6 px gaps above rows 4 and 8.
+    g._chat_ys = [42 + 16 * i + (6 if i >= 4 else 0) + (6 if i >= 8 else 0) for i in range(11)]
+    ys = g._chat_ys
+    check("tap on plain text does nothing", tap(g, 100, ys[2] + 8) is False and g.chat_cursor == -1 and g.dirty is False)
+    check("tap on an image tile's top row opens it", tap(g, 100, ys[4] + 8) is True and opened == [4] and g.chat_cursor == 4, repr(opened))
     settle(g)
-    check("...and on its bottom row", tap(g, 100, row_y(5)) is True and opened == [4, 5], repr(opened))
+    check("...and on its bottom row", tap(g, 100, ys[5] + 15) is True and opened == [4, 5], repr(opened))
     settle(g)
-    check("tap on a voice tile plays it", tap(g, 100, row_y(9)) is True and opened == [4, 5, 9], repr(opened))
+    check("tap on a voice tile plays it", tap(g, 100, ys[9] + 8) is True and opened == [4, 5, 9], repr(opened))
     check("...without parking the cursor on it (the tile would stay inverted and the mic hint vanish)",
           g.chat_cursor == 5, str(g.chat_cursor))
     settle(g)
+    check("rows are found by where they were drawn: the top pixel line of row 4", tap(g, 100, ys[4]) is True and opened[-1] == 4, repr(opened))
+    settle(g)
+    n = len(opened)
+    check("a tap in the gap above a block hits nothing", tap(g, 100, ys[4] - 3) is False and len(opened) == n)
+    check("a tap below the last drawn row hits nothing", tap(g, 100, ys[10] + 20) is False and len(opened) == n)
     g._image_cache = {}
     g.chat_cursor = -1
-    check("an expired image tile does nothing", tap(g, 100, row_y(4)) is False and opened == [4, 5, 9] and g.chat_cursor == -1)
+    check("an expired image tile does nothing", tap(g, 100, ys[4] + 8) is False and len(opened) == n and g.chat_cursor == -1)
     g = mkchat(40)
     check("finger down 3 steps: older messages come into view",
           touch_ui.handle(g, (DRAG, 100, 100, 3, 200000), 0) is True and g.chat_scroll == 3 and g.chat_cursor == -1,
@@ -512,7 +521,7 @@ def test_chat():
     touch_ui.handle(g, (DRAG, 100, 100, -5, 200000), 0)
     check("finger up: back toward the newest, clamped at 0", g.chat_scroll == 0, str(g.chat_scroll))
     touch_ui.handle(g, (DRAG, 100, 100, 999, 200000), 0)
-    check("clamped at the oldest full window", g.chat_scroll == 40 - (ui.BODY_ROWS - 1), str(g.chat_scroll))
+    check("clamped at ui's own scroll limit", g.chat_scroll == g._chat_max_scroll() and g.chat_scroll > 0, str(g.chat_scroll))
     g = mkchat()
     seen = keys_pressed(g)
     check("header tap goes back", tap(g, 30, ui.BODY_Y + 4) is True and seen == [b'\x1b'], repr(seen))

@@ -683,6 +683,8 @@ def test_chat_blocks():
     r = g._build_chat_lines()
     check("a change of sender starts a new block",
           kinds(r) == [P.K_HDR, P.K_TEXT, P.K_TEXT, P.K_INLINE, P.K_INLINE] and r[3][2] == "me: yes" and r[3][1] is True, repr(r))
+    check("the first row of each block is flagged (it carries the gap above it)",
+          [bool(x[4] & P.F_FIRST) for x in r] == [True, False, False, True, True], repr([x[4] for x in r]))
     g, t = mkchat()
     say(g, False, "one", at=0)
     say(g, False, "two", at=0 + P.BLOCK_GAP + 1)
@@ -766,16 +768,23 @@ def test_chat_header_and_rows():
     check("peer text at x 6", len(tx) == 1 and tx[0][2] == P.PEER_X, repr(tx))
     bars = [c for c in t.calls if c[0] == "rect" and c[3] == 2 and c[4] == 16]
     check("peer rows have their bar on the left edge", sorted(c[2] for c in bars if c[1] == 0) == [crow_y(0), crow_y(1), crow_y(2)], repr(bars))
-    check("my row has its bar on the right", [c[2] for c in bars if c[1] == P.ME_BAR_X] == [crow_y(3)], repr(bars))
+    check("my row has its bar on the right; its block sits a gap lower", [c[2] for c in bars if c[1] == P.ME_BAR_X] == [crow_y(3) + P.GAP], repr(bars))
+    check("the gap is 6 px", P.GAP == 6)
+    check("the gap above a block is cleared with its first row",
+          any(c[0] == "rect" and c[1] == 0 and c[2] == crow_y(3) and c[4] == P.GAP and c[5] == g.BG_DARK for c in t.calls))
+    check("the window's first row has no gap above it", not any(c[0] == "rect" and c[2] == crow_y(0) - P.GAP for c in t.calls))
     mine = find(t, "text", "me: yes")
-    check("my inline row is indented", mine is not None and mine[2] == P.ME_X and mine[3] == crow_y(3), repr(mine))
-    tm = [c for c in texts(t, "small") if c[1] == "09:00" and c[3] == crow_y(3) + 2]
+    check("my inline row is indented", mine is not None and mine[2] == P.ME_X and mine[3] == crow_y(3) + P.GAP, repr(mine))
+    tm = [c for c in texts(t, "small") if c[1] == "09:00" and c[3] == crow_y(3) + P.GAP + 2]
     check("its time is on the right in the small font", len(tm) == 1 and tm[0][2] + 5 * P.SW == P.ME_X + P.ME_COLS * 8, repr(tm))
-    mk = [c for c in texts(t) if c[1] == "\xfb" and c[3] == crow_y(3)]
+    mk = [c for c in texts(t) if c[1] == "\xfb" and c[3] == crow_y(3) + P.GAP]
     check("the delivery mark sits left of the time", len(mk) == 1 and mk[0][2] + 8 <= tm[0][2], repr(mk))
     rules = sorted(c[2] for c in t.calls if c[0] == "rect" and c[4] == 1 and c[1] == 0 and c[3] == ui.SBAR_X and crow_y(0) <= c[2] < 298)
-    check("a rule under the last row of each block only", rules == [crow_y(2) + 15, crow_y(3) + 15], repr(rules))
-    check("rows below the thread are blanked", any(c[0] == "rect" and c[2] == crow_y(4) and c[4] == 16 for c in t.calls))
+    check("no rules between blocks (tried on the panel: cramped)", rules == [], repr(rules))
+    y_end = crow_y(4) + P.GAP
+    check("everything below the thread is blanked in one piece",
+          any(c[0] == "rect" and c[1] == 0 and c[2] == y_end and c[2] + c[4] == 298 and c[5] == g.BG_DARK for c in t.calls))
+    check("the row tops are kept for the touch layer", g._chat_ys == [crow_y(0), crow_y(1), crow_y(2), crow_y(3) + P.GAP], repr(g._chat_ys))
     check("nothing goes through ui._sdraw", texts(t, "big") == [])
     check("there is no bold text path any more", not hasattr(ui_pro, "_bold") and not hasattr(ui_pro, "_Bold"))
     check("every row maps to its message", sorted(g._visible_msg_lines) == [0, 1, 2, 3])
@@ -794,7 +803,7 @@ def test_chat_cursor_and_updates():
     g.chat_cursor = 1
     ui_pro.draw_chat(g)
     rows = set((c[3] if c[0] in ("text", "small") else c[2]) for c in t.calls if c[0] in ("text", "small", "rect"))
-    check("moving the cursor redraws only that row", all(crow_y(1) <= y < crow_y(2) for y in rows), repr(sorted(rows)))
+    check("moving the cursor redraws only that row", all(crow_y(1) <= y < crow_y(2) + P.GAP for y in rows), repr(sorted(rows)))
     sel = find(t, "text", "Alex: second")
     check("the cursor row is inverted", sel is not None and sel[4] == g.BG_DARK and sel[5] == g.SEL_BG, repr(sel))
     del t.calls[:]
@@ -815,11 +824,26 @@ def test_chat_cursor_and_updates():
         say(g, bool(k % 2), "line %d" % k, at=k)
     ui_pro.draw_chat(g)
     shown = [c[1] for c in texts(t) if ": line" in c[1]]
-    check("a long thread shows its last sixteen rows", len(shown) == 16 and shown[-1].endswith("line 29"), repr(shown[-2:]))
+    check("a long thread of one-line blocks shows the eleven that fit with their gaps",
+          len(shown) == 11 and shown[-1].endswith("line 29") and g._chat_nvis == 11, "%d %r" % (len(shown), shown[-2:]))
     check("the scroll lane has a thumb", any(c[0] == "rect" and c[1] == ui.SBAR_X and c[5] == g.DIM_CYAN for c in t.calls))
     g.chat_scroll = 99
     ui_pro.draw_chat(g)
-    check("the scroll is clamped to the top of the thread", g.chat_scroll == 14, str(g.chat_scroll))
+    check("the scroll is clamped where the first message reaches the top", g.chat_scroll == 30 - 11, str(g.chat_scroll))
+    del t.calls[:]
+    g._cache = [''] * ui.CACHE_ROWS
+    ui_pro.draw_chat(g)
+    shown = [c[1] for c in texts(t) if ": line" in c[1]]
+    check("...and the oldest message is on screen there", len(shown) == 11 and shown[0].endswith("line 0"), repr(shown[:2]))
+    g.chat_cursor = 10
+    g._scroll_down()
+    check("the cursor on the last visible row scrolls the view down, though fewer than 16 rows show", g.chat_scroll == 18 and g.chat_cursor == 10,
+          "%d %d" % (g.chat_scroll, g.chat_cursor))
+    g.chat_cursor = -1
+    g._scroll_up()
+    check("the cursor wakes on the last visible row", g.chat_cursor == 10, str(g.chat_cursor))
+    g.chat_scroll = 0
+    check("ui's own scroll limit agrees", g._chat_max_scroll() == 19, str(g._chat_max_scroll()))
 
 
 def test_no_body_frame_on_the_pro_chat():
@@ -852,10 +876,10 @@ def test_chat_tiles():
             and crow_y(1) < c[2] < crow_y(3) and c[2] not in (crow_y(1), crow_y(2) + 13)]
     check("the icon spans both rows", any(c[2] < crow_y(2) for c in icon) and any(c[2] >= crow_y(2) for c in icon), str(len(icon)))
     vt = find(t, "text", "voice")
-    check("my voice tile is indented like my text", vt is not None and vt[2] == P.ME_X + 32 and vt[3] == crow_y(5), repr(vt))
+    check("my voice tile is indented like my text", vt is not None and vt[2] == P.ME_X + 32 and vt[3] == crow_y(5) + P.GAP, repr(vt))
     check("its caption", find(t, "small", "3s - tap to play") is not None)
     mk = [c for c in texts(t) if c[1] == "\xfb"]
-    check("a text-less message shows its mark on the tile's top row", len(mk) == 1 and mk[0][3] == crow_y(5), repr(mk))
+    check("a text-less message shows its mark on the tile's top row", len(mk) == 1 and mk[0][3] == crow_y(5) + P.GAP, repr(mk))
     check("tile rows are in the image map", g._visible_image_lines == {1: mid, 2: mid}, repr(g._visible_image_lines))
     check("...and the audio map", g._visible_audio_lines == {5: vid, 6: vid}, repr(g._visible_audio_lines))
     del t.calls[:]
@@ -879,9 +903,8 @@ def test_chat_tile_cut_by_the_window():
     P = ui_pro
     g, t = mkchat()
     mid = say(g, False, "[image 12k]", at=0, image=b"jpg")           # hdr, top, bot
-    for k in range(15):
-        say(g, True, "line %d" % k, at=1000 + 700 * k)               # 15 inline rows
-    ui_pro.draw_chat(g)                                              # 18 rows: window shows rows 2..17
+    say(g, True, "\n".join("l%d" % k for k in range(13)), at=1000)  # hdr + 13 text rows
+    ui_pro.draw_chat(g)   # 17 rows; 16 + 6 + 14 * 16 = 246 px fit below the tile's top half
     check("only the tile's bottom half is in view", g._visible_image_lines == {0: mid}, repr(g._visible_image_lines))
     check("the half draws its caption and no title", find(t, "small", "12k") is not None and find(t, "text", "image") is None)
     g.chat_cursor = 0
@@ -892,7 +915,8 @@ def test_chat_tile_cut_by_the_window():
     g.chat_scroll = 1
     del t.calls[:]
     ui_pro.draw_chat(g)
-    check("scrolled one row up, both halves are drawn", find(t, "text", "image") is not None and g._visible_image_lines == {0: mid, 1: mid})
+    check("scrolled one row up, both halves are drawn", find(t, "text", "image") is not None and g._visible_image_lines == {0: mid, 1: mid},
+          repr(g._visible_image_lines))
 
 
 def test_recording_screen():
