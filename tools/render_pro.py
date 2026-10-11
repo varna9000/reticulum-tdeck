@@ -309,6 +309,51 @@ def scene_rrc(out):
     t.png(os.path.join(out, "rrc_members.png"))
 
 
+def scene_misc(out):
+    import micron
+    g, t = mk()
+    src = (">Board index\n\nWelcome to the CICADA forums. Pick a board below and mind the rules.\n\n"
+           "`[General chatter`:/page/general.mu]\n`[LoRa and antennas, masts, feedlines and everything else`:/page/lora.mu]\n"
+           "`[Node announcements`:/page/nodes.mu]\n\n>>Rules\nBe kind, no spam, keep it on topic. "
+           "Averyveryverylongwordwithoutanyspacesinitthatmustbebrokensomewhere ok.\n\n-\n`c centred line `a\n")
+    lines, links = micron.render(src, ui.COLS)
+    g.show_page("The CICADA forums of Varna", "/page/boards/index.mu", lines, links)
+    g.browser_cursor = 4
+    g.draw()
+    t.png(os.path.join(out, "browser.png"))
+    g, t = mk()
+    g.state = ui.STATE_SHELL
+    g._shell_menu = True
+    g._shell_menu_idx = 1
+    g.draw()
+    t.png(os.path.join(out, "shell_menu.png"))
+    g, t = mk()
+    for i in range(3):
+        g.add_peer(bytes([i + 1]) * 16, "peer%02d" % i, hops=2)
+    snap = [(bytes([0x40 + i]) * 16, n, 1700000000) for i, n in enumerate(
+        ("Alexander the Great of Varna and Burgas", "alex", "Alexa home node", "Tula Group", "malex"))]
+    g.on_contact_snapshot = lambda tab: snap
+    g._find_open()
+    for ch in b"alex":
+        g.handle_key(bytes([ch]))
+    g.draw()
+    t.png(os.path.join(out, "find.png"))
+    g, t = mk()
+    g.node_name = "Varna-Pro"
+    g._bl = None
+    g.unread = {b"a" * 16: 3}
+    g._panel_flush = lambda force_full=False, user=False: None
+    g.sleep_screen()
+    t.png(os.path.join(out, "sleep.png"))
+    g, t = mk()
+    g.node_name = "Varna-Pro"
+    g._bl = None
+    g.bat_v = 4.9
+    g._panel_flush = lambda force_full=False, user=False: None
+    g.sleep_screen()
+    t.png(os.path.join(out, "sleep_none.png"))
+
+
 if __name__ == "__main__":
     out = sys.argv[1] if len(sys.argv) > 1 else "."
     os.makedirs(out, exist_ok=True)
@@ -317,4 +362,5 @@ if __name__ == "__main__":
     scene_rec(out)
     scene_setup(out)
     scene_rrc(out)
-    print("wrote 16 PNGs to", out)
+    scene_misc(out)
+    print("wrote 21 PNGs to", out)
