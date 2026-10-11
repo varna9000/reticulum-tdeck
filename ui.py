@@ -3370,6 +3370,8 @@ class UI:
         if self._shell_menu:
             self._draw_shell_menu()
             return
+        if _pro is not None:
+            _pro.shell_menu_gone(self)    # its band and last row reach past the terminal's rows
         # Body grid comes from the shell font (64x24 or 80x32); the 8x16
         # tft.text() grid is the fallback when no font module could be loaded.
         sf = self._shell_font
@@ -4300,7 +4302,7 @@ class UI:
                 self._draw_row_cached(i + 2, visible[i], y, self.NEON_CYAN)
             else:
                 self._draw_row_cached(i + 2, "", y, self.NEON_CYAN)
-        self._draw_settings_bottom_bar()
+        self._draw_settings_bottom_bar(_pro is None)   # nothing here to select
 
     def _lora_field_lines(self):
         """Human-readable value strings for the five editable fields, in

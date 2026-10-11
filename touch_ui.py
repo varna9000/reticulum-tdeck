@@ -48,6 +48,13 @@ def _pro_menu(ui):
     return _u._pro is not None and ui.state == _u.STATE_SHELL and ui._shell_menu
 
 
+def _menu_clamp(ui, steps):
+    """The shell menu's keys wrap around; a finger dragging past an end must
+    stop there, not jump to the other one."""
+    idx = ui._shell_menu_idx
+    return max(-idx, min(len(_u._SHELL_CTRL_ITEMS) - 1 - idx, steps))
+
+
 def _tap_pro_rows(ui, y):
     """One tap acts on these three lists, as everywhere on the Pro."""
     p = _u._pro
@@ -58,8 +65,8 @@ def _tap_pro_rows(ui, y):
             return False
         ui._find_sel = idx
         ui.dirty = True
-        ui.nav_event("click")              # Enter's action: add / select the entry
-        return True
+        ui._find_pick()                    # Enter's action, now: a queued click could find the
+        return True                        # selection reset by a key handled in the same pass
     i = (y - p.LIST_Y) // p.ROW_H
     if i < 0 or i >= p.MENU_ROWS:
         return False
@@ -74,12 +81,14 @@ def _tap_pro_rows(ui, y):
     idx = p.shell_menu_top(ui) + i         # the shell menu
     if idx >= len(_u._SHELL_CTRL_ITEMS):
         return False
-    armed = getattr(ui, "_menu_armed", -1)
-    ui._menu_armed = -1
+    armed = p.menu_armed(ui, idx)          # judged before the cursor moves
+    ui._menu_armed = None
     ui._shell_menu_idx = idx
     ui.dirty = True
-    if _u._SHELL_CTRL_ITEMS[idx][1] == "quit" and armed != idx:
-        ui._menu_armed = idx               # it ends the session: a second tap confirms
+    ui._menu_gen = getattr(ui, "_menu_gen", 0) + 1     # in layout_key: no second act inside one refresh
+    if _u._SHELL_CTRL_ITEMS[idx][1] == "quit" and not armed:
+        ui._menu_armed = (idx, ui._cache)  # it ends the session: a second tap confirms
+        ui._cache[2 + i] = ''              # its row now says "tap again to quit"
         return True
     ui._shell_menu_exec()
     return True
@@ -173,7 +182,8 @@ def layout_key(ui):
                 g(ui, "_lora_field", 0), g(ui, "_setup_gen", 0), len(ui._wifi_networks),
                 ui._wifi_connected, ui._tcp_enabled, ui.lora_online)
     if st == _u.STATE_SHELL:
-        return (st, ui._shell_menu, g(ui, "_shell_view", 0), g(ui, "_shell_menu_idx", 0))
+        return (st, ui._shell_menu, g(ui, "_shell_view", 0), g(ui, "_shell_menu_idx", 0),
+                g(ui, "_menu_gen", 0))
     if st in (_u.STATE_RRC_ROOMS, _u.STATE_RRC_CHAT):
         lst = None
         if ui._rrc_panel:
@@ -283,7 +293,7 @@ def _tap_footer(ui, x):
             dist, best = d, key
     if best is None:
         return False
-    if _pro_setup(ui) and best in ("click", b'\r'):
+    if (_pro_setup(ui) or _pro_menu(ui)) and best in ("click", b'\r'):
         return False                  # rows act under the finger there; this would act on another
     if best == "click":
         ui.nav_event("click")         # NOT Enter: in the shell Enter goes to the remote
@@ -627,6 +637,8 @@ def handle(ui, g, changed_ms):
             acc = _drag_acc[1] + n
             rows = int(acc / 2)             # toward zero: two steps per 32 px row
             _drag_acc[1] = acc - rows * 2
+            if _pro_menu(ui):
+                rows = _menu_clamp(ui, rows)
             if ui._sheet is not None:
                 return False
             if rows:
@@ -638,7 +650,10 @@ def handle(ui, g, changed_ms):
             import rrc_ui
             _steps(ui, n * (rrc_ui.PANEL_ROWS - 1))
             return True
-        if _pro_list(ui) or _pro_setup(ui) or _pro_find(ui) or _pro_wifi(ui) or _pro_menu(ui):
+        if _pro_menu(ui):
+            _steps(ui, _menu_clamp(ui, n * (_u.LIST_ROWS - 1)))
+            return True
+        if _pro_list(ui) or _pro_setup(ui) or _pro_find(ui) or _pro_wifi(ui):
             if ui._sheet is not None:
                 return False
             _steps(ui, n * (_u.LIST_ROWS - 1))

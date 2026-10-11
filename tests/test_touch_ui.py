@@ -719,9 +719,10 @@ def test_shell():
     m0 = 42                                              # two-line menu rows on the Pro
     check("menu: one tap on item 2 selects and sends it", tap(g, 100, m0 + 2 * 32 + 16) is True and g._shell_menu_idx == 2 and sent == [2],
           "%d %r" % (g._shell_menu_idx, sent))
-    g._shell_menu_idx = 8                                # window now starts at item 3
+    g._shell_menu_idx = 8                                # past the window: it scrolls to keep the cursor in
+    top = ui._pro.shell_menu_top(g)
     tap(g, 100, m0 + 0 * 32 + 16, t=300000)
-    check("menu: rows follow the window derived from the cursor", sent[-1] == 3, repr(sent))
+    check("menu: rows follow the window", top == 1 and sent[-1] == 1, "%d %r" % (top, sent))
     quit_i = [k for k, it in enumerate(ui._SHELL_CTRL_ITEMS) if it[1] == "quit"][0]
     g._shell_menu_idx = 10                               # window 3..10: Quit shell is row quit_i - 3
     n = len(sent)
@@ -1330,6 +1331,86 @@ def test_rrc_review():
     finally:
         rrc_ui.handle_key, rrc_ui.panel_toggle = orig_hk, orig_tg
 
+
+def test_shell_menu_review():
+    print("review: shell menu")
+    P = ui._pro
+    n = len(ui._SHELL_CTRL_ITEMS)
+    quit_i = [k for k, it in enumerate(ui._SHELL_CTRL_ITEMS) if it[1] == "quit"][0]
+    font_i = [k for k, it in enumerate(ui._SHELL_CTRL_ITEMS) if it[1] == "font"][0]
+
+    def menu(idx=0):
+        g = mkui(ui.STATE_SHELL)
+        g._shell_menu_open()
+        g._shell_menu_idx = idx
+        g.sent = []
+        g._shell_menu_exec = lambda: g.sent.append(g._shell_menu_idx)
+        return g
+
+    def row_of(g, idx):
+        return 42 + (idx - P.shell_menu_top(g)) * 32 + 16
+
+    g = menu(n - 1)
+    tap(g, 100, row_of(g, quit_i))
+    check("Quit: the first tap arms", g.sent == [])
+    g._shell_menu_close()
+    g._shell_menu_open()
+    g._shell_menu_exec = lambda: g.sent.append(g._shell_menu_idx)
+    g._shell_menu_idx = n - 1
+    tap(g, 100, row_of(g, quit_i), t=300000)
+    check("...closing and reopening the menu disarms it: one tap does not quit", g.sent == [], repr(g.sent))
+    g = menu(n - 1)
+    tap(g, 100, row_of(g, quit_i))
+    g._shell_menu_move(-1)
+    tap(g, 100, row_of(g, quit_i), t=300000)
+    check("...moving the cursor with the keys disarms it too", g.sent == [], repr(g.sent))
+    tap(g, 100, row_of(g, quit_i), t=400000)
+    check("...and two taps in a row still quit", g.sent == [quit_i], repr(g.sent))
+    g = menu(font_i)
+    P.shell_menu_top(g)                  # Font scrolled into view...
+    g._shell_menu_idx = 5                # ...and the cursor moved back up inside the window
+    y = row_of(g, font_i)
+    tap(g, 100, y)
+    tap(g, 100, y, t=300000)
+    tap(g, 100, y, t=400000)
+    check("three taps at one spot on Font are three Font taps: the rows do not move under the finger",
+          g.sent == [font_i] * 3, repr(g.sent))
+    g = menu(n - 1)
+    P.shell_menu_top(g)
+    g._shell_menu_idx = 4
+    y = row_of(g, font_i)
+    tap(g, 100, y)
+    tap(g, 100, y, t=300000)
+    check("...from any cursor position", g.sent == [font_i] * 2, repr(g.sent))
+    k0 = touch_ui.layout_key(g)
+    tap(g, 100, y, t=500000)
+    check("an acting menu tap is a layout change (no double step inside one refresh)", touch_ui.layout_key(g) != k0)
+    g = menu(quit_i)
+    g._draw_hints((("ENT", "send"), ("BKSP", "close")))
+    check("the footer's (ENT)send is dead in touch: it would act on the cursor row, not the one under the finger",
+          tap(g, 20, 310) is False and g.sent == [] and g._shell_menu is True, repr(g.sent))
+    g = menu(0)
+    touch_ui.handle(g, (DRAG, 100, 150, -2, 600000), 0)
+    settle(g)
+    check("a drag past the top stops there (the keys wrap; a finger must not jump to the end)", g._shell_menu_idx == 0, str(g._shell_menu_idx))
+    touch_ui.handle(g, (FLICK, 100, 150, 1, 700000), 0)
+    settle(g)
+    touch_ui.handle(g, (FLICK, 100, 150, 1, 800000), 0)
+    settle(g)
+    check("flicks stop at the last item", g._shell_menu_idx == n - 1, str(g._shell_menu_idx))
+    g = mkui(ui.STATE_NODES)
+    for i in range(3):
+        g.add_peer(bytes([i + 1]) * 16, "p%d" % i)
+    g._find = True
+    g._find_res = [(bytes([i]) * 16, "n%d" % i, 0) for i in range(5)]
+    g._find_sel = 0
+    g._find_scroll = 0
+    g._find_listen = ""
+    picked = []
+    g._find_pick = lambda: picked.append(g._find_sel)
+    tap(g, 100, 58 + 2 * 32 + 16)
+    check("a Lookup tap picks at once (nothing typed in the same pass can move the selection first)", picked == [2], repr(picked))
+
 if __name__ == "__main__":
     test_geometry_is_the_pros()
     test_hint_zones_follow_the_hints()
@@ -1377,6 +1458,7 @@ if __name__ == "__main__":
     test_chat_layout_key_at_the_history_cap()
     test_setup_guards()
     test_rrc_review()
+    test_shell_menu_review()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

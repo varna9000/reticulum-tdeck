@@ -1805,16 +1805,83 @@ def test_shell_menu():
     g.draw_shell()
     check("cached", t.calls == [], repr(t.calls[:2]))
     check("window: top of the list", P.shell_menu_top(g) == 0)
+    g._shell_menu_idx = 7
+    check("window: stays put while the cursor is inside it", P.shell_menu_top(g) == 0)
     g._shell_menu_idx = 10
     check("window: the last item pulls it to the end", P.shell_menu_top(g) == 3)
     g._shell_menu_idx = 5
-    check("window: mid-list keeps three rows above the cursor", P.shell_menu_top(g) == 2)
+    check("window: and it stays there while the cursor is inside it (rows must not move under a tap)", P.shell_menu_top(g) == 3)
+    g._shell_menu_idx = 1
+    check("window: a cursor above it pulls it up", P.shell_menu_top(g) == 1)
     g._shell_menu_idx = 9
     del t.calls[:]
     g.draw_shell()
     q = find(t, "text", "Quit shell")
     f = [c for c in texts(t, "small") if "x" in c[1] and c[1][0].isdigit()]
     check("scrolled: Quit shell is on screen and selected, Font shows the grid", q is not None and q[5] == g.SEL_BG and len(f) == 1, repr((q, f)))
+
+
+def test_lists_review():
+    print("review: lists")
+    P = ui_pro
+    g, t = mkui()
+    g.state = ui.STATE_SHELL
+    g._prev_state = g.state
+    g._shell_menu_open()
+    g._shell_line_mode = True
+    g.draw()
+    ys = [c[3] for c in texts(t) if c[2] == 16 and wrow_y(0) <= c[3] < 298]
+    check("all eight menu rows on the 32 px pitch", ys == [wrow_y(i) + 1 for i in range(8)], repr(ys))
+    check("no arm: Quit shell says what it does", True)
+    g._shell_menu_close()
+    del t.calls[:]
+    g.draw()
+    sf = g._shell_font
+    bottom = ui.BODY_Y + (sf.rows * sf.h if sf else ui.BODY_ROWS * ui.CHAR_H)
+    check("closing the menu clears the top of its band (the terminal starts at y 26)",
+          any(c[0] == "rect" and c[1] == 0 and c[2] <= 21 and c[2] + c[4] >= 26 and c[3] == 240 and c[5] == g.BG_DARK for c in t.calls))
+    check("...and what its last row left below the terminal's last line",
+          bottom >= 298 or any(c[0] == "rect" and c[1] == 0 and c[2] <= bottom and c[2] + c[4] >= 298 and c[5] == g.BG_DARK for c in t.calls),
+          "bottom %d" % bottom)
+    del t.calls[:]
+    g.draw()
+    check("...once", not any(c[0] == "rect" and c[2] == 20 and c[3] == 240 and c[4] == 6 and c[5] == g.BG_DARK for c in t.calls))
+    g, t = mkui()
+    g.state = ui.STATE_SHELL
+    g._prev_state = g.state
+    g._shell_menu_open()
+    g._shell_menu_idx = 9
+    g._menu_armed = (9, g._cache)
+    g.draw()
+    check("an armed Quit shell says 'tap again to quit'", find(t, "small", "tap again to quit") is not None, repr(texts(t, "small")))
+    g, t = mkfind(10)
+    g._prev_state = g.state
+    g.draw()
+    del t.calls[:]
+    g.draw()
+    drew = [c for c in t.calls if c[0] in ("text", "small", "rect", "icon")]
+    check("Lookup with results: a second full draw draws nothing (the lane and the tab bar do not fight over a slot)", drew == [], repr(drew[:3]))
+    for ch in b"zzz":
+        g.handle_key(bytes([ch]))
+    g.draw()
+    for _ in range(3):
+        g.handle_key(b"\x08")
+    del t.calls[:]
+    g.draw()
+    thumb = [c for c in t.calls if c[0] == "rect" and c[1] == ui.SBAR_X and c[5] == g.DIM_CYAN and c[4] > 1]
+    check("results -> no match -> results: the scroll thumb is back", len(thumb) == 1, repr(thumb))
+    g, t = mksetup()
+    g._settings_page = ui._SET_WIFI_SCAN
+    g._wifi_networks = [("net%02d" % i, -40 - i) for i in range(12)]
+    g._settings_idx = 0
+    g._settings_scroll = 3               # what backing out of the password page leaves
+    g.draw()
+    check("WiFi: a selection above the window is scrolled to", g._settings_scroll == 0 and find(t, "text", "net00") is not None, str(g._settings_scroll))
+    g, t = mksetup()
+    g._settings_page = ui._SET_RADIO
+    g.draw()
+    bar = [c[1] for c in texts(t) if c[3] == ui.INPUT_Y]
+    check("Radio stats has nothing to select: its footer offers only back", "ENT" not in bar and "BKSP" in bar, repr(bar))
 
 if __name__ == "__main__":
     test_pro_layout_is_active_on_the_pro()
@@ -1871,6 +1938,7 @@ if __name__ == "__main__":
     test_find_rows()
     test_wifi_rows()
     test_shell_menu()
+    test_lists_review()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

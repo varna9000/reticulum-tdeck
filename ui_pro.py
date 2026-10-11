@@ -1280,14 +1280,24 @@ def draw_find_rows(ui, res):
             continue
         dest, name, ts = res[idx]
         _row2(ui, 3 + i, y, _u._ascii(name or "?"), dest.hex()[:8] + "  " + _u._age(ts), idx == ui._find_sel)
-    _drop_thin_rows(ui, 3 + FIND_ROWS, _u.BODY_ROWS - 1)
-    _lane(ui, 1, FIND_Y, FIND_ROWS, len(res), top)
+    # The lane's key lives in the first slot the message rows use beyond
+    # these seven: a message state overwrites it (and paints over the lane),
+    # so coming back redraws the thumb.
+    _drop_thin_rows(ui, 3 + FIND_ROWS + 1, _u.BODY_ROWS - 1)
+    _lane(ui, 3 + FIND_ROWS, FIND_Y, FIND_ROWS, len(res), top)
 
 
 def draw_wifi_rows(ui):
     """WiFi scan: the network over its signal strength."""
     nets = ui._wifi_networks
     top = ui._settings_scroll
+    sel = ui._settings_idx
+    if sel < top:
+        top = sel                       # e.g. back from the password page: row 0, old scroll
+    elif sel >= top + MENU_ROWS:
+        top = sel - MENU_ROWS + 1
+    top = max(0, min(top, len(nets) - MENU_ROWS))
+    ui._settings_scroll = top
     for i in range(MENU_ROWS):
         idx = top + i
         y = LIST_Y + i * ROW_H
@@ -1301,11 +1311,42 @@ def draw_wifi_rows(ui):
 
 
 def shell_menu_top(ui):
-    """First visible item of the shell menu. Derived from the cursor, three
-    rows above it where the list allows, so keys, drags and taps agree on
-    what is on screen without a scroll position of its own."""
+    """First visible item of the shell menu. It moves only when the cursor
+    leaves the window, and then by as little as brings it back: a tap sets
+    the cursor to a row that is already on screen, so the rows never move
+    under a finger (Font is tapped repeatedly, with Quit shell two rows on)."""
     n = len(_u._SHELL_CTRL_ITEMS)
-    return max(0, min(ui._shell_menu_idx - 3, n - MENU_ROWS))
+    top = getattr(ui, "_menu_top", 0)
+    sel = ui._shell_menu_idx
+    if sel < top:
+        top = sel
+    elif sel >= top + MENU_ROWS:
+        top = sel - MENU_ROWS + 1
+    top = max(0, min(top, n - MENU_ROWS))
+    ui._menu_top = top
+    return top
+
+
+def menu_armed(ui, idx):
+    """Quit shell was tapped once on this showing of the menu and the cursor
+    has not left it since. The arm names the row cache it was set against:
+    opening or closing the menu swaps that list, which disarms it."""
+    a = getattr(ui, "_menu_armed", None)
+    return a is not None and a[0] == idx and a[1] is ui._cache and ui._shell_menu_idx == idx
+
+
+def shell_menu_gone(ui):
+    """The terminal is being drawn. If the menu was up, clear what its band
+    and its last row left outside the terminal's rows."""
+    if not getattr(ui, "_menu_up", False):
+        return
+    ui._menu_up = False
+    ui._menu_armed = None
+    sf = ui._shell_font
+    bottom = _u.BODY_Y + (sf.rows * sf.h if sf else _u.BODY_ROWS * _u.CHAR_H)
+    ui.tft.fill_rect(0, TAB_Y, _u.SCREEN_W, _u.BODY_Y - TAB_Y, ui.BG_DARK)
+    if bottom < TOOL_Y:
+        ui.tft.fill_rect(0, bottom, _u.SCREEN_W, TOOL_Y - bottom, ui.BG_DARK)
 
 
 def _shell_item(ui, i):
@@ -1317,7 +1358,7 @@ def _shell_item(ui, i):
     if kind == "mode":
         return label, "line" if ui._shell_line_mode else "char"
     if kind == "quit":
-        return label, "leave this session"
+        return label, "tap again to quit" if menu_armed(ui, i) else "leave this session"
     p = label.find("  ")
     if p < 0:
         return label, ""
@@ -1325,6 +1366,7 @@ def _shell_item(ui, i):
 
 
 def draw_shell_menu(ui):
+    ui._menu_up = True
     rrc_header(ui, "< Control keys", "")
     top = shell_menu_top(ui)
     n = len(_u._SHELL_CTRL_ITEMS)
