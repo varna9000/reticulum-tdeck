@@ -1123,15 +1123,35 @@ SLEEP_BOX_Y = 166
 SLEEP_BOX_H = 28
 
 
+def _last_mid(ui):
+    """Id of the newest message in the open chat, or -1."""
+    h = ui.chat_history.get(ui.selected_peer) if ui.selected_peer is not None else None
+    return h[-1][6] if h else -1
+
+
+def _sleep_total(ui):
+    """What is unread, as someone looking at a sleeping deck means it. The
+    app's own count leaves out messages for the chat that is open -- they
+    are on screen. Asleep they are not, so those that arrived since the
+    sleep screen went up are added (the peer's, not mine)."""
+    total = 0
+    for v in ui.unread.values():
+        total += v
+    if ui.state != _u.STATE_NODES and ui.selected_peer is not None:
+        since = getattr(ui, "_sleep_mid", -1)
+        for m in ui.chat_history.get(ui.selected_peer, ()):
+            if m[6] > since and not m[0]:
+                total += 1
+    return total
+
+
 def _sleep_box(ui):
     """The unread count in its box, or the blank where it would be."""
     tft = ui.tft
     paper = ui.BG_DARK
     ink = ui.NEON_CYAN
     W = _u.SCREEN_W
-    total = 0
-    for v in ui.unread.values():
-        total += v
+    total = _sleep_total(ui)
     tft.fill_rect(0, SLEEP_BOX_Y, W, SLEEP_BOX_H, paper)
     if total:
         s = "%d unread" % total
@@ -1156,6 +1176,7 @@ def draw_sleep(ui):
     if _u._clock_valid():
         s = "asleep since " + _u._fmt_clock()
         _sd(ui, s, (W - len(s) * SW) // 2, 142, ui.DIM_CYAN, paper)
+    ui._sleep_mid = _last_mid(ui)      # what the open chat held when it went dark
     _sleep_box(ui)
     bv = ui.bat_v
     s = None
@@ -1177,18 +1198,22 @@ def sleep_tick(ui):
     shown = getattr(ui, "_sleep_shown", None)
     if shown is None:
         return                       # no sleep screen of ours on the panel
-    total = 0
-    for v in ui.unread.values():
-        total += v
-    if total == shown:
-        return
-    acquire = getattr(ui, "_spi_acquire", None)
-    release = getattr(ui, "_spi_release", None)
-    if acquire:
-        acquire()
     try:
-        _sleep_box(ui)
-        ui._flush()
-    finally:
-        if release:
-            release()
+        if _sleep_total(ui) == shown:
+            return
+        acquire = getattr(ui, "_spi_acquire", None)
+        release = getattr(ui, "_spi_release", None)
+        if acquire:
+            acquire()
+        try:
+            _sleep_box(ui)
+            ui._flush()
+        finally:
+            if release:
+                release()
+    except Exception:
+        # This runs in the GUI task five times a second on a dark deck. A
+        # failure must not take that task down (its restart repaints the
+        # live screen on a sleeping panel): give the box up until the next
+        # sleep screen instead.
+        ui._sleep_shown = None

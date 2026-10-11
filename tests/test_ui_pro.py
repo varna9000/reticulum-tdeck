@@ -1590,7 +1590,10 @@ def test_sleep_tick():
     check("read elsewhere: the box goes away", not any("unread" in c[1] for c in texts(t))
           and any(c[0] == "rect" and c[5] == g.BG_DARK for c in t.calls))
     g, t = mksleep(unread=1)
+    g.sleep_screen()
+    g._screen_on = True                     # woken: the live screen is up again
     g.unread[b"c" * 16] = 5
+    del t.calls[:]
     P.sleep_tick(g)
     check("the tick does nothing while the screen is on", t.calls == [])
     g, t = mksleep(unread=1)
@@ -1600,6 +1603,64 @@ def test_sleep_tick():
     del t.calls[:]
     P.sleep_tick(g)
     check("...or on a panel with a backlight (it shows nothing when off)", t.calls == [])
+
+
+def test_sleep_review():
+    print("review: sleep")
+    P = ui_pro
+    # The app does not count a message as unread when its chat is the open
+    # one -- but asleep, nobody is reading it.
+    g, t = mksleep()
+    X = b"x" * 16
+    g.add_peer(X, "Alex")
+    g.selected_peer = X
+    g.state = ui.STATE_CHAT
+    g.add_chat_message(X, False, "before sleep")
+    g.sleep_screen()
+    check("asleep in a chat with nothing new: no box", not any("unread" in c[1] for c in texts(t)))
+    del t.calls[:]
+    g.add_chat_message(X, True, "my own, queued earlier")
+    P.sleep_tick(g)
+    check("my own message is not unread", t.calls == [], repr(t.calls[:2]))
+    g.add_chat_message(X, False, "are you there?")
+    g.add_chat_message(X, False, "hello?")
+    P.sleep_tick(g)
+    check("messages from the open chat's peer while asleep reach the box", find(t, "text", "2 unread") is not None, repr(texts(t)))
+    check("...without touching the app's own unread counts", g.unread.get(X, 0) == 0)
+    g, t = mksleep(unread=2)
+    g.selected_peer = X
+    g.state = ui.STATE_NODES
+    g.add_peer(X, "Alex")
+    g.sleep_screen()
+    del t.calls[:]
+    g.add_chat_message(X, False, "hi")
+    P.sleep_tick(g)
+    check("on the node list a message is counted once (the app already counts it)", find(t, "text", "3 unread") is not None, repr(texts(t)))
+    g, t = mksleep(unread=1)
+    g.sleep_screen()
+    g.unread[b"z" * 16] = None              # must never happen; must never kill the GUI task
+    try:
+        P.sleep_tick(g)
+        ok = True
+    except Exception:
+        ok = False
+    check("a tick that fails does not raise into the GUI loop", ok)
+    g.unread = {b"z" * 16: 4}
+    del t.calls[:]
+    P.sleep_tick(g)
+    check("...and stops drawing until the next sleep screen", t.calls == [])
+    g, t = mksleep()
+    g.state = ui.STATE_IMAGE
+    g._image_drawn = True
+    g.sleep_screen()
+    g.wake_screen(force=True, why="key")
+    check("waking in the image viewer redraws the image (the sleep screen was left on the panel)", g._image_drawn is False)
+    g, t = mksleep(bat=4.25)
+    g.sleep_screen()
+    check("the percentage stops at 100", find(t, "small", "100% 4.25V") is not None, repr(texts(t, "small")))
+    g, t = mksleep(bat=-1.0)
+    g.sleep_screen()
+    check("a negative reading shows no battery line", not any("V" in c[1] for c in texts(t, "small") if "asleep" not in c[1]))
 
 if __name__ == "__main__":
     test_pro_layout_is_active_on_the_pro()
@@ -1652,6 +1713,7 @@ if __name__ == "__main__":
     test_browser_and_qr_bands()
     test_sleep_screen()
     test_sleep_tick()
+    test_sleep_review()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

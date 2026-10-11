@@ -1049,6 +1049,9 @@ class UI:
                 # Replacing the sleep screen: a whole-panel change, done as a
                 # full refresh so the sleep text leaves no ghost.
                 self._force_full_flush = True
+                # The image viewer draws once and then idles: without this
+                # the sleep screen stays on the panel after a wake there.
+                self._image_drawn = False
             if self._kbd_tracks_screen() and self._kbd_bl and not self._kbd_bl_lit:
                 self._drive_kbd_backlight(True)
         self._last_activity = time.ticks_ms()
