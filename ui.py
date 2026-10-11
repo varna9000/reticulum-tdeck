@@ -1097,12 +1097,15 @@ class UI:
             acquire()
         try:
             self.tft.fill(self.BG_DARK)
-            mid = SCREEN_H // 2
-            self._center_text(self.node_name[:COLS], mid - 3 * CHAR_H, self.NEON_CYAN)
-            if _clock_valid():
-                self._center_text(_fmt_clock(), mid - CHAR_H, self.DIM_CYAN)
-            self._center_text("sleeping", mid + CHAR_H, self.NEON_CYAN)
-            self._center_text("press any key", mid + 3 * CHAR_H, self.DIM_CYAN)
+            if _pro is not None:
+                _pro.draw_sleep(self)     # name, "asleep since", unread box, battery
+            else:
+                mid = SCREEN_H // 2
+                self._center_text(self.node_name[:COLS], mid - 3 * CHAR_H, self.NEON_CYAN)
+                if _clock_valid():
+                    self._center_text(_fmt_clock(), mid - CHAR_H, self.DIM_CYAN)
+                self._center_text("sleeping", mid + CHAR_H, self.NEON_CYAN)
+                self._center_text("press any key", mid + 3 * CHAR_H, self.DIM_CYAN)
             self._force_full_flush = True
             self._flush()
         finally:
@@ -5382,6 +5385,8 @@ class UI:
                 spi_release_display()
 
             if not self._screen_on:
+                if _pro is not None:
+                    _pro.sleep_tick(self)     # keeps the sleep screen's unread box true
                 await asyncio.sleep_ms(200)
                 continue
 

@@ -174,6 +174,17 @@ g._cache = [''] * ui.CACHE_ROWS
 g.draw()
 ls = [(s, y) for s, x, y in g.tft.texts]
 check("v1 browser header is the old '> title' row", any(s.startswith("> CICADA") and y == ui.BODY_Y for s, y in ls), repr(ls[:5]))
+g.tft = type(g.tft)()
+g._bl = None
+g._screen_on = True
+g._panel_flush = lambda force_full=False, user=False: None
+g.sleep_screen()
+ls = [s for s, x, y in g.tft.texts]
+check("v1-layout sleep text is unchanged", "sleeping" in ls and "press any key" in ls, repr(ls))
+src = open(os.path.join(ROOT, "ui.py")).read()
+i0 = src.index("sleep_tick(self)")
+check("the screen-off loop reaches ui_pro only behind the _pro test",
+      src[i0 - 80:i0].rstrip().endswith("if _pro is not None:\n                    _pro.") and src.count("sleep_tick(") == 1, src[i0 - 80:i0 + 20])
 print()
 if fails:
     print("%d FAILED" % len(fails))

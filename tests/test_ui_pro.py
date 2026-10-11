@@ -1508,6 +1508,99 @@ def test_browser_and_qr_bands():
     g.draw()
     check("QR page: painted once", not any(c[0] == "text" and c[1].startswith("< Scan") for c in t.calls))
 
+
+class _Flushes:
+    def __init__(self):
+        self.n = []
+
+    def __call__(self, force_full=False, user=False):
+        self.n.append(force_full)
+
+
+def mksleep(unread=0, bat=4.0, clock=True):
+    g, t = mkui()
+    g.node_name = "Varna-Pro"
+    g._bl = None
+    g._screen_on = True
+    g.bat_v = bat
+    g.unread = {b"a" * 16: unread} if unread else {}
+    ui._clock_valid = lambda: clock
+    ui._fmt_clock = lambda: "09:41"
+    g._panel_flush = _Flushes()
+    return g, t
+
+
+def test_sleep_screen():
+    print("sleep screen")
+    P = ui_pro
+    g, t = mksleep(unread=3)
+    g.sleep_screen()
+    check("the whole panel is cleared", ("fill", g.BG_DARK) in t.calls)
+    nm = find(t, "text", "Varna-Pro")
+    check("the node name, centred", nm is not None and nm[2] == (240 - 9 * 8) // 2 and 100 < nm[3] < 140, repr(nm))
+    since = find(t, "small", "asleep since 09:41")
+    check("'asleep since HH:MM' in the small font, not a clock that looks live",
+          since is not None and since[2] == (240 - 18 * P.SW) // 2 and nm[3] < since[3] < nm[3] + 40, repr(since))
+    un = find(t, "text", "3 unread")
+    check("the unread count, centred under it", un is not None and un[2] == (240 - 8 * 8) // 2 and un[3] > since[3], repr(un))
+    box = [c for c in t.calls if c[0] == "rect" and c[4] == 2 and un[3] - 8 <= c[2] <= un[3] + 20 and c[5] != g.BG_DARK]
+    check("...in a 2 px box", len(box) == 2 and box[0][3] == box[1][3] > 8 * 8, repr(box))
+    bt = find(t, "small", "77% 4.00V")
+    check("battery percent and voltage on the bottom line", bt is not None and bt[3] >= 296 and bt[2] == (240 - 9 * P.SW) // 2, repr(bt))
+    words = " ".join(c[1] for c in t.calls if c[0] in ("text", "small"))
+    check("no 'sleeping', no 'press any key', no frame", "sleeping" not in words and "press" not in words
+          and not any(c[0] == "rect" and c[3] >= 200 and c[4] >= 200 and c[5] != g.BG_DARK for c in t.calls), words)
+    check("a full refresh was asked for", g._panel_flush.n == [True], repr(g._panel_flush.n))
+    check("the screen is off", g._screen_on is False)
+    g, t = mksleep(unread=0, bat=4.9, clock=False)
+    g.sleep_screen()
+    check("nothing unread: no box", not any("unread" in c[1] for c in t.calls if c[0] == "text")
+          and not any(c[0] == "rect" and c[4] == 2 and c[5] != g.BG_DARK for c in t.calls))
+    check("clock not set: no 'asleep since'", not any("asleep" in c[1] for c in texts(t, "small")))
+    check("on a cable it says USB", find(t, "small", "USB 4.90V") is not None, repr(texts(t, "small")))
+    g, t = mksleep(bat=0.0)
+    g.sleep_screen()
+    check("no battery reading: no battery line", texts(t, "small") == [c for c in texts(t, "small") if "asleep" in c[1]])
+    g, t = mksleep(unread=120, bat=3.2)
+    g.sleep_screen()
+    check("a flat pack reads 0%, a big count fits", find(t, "small", "0% 3.20V") is not None and find(t, "text", "120 unread") is not None)
+
+
+def test_sleep_tick():
+    P = ui_pro
+    g, t = mksleep(unread=1)
+    g.sleep_screen()
+    del t.calls[:]
+    del g._panel_flush.n[:]
+    P.sleep_tick(g)
+    check("nothing changed: the tick draws nothing", t.calls == [] and g._panel_flush.n == [])
+    g.unread[b"b" * 16] = 2
+    acq = []
+    g._spi_acquire = lambda: acq.append("a")
+    g._spi_release = lambda: acq.append("r")
+    P.sleep_tick(g)
+    check("a message arrived while asleep: the box shows the new total", find(t, "text", "3 unread") is not None, repr(texts(t)))
+    check("...as a partial refresh, inside the display hand-over", g._panel_flush.n == [False] and acq == ["a", "r"], repr((g._panel_flush.n, acq)))
+    check("...and nothing else is redrawn", find(t, "text", "Varna-Pro") is None and ("fill", g.BG_DARK) not in t.calls)
+    del t.calls[:]
+    P.sleep_tick(g)
+    check("once", t.calls == [])
+    g.unread.clear()
+    P.sleep_tick(g)
+    check("read elsewhere: the box goes away", not any("unread" in c[1] for c in texts(t))
+          and any(c[0] == "rect" and c[5] == g.BG_DARK for c in t.calls))
+    g, t = mksleep(unread=1)
+    g.unread[b"c" * 16] = 5
+    P.sleep_tick(g)
+    check("the tick does nothing while the screen is on", t.calls == [])
+    g, t = mksleep(unread=1)
+    g.sleep_screen()
+    g._bl = object()
+    g.unread[b"c" * 16] = 5
+    del t.calls[:]
+    P.sleep_tick(g)
+    check("...or on a panel with a backlight (it shows nothing when off)", t.calls == [])
+
 if __name__ == "__main__":
     test_pro_layout_is_active_on_the_pro()
     test_list_window_follows_the_selection()
@@ -1557,6 +1650,8 @@ if __name__ == "__main__":
     test_rrc_panel_members()
     test_rrc_review_gaps()
     test_browser_and_qr_bands()
+    test_sleep_screen()
+    test_sleep_tick()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

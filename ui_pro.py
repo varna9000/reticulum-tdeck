@@ -1111,3 +1111,84 @@ def draw_rrc_panel(ui):
         tft.text(ui.font, "(BKSP)close", MARGIN, fy + 3, paper, band)
         s = "(ENT)" + action
         tft.text(ui.font, s, X + W - 8 - len(s) * _u.CHAR_W, fy + 3, paper, band)
+
+
+# --- sleep screen ----------------------------------------------------------------
+# E-ink keeps showing its last frame for free, so the sleeping deck says what
+# is worth knowing without waking it: whose deck, since when, how much is
+# unread, how much battery. Nothing here may look live when it is not -- hence
+# "asleep since", not a clock.
+
+SLEEP_BOX_Y = 166
+SLEEP_BOX_H = 28
+
+
+def _sleep_box(ui):
+    """The unread count in its box, or the blank where it would be."""
+    tft = ui.tft
+    paper = ui.BG_DARK
+    ink = ui.NEON_CYAN
+    W = _u.SCREEN_W
+    total = 0
+    for v in ui.unread.values():
+        total += v
+    tft.fill_rect(0, SLEEP_BOX_Y, W, SLEEP_BOX_H, paper)
+    if total:
+        s = "%d unread" % total
+        w = len(s) * _u.CHAR_W + 24
+        x = (W - w) // 2
+        tft.fill_rect(x, SLEEP_BOX_Y, w, 2, ink)
+        tft.fill_rect(x, SLEEP_BOX_Y + SLEEP_BOX_H - 2, w, 2, ink)
+        tft.fill_rect(x, SLEEP_BOX_Y, 2, SLEEP_BOX_H, ink)
+        tft.fill_rect(x + w - 2, SLEEP_BOX_Y, 2, SLEEP_BOX_H, ink)
+        tft.text(ui.font, s, (W - len(s) * _u.CHAR_W) // 2, SLEEP_BOX_Y + 6, ink, paper)
+    ui._sleep_shown = total
+
+
+def draw_sleep(ui):
+    """The sleep screen's content, on a panel ui._draw_sleep_screen has just
+    cleared (it also owns the SPI hand-over and the full refresh)."""
+    tft = ui.tft
+    paper = ui.BG_DARK
+    W = _u.SCREEN_W
+    name = _u._ascii(ui.node_name)[:_u.COLS]
+    tft.text(ui.font, ui._tb(name), (W - len(name) * _u.CHAR_W) // 2, 120, ui.NEON_CYAN, paper)
+    if _u._clock_valid():
+        s = "asleep since " + _u._fmt_clock()
+        _sd(ui, s, (W - len(s) * SW) // 2, 142, ui.DIM_CYAN, paper)
+    _sleep_box(ui)
+    bv = ui.bat_v
+    s = None
+    if bv >= 4.3:
+        s = "USB %.2fV" % bv
+    elif bv > 0:
+        pct = int((bv - 3.3) / 0.9 * 100)
+        s = "%d%% %.2fV" % (0 if pct < 0 else (100 if pct > 100 else pct), bv)
+    if s:
+        _sd(ui, s, (W - len(s) * SW) // 2, 302, ui.DIM_CYAN, paper)
+
+
+def sleep_tick(ui):
+    """Called from the GUI loop while the screen is off. A message that
+    arrives and leaves the deck asleep (Wake: never, or an announce-only
+    policy) updates the unread box: one small partial refresh."""
+    if ui._screen_on or ui._bl is not None:
+        return
+    shown = getattr(ui, "_sleep_shown", None)
+    if shown is None:
+        return                       # no sleep screen of ours on the panel
+    total = 0
+    for v in ui.unread.values():
+        total += v
+    if total == shown:
+        return
+    acquire = getattr(ui, "_spi_acquire", None)
+    release = getattr(ui, "_spi_release", None)
+    if acquire:
+        acquire()
+    try:
+        _sleep_box(ui)
+        ui._flush()
+    finally:
+        if release:
+            release()
