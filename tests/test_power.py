@@ -450,11 +450,13 @@ class BadLowpower(FakeLowpower):
 p, logs = _mk_cfg(BadLowpower(), sleep_isolate_pins=lambda: (99,), SLEEP_MSPI_STANDBY=True)
 check("a refused configuration is logged, not fatal", p is not None and any("pad" in m for m in logs), repr(logs))
 
-for mod, want_pins in (("board_tdeck_pro", True), ("board_tdeck_v1", False)):
-    src = open(os.path.join(ROOT, mod + ".py")).read()
-    check(mod + " asks for the flash/PSRAM standby pads", "SLEEP_MSPI_STANDBY = True" in src)
-    check(mod + (" lets the I2S LRCK pad go in sleep" if want_pins else " isolates no pads of its own"),
-          ("def sleep_isolate_pins" in src) == want_pins)
+src = open(os.path.join(ROOT, "board_tdeck_pro.py")).read()
+check("the Pro asks for the flash/PSRAM standby pads", "SLEEP_MSPI_STANDBY = True" in src)
+check("the Pro lets the I2S LRCK pad go in sleep", "def sleep_isolate_pins" in src)
+# The v1 has no fuel gauge to measure with and was not on the bench: it keeps
+# the sleep it shipped with until someone can check a change on the device.
+src = open(os.path.join(ROOT, "board_tdeck_v1.py")).read()
+check("the v1 changes nothing about its sleep pads", "SLEEP_MSPI_STANDBY" not in src and "sleep_isolate_pins" not in src)
 
 # Bench 2026-10-11: GPIO 43 (the chip's default UART0 TX, wired to the GPS
 # module's receive pin) idles high and feeds the switched-off GPS: 20 mA,

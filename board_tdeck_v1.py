@@ -186,10 +186,6 @@ def set_kbd_backlight(on):
 # the keyboard loop runs in between (still ~75 % of the time asleep with the
 # 100 ms awake gap).
 SLEEP_POLL_MS = 300
-# Give the flash/PSRAM pads ESP-IDF's sleep pull-ups (power.py; 0.5 mA on the
-# Pro, 2026-10-11, unmeasured here). Board pads are untouched: this deck's trackball and power
-# switch lines must keep their awake state, and it isolates none of its own.
-SLEEP_MSPI_STANDBY = True
 
 
 def sleep_wake_pins():
