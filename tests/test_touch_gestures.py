@@ -182,8 +182,16 @@ def test_swipe_and_back():
     check("39 px is nothing", g == [], repr(g))
     g = run(tg.Recognizer(), stroke(60, 150, 100, 150))
     check("40 px is a swipe", kinds(g) == [SWIPE], repr(g))
-    g = run(tg.Recognizer(), stroke(60, 150, 160, 170))
-    check("20 px of vertical drift cancels it", g == [], repr(g))
+    # A thumb sweeps an arc, not a ruler line: the drift allowed grows with
+    # the length of the swipe (a fixed 20 px was 4 mm, and swipes were lost).
+    g = run(tg.Recognizer(), stroke(60, 150, 160, 190))
+    check("100 px right drifting 40 px down is still a swipe", g == [(SWIPE, 60, 150, 1, 1000)], repr(g))
+    g = run(tg.Recognizer(), stroke(200, 150, 80, 80))
+    check("120 px left drifting 70 px up is still a swipe", g == [(SWIPE, 200, 150, -1, 1000)], repr(g))
+    g = run(tg.Recognizer(), stroke(60, 150, 160, 225))
+    check("drift of 3/4 of the travel is the limit", kinds(g) == [SWIPE], repr(g))
+    g = run(tg.Recognizer(), stroke(60, 150, 160, 230))
+    check("a diagonal (80 px down over 100) is nothing", g == [], repr(g))
     g = run(tg.Recognizer(), stroke(23, 150, 123, 150))
     check("starting at x=23 and going right is BACK", g == [(BACK, 23, 150, 0, 1000)], repr(g))
     g = run(tg.Recognizer(), stroke(24, 150, 124, 150))

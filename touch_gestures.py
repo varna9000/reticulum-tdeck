@@ -29,7 +29,7 @@ STEP_PX = 16
 FLICK_PX_S = 600
 FLICK_WINDOW_MS = 100
 SWIPE_MIN_PX = 40
-SWIPE_MAX_DY = 20
+SWIPE_DRIFT = (3, 4)     # vertical drift allowed, as a fraction of the horizontal travel
 EDGE_BAND_X = 24
 KEY_GUARD_MS = 300
 EDGE_REJECT_PX = 4
@@ -187,7 +187,11 @@ class Recognizer:
             return [(FLICK, self._x0, self._y0, d, self._t0)] if d else []
         if self._mode == _HORIZ:
             dx = x - self._x0
-            if abs(dx) >= SWIPE_MIN_PX and abs(y - self._y0) < SWIPE_MAX_DY:
+            # The stroke already left the slop sideways, so nothing else
+            # competes for it: the drift allowed scales with the travel. A
+            # thumb pivots at its base and draws an arc.
+            num, den = SWIPE_DRIFT
+            if abs(dx) >= SWIPE_MIN_PX and abs(y - self._y0) * den <= abs(dx) * num:
                 if dx > 0 and self._x0 < EDGE_BAND_X:
                     return [(BACK, self._x0, self._y0, 0, self._t0)]
                 return [(SWIPE, self._x0, self._y0, 1 if dx > 0 else -1, self._t0)]
