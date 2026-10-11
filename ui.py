@@ -1749,6 +1749,10 @@ class UI:
         # Return cached result if still valid
         if self._chat_lines_cache is not None and self._chat_lines_peer == self.selected_peer:
             return self._chat_lines_cache
+        if _pro is not None:
+            self._chat_lines_cache = _pro.chat_lines(self)
+            self._chat_lines_peer = self.selected_peer
+            return self._chat_lines_cache
 
         # 1 pending, 2 delivered, 3 failed, 4 queued (route discovery),
         # 5 sent — awaiting delivery proof (DIRECT transfers)

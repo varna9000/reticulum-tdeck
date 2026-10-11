@@ -69,6 +69,21 @@ for _ in range(12):
 check("v1 list window is still 11 rows", g.selected_idx == 12 and g.node_scroll == 2, "%d %d" % (g.selected_idx, g.node_scroll))
 g.draw()
 check("the old draw path runs without the Pro module", True)
+P = b"\x07" * 16
+g.add_peer(P, "Alex")
+g.selected_peer = P
+g.add_chat_message(P, False, "hello there")
+rows = g._build_chat_lines()
+check("v1 chat lines are the old 8-tuples with the name prefix",
+      len(rows) == 1 and len(rows[0]) == 8 and rows[0][1].startswith("Alex> "), repr(rows))
+g.state = ui.STATE_CHAT
+g._cache = [''] * ui.CACHE_ROWS
+g.draw()
+g.state = ui.STATE_RECORDING
+g._rec_warming = False
+g._cache = [''] * ui.CACHE_ROWS
+g.draw()
+check("v1 chat and recording screens draw the old way", True)
 print()
 if fails:
     print("%d FAILED" % len(fails))

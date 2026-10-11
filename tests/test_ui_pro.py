@@ -625,6 +625,123 @@ def test_icons_have_the_designs_proportions():
     check("toolbar icons stay inside the toolbar",
           all(ui_pro.TOOL_Y < c[3] and c[3] + c[1][1] <= ui.SCREEN_H for c in ic if c[3] >= ui_pro.TOOL_Y))
 
+# --- piece B: chat ------------------------------------------------------------
+
+PEER = b"\x07" * 16
+
+
+def mkchat(name="Alex"):
+    g, t = mkui()
+    g.add_peer(PEER, name, hops=1)
+    g.selected_peer = PEER
+    g.state = ui.STATE_CHAT
+    g.chat_scroll = 0
+    g.chat_cursor = -1
+    g._cache = [''] * ui.CACHE_ROWS
+    ui._fmt_time = lambda ts: "09:%02d" % (int(ts) // 60 % 60)
+    return g, t
+
+
+def say(g, mine, text, at=0, status=0, image=None, audio=None):
+    """Add a message stamped `at` seconds into the fake hour."""
+    mid = g.add_chat_message(PEER, mine, text, status=status, image=image, audio=audio)
+    h = g.chat_history[PEER]
+    m = h[-1]
+    h[-1] = (m[0], m[1], at, m[3], m[4], m[5], m[6])
+    g._invalidate_chat_lines()
+    return mid
+
+
+def kinds(rows):
+    return [r[0] for r in rows]
+
+
+def test_chat_blocks():
+    print("chat: blocks")
+    P = ui_pro
+    g, t = mkchat()
+    say(g, False, "got it, 73", at=60)
+    r = g._build_chat_lines()
+    check("one short message is one inline row", kinds(r) == [P.K_INLINE], repr(r))
+    check("inline: 'Name: text', the time on the side, last of its block",
+          r[0][2] == "Alex: got it, 73" and r[0][5] == "09:01" and r[0][4] & P.F_LAST, repr(r[0]))
+    g, t = mkchat()
+    say(g, False, "hey, are you on the mesh tonight? asking for a friend", at=0)
+    r = g._build_chat_lines()
+    check("a wrapping message: header + text rows", kinds(r) == [P.K_HDR, P.K_TEXT, P.K_TEXT], repr(kinds(r)))
+    check("header is 'Name . time'", r[0][2] == "Alex \xfa 09:00", repr(r[0][2]))
+    check("text is full width, no name prefix", r[1][2].startswith("hey, are") and len(r[1][2]) <= P.PEER_COLS)
+    check("only the last row closes the block", [x[4] & P.F_LAST for x in r] == [0, 0, 1])
+    g, t = mkchat()
+    say(g, False, "one", at=0)
+    say(g, False, "two", at=30)
+    r = g._build_chat_lines()
+    check("two one-liners from one sender: one header block",
+          kinds(r) == [P.K_HDR, P.K_TEXT, P.K_TEXT] and r[1][2] == "one" and r[2][2] == "two", repr(r))
+    say(g, True, "yes", at=40)
+    say(g, False, "ok", at=50)
+    r = g._build_chat_lines()
+    check("a change of sender starts a new block",
+          kinds(r) == [P.K_HDR, P.K_TEXT, P.K_TEXT, P.K_INLINE, P.K_INLINE] and r[3][2] == "me: yes" and r[3][1] is True, repr(r))
+    g, t = mkchat()
+    say(g, False, "one", at=0)
+    say(g, False, "two", at=0 + P.BLOCK_GAP + 1)
+    check("ten minutes of silence starts a new block too", kinds(g._build_chat_lines()) == [P.K_INLINE, P.K_INLINE])
+    g, t = mkchat()
+    say(g, False, "a\nb", at=0)
+    r = g._build_chat_lines()
+    check("typed line breaks are kept", kinds(r) == [P.K_HDR, P.K_TEXT, P.K_TEXT] and [x[2] for x in r[1:]] == ["a", "b"])
+    g, t = mkchat("A very long peer name")
+    say(g, False, "hi", at=0)
+    check("names are cut to 8", g._build_chat_lines()[0][2] == "A very l: hi", repr(g._build_chat_lines()[0][2]))
+    g, t = mkchat()
+    ui._fmt_time = lambda ts: ""
+    say(g, False, "hi", at=0)
+    say(g, False, "there", at=1)
+    r = g._build_chat_lines()
+    check("no time before the clock is set", r[0][2] == "Alex" and kinds(r) == [P.K_HDR, P.K_TEXT, P.K_TEXT], repr(r[0]))
+
+
+def test_chat_blocks_media_and_status():
+    P = ui_pro
+    g, t = mkchat()
+    say(g, False, "[image 12k] nice shot", at=0, image=b"jpg")
+    r = g._build_chat_lines()
+    check("image with text: header, tile (2 rows), text",
+          kinds(r) == [P.K_HDR, P.K_TOP, P.K_BOT, P.K_TEXT] and r[3][2] == "nice shot", repr(r))
+    check("tile rows: title, caption from the marker, image flag",
+          r[1][2] == "image" and r[1][5] == "12k" and r[2][5] == "12k" and r[1][4] & P.F_IMG and r[2][4] & P.F_IMG, repr(r[1:3]))
+    g, t = mkchat()
+    mid = say(g, True, "[voice 3s]", at=0, status=2, audio=b"c2")
+    r = g._build_chat_lines()
+    check("voice only, mine: header + tile, no text row", kinds(r) == [P.K_HDR, P.K_TOP, P.K_BOT] and r[0][2].startswith("me"), repr(r))
+    check("voice caption says how to play it", r[1][5] == "3s - tap to play" and r[1][4] & P.F_VOICE, repr(r[1]))
+    check("a text-less message carries its mark on the tile's top row", r[1][6] == 2 and r[2][6] == 0, repr(r[1:]))
+    check("rows know their message", all(x[3] == mid for x in r))
+    g, t = mkchat()
+    say(g, True, "this is my rather long message that will wrap for sure", at=0, status=1)
+    r = g._build_chat_lines()
+    check("my mark is on the message's last text row only", [x[6] for x in r] == [0, 0, 1][:len(r)] or [x[6] for x in r][-1] == 1 and sum(x[6] for x in r) == 1, repr(r))
+    check("my text is narrower", all(len(x[2]) <= P.ME_COLS for x in r if x[0] == P.K_TEXT))
+    g, t = mkchat()
+    say(g, True, "ok", at=0, status=2)
+    r = g._build_chat_lines()
+    check("inline row of mine carries the mark", kinds(r) == [P.K_INLINE] and r[0][6] == 2 and r[0][2] == "me: ok", repr(r))
+    g, t = mkchat()
+    say(g, False, "[image 9k] [voice 2s]", at=0, image=b"j", audio=b"a")
+    r = g._build_chat_lines()
+    check("image and voice in one message: two tiles, nothing left over",
+          kinds(r) == [P.K_HDR, P.K_TOP, P.K_BOT, P.K_TOP, P.K_BOT] and r[1][4] & P.F_IMG and r[3][4] & P.F_VOICE, repr(r))
+    g, t = mkchat()
+    say(g, False, "[image 12k", at=0, image=b"j")
+    r = g._build_chat_lines()
+    check("a marker with no closing bracket still makes a tile", kinds(r) == [P.K_HDR, P.K_TOP, P.K_BOT], repr(r))
+    g, t = mkchat()
+    say(g, False, "hello", at=0)
+    a = g._build_chat_lines()
+    check("the list is cached until invalidated", g._build_chat_lines() is a)
+
+
 if __name__ == "__main__":
     test_pro_layout_is_active_on_the_pro()
     test_list_window_follows_the_selection()
@@ -652,6 +769,8 @@ if __name__ == "__main__":
     test_find_clears_the_toolbar_band()
     test_lane_repaint_reaches_the_panel_edge()
     test_icons_have_the_designs_proportions()
+    test_chat_blocks()
+    test_chat_blocks_media_and_status()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

@@ -498,3 +498,98 @@ def draw_sheet(ui):
         ui._bitmap(icon, 14, y + (ROW_H - icon[1]) // 2, ink)
         tft.text(ui.font, label, 34, y + 8, ink, paper)
         _sd(ui, klabel, INFO_R - len(klabel) * SW, y + 10, ui.DIM_CYAN, paper)
+
+
+# --- chat ------------------------------------------------------------------------
+# A DM thread as blocks: consecutive messages from one sender, the time on the
+# block. One tuple per 16 px row, so ui.py's scrolling, cursor and row cache
+# carry on unchanged: (kind, mine, text, mid, flags, extra, status).
+
+K_HDR = 0          # small "name . time" line opening a block
+K_INLINE = 1       # a whole one-line block: "name: text", time on the right
+K_TEXT = 2
+K_TOP = 3          # upper half of a media tile
+K_BOT = 4          # lower half
+F_LAST = 1         # last row of its block: carries the rule
+F_IMG = 2
+F_VOICE = 4
+CHAT_Y = 42
+PEER_X = 6
+PEER_COLS = 28
+ME_X = 16
+ME_COLS = 26
+BLOCK_GAP = 600    # seconds of silence that end a block
+_MARKS = {1: "..", 2: "\xfb", 3: "!", 4: "~", 5: ">"}
+
+
+def _markers(text):
+    """(text without its [image ...] / [voice ...] markers, {kind: caption})."""
+    caps = {}
+    for kw in ("image", "voice"):
+        p = text.find("[" + kw)
+        if p < 0:
+            continue
+        e = text.find("]", p)
+        if e < 0:
+            e = len(text)
+        caps[kw] = text[p + 1 + len(kw):e].strip()
+        text = text[:p] + text[e + 1:]
+    return text.strip(), caps
+
+
+def _block(ui, rows, msgs, mine, name):
+    cols = ME_COLS if mine else PEER_COLS
+    x0 = ME_X if mine else PEER_X
+    first = msgs[0]
+    tm = _u._fmt_time(first[2])
+    if len(msgs) == 1 and not first[4] and not first[5] and "\n" not in first[1]:
+        st = first[3] if (mine and first[3] in _MARKS) else 0
+        right = (len(tm) * SW + 4 if tm else 0) + (len(_MARKS[st]) * _u.CHAR_W + 4 if st else 0)
+        line = name + ": " + first[1].replace("\r", "")
+        if len(line) * _u.CHAR_W <= cols * _u.CHAR_W - right:
+            rows.append((K_INLINE, mine, line, first[6], F_LAST, tm, st))
+            return
+    rows.append((K_HDR, mine, name + (" \xfa " + tm if tm else ""), first[6], 0, "", 0))
+    for m in msgs:
+        text, caps = _markers(m[1]) if (m[4] or m[5]) else (m[1], {})
+        st = m[3] if (mine and m[3] in _MARKS) else 0
+        mark_at = -1
+        if m[4]:
+            mark_at = len(rows)
+            cap = caps.get("image", "")
+            rows.append((K_TOP, mine, "image", m[6], F_IMG, cap, 0))
+            rows.append((K_BOT, mine, "image", m[6], F_IMG, cap, 0))
+        if m[5]:
+            mark_at = len(rows)
+            cap = caps.get("voice", "")
+            cap = (cap + " - " if cap else "") + "tap to play"
+            rows.append((K_TOP, mine, "voice", m[6], F_VOICE, cap, 0))
+            rows.append((K_BOT, mine, "voice", m[6], F_VOICE, cap, 0))
+        if text:
+            w = cols - (len(_MARKS[st]) + 1 if st else 0)
+            for para in text.replace("\r", "").split("\n"):
+                for wl in ui._wrap_text(para, w):
+                    rows.append((K_TEXT, mine, wl, m[6], 0, "", 0))
+            mark_at = len(rows) - 1
+        if st and mark_at >= 0:
+            r = rows[mark_at]
+            rows[mark_at] = (r[0], r[1], r[2], r[3], r[4], r[5], st)
+    r = rows[-1]
+    rows[-1] = (r[0], r[1], r[2], r[3], r[4] | F_LAST, r[5], r[6])
+
+
+def chat_lines(ui):
+    msgs = ui.chat_history.get(ui.selected_peer, [])
+    peer = ui.peers.get(ui.selected_peer)
+    pname = _u._ascii((peer.get("name") if peer else None) or "?")[:8]
+    rows = []
+    i = 0
+    n = len(msgs)
+    while i < n:
+        mine = msgs[i][0]
+        j = i + 1
+        while j < n and msgs[j][0] == mine and msgs[j][2] - msgs[j - 1][2] <= BLOCK_GAP:
+            j += 1
+        _block(ui, rows, msgs[i:j], mine, "me" if mine else pname)
+        i = j
+    return rows
