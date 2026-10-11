@@ -31,6 +31,60 @@ def _pro_panel(ui):
             and ui.state in (_u.STATE_RRC_ROOMS, _u.STATE_RRC_CHAT))
 
 
+def _pro_find(ui):
+    """Lookup is showing results on the Pro layout: two-line rows from y 58."""
+    return (_u._pro is not None and ui.state == _u.STATE_NODES and ui._find
+            and len(ui._find_res) > 0 and not ui._find_listen)
+
+
+def _pro_wifi(ui):
+    """Setup's WiFi scan list on the Pro layout: two-line rows from y 42."""
+    return (_u._pro is not None and ui.state == _u.STATE_SETTINGS
+            and ui._settings_page == _u._SET_WIFI_SCAN and len(ui._wifi_networks) > 0)
+
+
+def _pro_menu(ui):
+    """The shell's control menu on the Pro layout."""
+    return _u._pro is not None and ui.state == _u.STATE_SHELL and ui._shell_menu
+
+
+def _tap_pro_rows(ui, y):
+    """One tap acts on these three lists, as everywhere on the Pro."""
+    p = _u._pro
+    if _pro_find(ui):
+        i = (y - p.FIND_Y) // p.ROW_H
+        idx = ui._find_scroll + i
+        if i < 0 or i >= p.FIND_ROWS or idx >= len(ui._find_res):
+            return False
+        ui._find_sel = idx
+        ui.dirty = True
+        ui.nav_event("click")              # Enter's action: add / select the entry
+        return True
+    i = (y - p.LIST_Y) // p.ROW_H
+    if i < 0 or i >= p.MENU_ROWS:
+        return False
+    if _pro_wifi(ui):
+        idx = ui._settings_scroll + i
+        if idx >= len(ui._wifi_networks):
+            return False
+        ui._settings_idx = idx
+        ui.dirty = True
+        ui.nav_event("click")              # on to the password page
+        return True
+    idx = p.shell_menu_top(ui) + i         # the shell menu
+    if idx >= len(_u._SHELL_CTRL_ITEMS):
+        return False
+    armed = getattr(ui, "_menu_armed", -1)
+    ui._menu_armed = -1
+    ui._shell_menu_idx = idx
+    ui.dirty = True
+    if _u._SHELL_CTRL_ITEMS[idx][1] == "quit" and armed != idx:
+        ui._menu_armed = idx               # it ends the session: a second tap confirms
+        return True
+    ui._shell_menu_exec()
+    return True
+
+
 def _pro_setup(ui):
     """The Pro's own Setup main page is up (ui_pro.py): 32 px rows, one tap acts."""
     return (_u._pro is not None and ui.state == _u.STATE_SETTINGS
@@ -116,7 +170,7 @@ def layout_key(ui):
         return (st, ui.browser_path, ui.browser_scroll, ui.browser_cursor)
     if st == _u.STATE_SETTINGS:
         return (st, ui._settings_page, g(ui, "_settings_scroll", 0), g(ui, "_settings_idx", 0),
-                g(ui, "_lora_field", 0), g(ui, "_setup_gen", 0),
+                g(ui, "_lora_field", 0), g(ui, "_setup_gen", 0), len(ui._wifi_networks),
                 ui._wifi_connected, ui._tcp_enabled, ui.lora_online)
     if st == _u.STATE_SHELL:
         return (st, ui._shell_menu, g(ui, "_shell_view", 0), g(ui, "_shell_menu_idx", 0))
@@ -261,6 +315,9 @@ def _tap_header(ui, x):
         ui.nav_event("click")         # the room / member panel, as the ball's click
         return True
     if st == _u.STATE_SHELL:
+        if _pro_menu(ui):
+            ui._shell_menu_close()        # the "< Control keys" band
+            return True
         return False
     return _back(ui, True)
 
@@ -409,6 +466,10 @@ def _tap(ui, x, y):
         return True
     if _pro_setup(ui) and _u._pro.LIST_Y <= y < _u._pro.TOOL_Y:
         return _tap_pro_setup(ui, y)
+    if _pro_find(ui) and _u._pro.FIND_Y <= y < _u._pro.FIND_Y + _u._pro.FIND_ROWS * _u._pro.ROW_H:
+        return _tap_pro_rows(ui, y)
+    if (_pro_wifi(ui) or _pro_menu(ui)) and _u._pro.LIST_Y <= y < _u._pro.TOOL_Y:
+        return _tap_pro_rows(ui, y)
     if y >= _u.SEP_Y - 6:
         if _pro_panel(ui):
             # Outside the box closes it. The footer's (ENT) hint must not
@@ -558,7 +619,8 @@ def handle(ui, g, changed_ms):
     if kind == LONG:
         return _long(ui, x, y)
     if kind == DRAG:
-        if _pro_list(ui) or _pro_setup(ui) or _pro_panel(ui):
+        if (_pro_list(ui) or _pro_setup(ui) or _pro_panel(ui) or _pro_find(ui)
+                or _pro_wifi(ui) or _pro_menu(ui)):
             if _drag_acc[0] != t_down:
                 _drag_acc[0] = t_down
                 _drag_acc[1] = 0
@@ -576,7 +638,7 @@ def handle(ui, g, changed_ms):
             import rrc_ui
             _steps(ui, n * (rrc_ui.PANEL_ROWS - 1))
             return True
-        if _pro_list(ui) or _pro_setup(ui):
+        if _pro_list(ui) or _pro_setup(ui) or _pro_find(ui) or _pro_wifi(ui) or _pro_menu(ui):
             if ui._sheet is not None:
                 return False
             _steps(ui, n * (_u.LIST_ROWS - 1))

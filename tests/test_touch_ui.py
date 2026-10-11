@@ -676,13 +676,23 @@ def test_find():
     g._find_scroll = 0
     picked = []
     g._find_pick = lambda: picked.append(g._find_sel)
-    fy = ui.BODY_Y + 2 * ui.CHAR_H + ui.CHAR_H // 2          # the first result row
-    tap(g, 100, fy + 2 * ui.CHAR_H)
+    f0 = 58                                              # two-line result rows on the Pro
+    check("one tap on result 2 selects it", tap(g, 100, f0 + 2 * 32 + 16) is True and g._find_sel == 2, str(g._find_sel))
     settle(g)
-    check("tap result 2 selects it", g._find_sel == 2 and picked == [], "%d %r" % (g._find_sel, picked))
-    tap(g, 100, fy + 2 * ui.CHAR_H)
+    check("...and picks it", picked == [2], repr(picked))
+    n = len(picked)
+    check("a tap past the last result does nothing", tap(g, 100, f0 + 5 * 32 + 16, t=300000) is False and len(picked) == n)
+    g._find_scroll = 2
+    tap(g, 100, f0 + 1 * 32 + 16, t=400000)
     settle(g)
-    check("tap again picks it", picked == [2], repr(picked))
+    check("rows follow the list's scroll", g._find_sel == 3 and picked[-1] == 3, "%d %r" % (g._find_sel, picked))
+    g._find_scroll = 0
+    g._find_sel = 0
+    touch_ui.handle(g, (DRAG, 100, 150, 1, 500000), 0)
+    settle(g)
+    touch_ui.handle(g, (DRAG, 100, 150, 1, 500000), 0)
+    settle(g)
+    check("a drag moves one row per 32 px", g._find_sel == 1, str(g._find_sel))
     check("the tab bar is inert while Find is open", tap(g, 200, ui.BODY_Y + 4) is False and g.node_tab == ui.TAB_MSG)
     check("edge swipe closes Find", touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is True and g._find is False)
 
@@ -706,17 +716,42 @@ def test_shell():
     g._shell_menu_idx = 0
     sent = []
     g._shell_menu_exec = lambda: sent.append(g._shell_menu_idx)
-    tap(g, 100, row_y(2))
+    m0 = 42                                              # two-line menu rows on the Pro
+    check("menu: one tap on item 2 selects and sends it", tap(g, 100, m0 + 2 * 32 + 16) is True and g._shell_menu_idx == 2 and sent == [2],
+          "%d %r" % (g._shell_menu_idx, sent))
+    g._shell_menu_idx = 8                                # window now starts at item 3
+    tap(g, 100, m0 + 0 * 32 + 16, t=300000)
+    check("menu: rows follow the window derived from the cursor", sent[-1] == 3, repr(sent))
+    quit_i = [k for k, it in enumerate(ui._SHELL_CTRL_ITEMS) if it[1] == "quit"][0]
+    g._shell_menu_idx = 10                               # window 3..10: Quit shell is row quit_i - 3
+    n = len(sent)
+    check("menu: Quit shell only selects on the first tap", tap(g, 100, m0 + (quit_i - 3) * 32 + 16, t=400000) is True
+          and g._shell_menu_idx == quit_i and len(sent) == n, repr(sent))
+    tap(g, 100, m0 + (quit_i - ui._pro.shell_menu_top(g)) * 32 + 16, t=500000)
+    check("menu: the second tap on it quits", sent[-1] == quit_i and len(sent) == n + 1, repr(sent))
+    g._shell_menu_idx = 0
+    touch_ui.handle(g, (DRAG, 100, 150, 1, 600000), 0)
     settle(g)
-    check("menu: tap item 2 selects it", g._shell_menu_idx == 2 and sent == [], "%d %r" % (g._shell_menu_idx, sent))
-    tap(g, 100, row_y(2))
+    touch_ui.handle(g, (DRAG, 100, 150, 1, 600000), 0)
     settle(g)
-    check("menu: tap again sends it", sent == [2], repr(sent))
-    check("menu: back closes it", touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is True and g._shell_menu is False)
+    check("menu: a drag moves one row per 32 px", g._shell_menu_idx == 1, str(g._shell_menu_idx))
+    check("menu: a tap on its '< Control keys' band closes it", tap(g, 60, 30, t=700000) is True and g._shell_menu is False)
     g._shell_menu = True
-    last = len(ui._SHELL_CTRL_ITEMS)
-    if last < ui.BODY_ROWS - 1:
-        check("menu: a tap below the last item closes it", tap(g, 100, row_y(last)) is True and g._shell_menu is False)
+    check("menu: back closes it", touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is True and g._shell_menu is False)
+    g = mkui(ui.STATE_SETTINGS)
+    g._settings_page = ui._SET_WIFI_SCAN
+    g._wifi_networks = [("net%d" % k, -40 - k) for k in range(12)]
+    g._settings_idx = 0
+    g._settings_scroll = 2
+    seen = keys_pressed(g)
+    check("WiFi scan: one tap on row 1 selects network 3", tap(g, 100, 42 + 32 + 16) is True and g._settings_idx == 3, str(g._settings_idx))
+    settle(g)
+    check("...and opens it (Enter)", seen == [b'\r'], repr(seen))
+    k0 = touch_ui.layout_key(g)
+    g._wifi_networks = g._wifi_networks[:5]
+    check("WiFi scan: a rescan that changes the list is a new layout", touch_ui.layout_key(g) != k0)
+    g._settings_scroll = 0
+    check("WiFi scan: a tap past the last network does nothing", tap(g, 100, 42 + 6 * 32 + 16, t=300000) is False)
 
 
 def test_rrc():
@@ -946,7 +981,7 @@ def test_untested_lists_follow_their_scroll():
     g._wifi_networks = [("net%d" % i, -60) for i in range(30)]
     g._settings_scroll = 5
     g._settings_idx = 5
-    tap(g, 100, row_y(3))
+    tap(g, 100, 42 + 3 * 32 + 16)
     settle(g)
     check("WiFi list: row 3 of a list scrolled by 5 is network 8", g._settings_idx == 8, str(g._settings_idx))
     g = with_peers(2)
@@ -956,7 +991,7 @@ def test_untested_lists_follow_their_scroll():
     g._find_scroll = 4
     g._find_sel = 4
     fy = ui.BODY_Y + 2 * ui.CHAR_H + ui.CHAR_H // 2
-    tap(g, 100, fy + 2 * ui.CHAR_H)
+    tap(g, 100, 58 + 2 * 32 + 16)
     settle(g)
     check("Find: row 2 of results scrolled by 4 is result 6", g._find_sel == 6, str(g._find_sel))
     import rrc_ui
