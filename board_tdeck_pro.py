@@ -284,6 +284,12 @@ if HAS_TOUCH and HAS_HAPTICS and drv2605.DRV2605_ADDR in i2c.scan():
         haptic = None
 _blink_until = None
 _touch_ctl = None
+# Driver events read while the panel was refreshing, oldest first. The key
+# loop does not run for those ~650 ms; without this a drag is seen once per
+# frame and whatever the finger did in between -- the rest of a swipe, the
+# lift that makes it a flick -- is gone.
+_touch_backlog = []
+_TOUCH_BACKLOG_MAX = 160     # a full refresh at one event per ~9 ms, with room
 
 
 # --- battery -----------------------------------------------------------
@@ -378,6 +384,23 @@ def _touch_handler(ev):
         print("[touch]", ev)
 
 
+def _touch_sample():
+    """The panel driver's idle hook: called every few ms while a refresh
+    holds the loop. It only reads the chip and queues what it says -- the
+    events carry their own times, and _service_touch acts on them on the
+    next pass. Acting here would change the UI in the middle of its flush."""
+    if touch is None or _gui is None or not _gui._screen_on or not touch.ready:
+        return
+    for ev in touch.poll():
+        # Full: only MOVEs are dropped. Every DOWN still gets its UP.
+        if len(_touch_backlog) < _TOUCH_BACKLOG_MAX or ev[0] != cst328.MOVE:
+            _touch_backlog.append(ev)
+
+
+if touch is not None:
+    panel.idle = _touch_sample
+
+
 def _service_touch():
     """One pass, from get_key(). The driver keeps its own reset in step
     with the screen; the controller stamps layout changes and runs the
@@ -398,6 +421,11 @@ def _service_touch():
     if haptic is not None and haptic.enabled != _gui._screen_on:
         haptic.enable(_gui._screen_on)
     _touch_ctl.service(now)
+    if _touch_backlog:
+        evs = _touch_backlog[:]
+        del _touch_backlog[:]
+        for ev in evs:
+            _touch_handler(ev)
     for ev in touch.service(_gui._screen_on):
         _touch_handler(ev)
     if touch.gave_up and not _touch_reported:

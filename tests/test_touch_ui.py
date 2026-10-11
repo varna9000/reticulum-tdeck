@@ -1411,7 +1411,53 @@ def test_shell_menu_review():
     tap(g, 100, 58 + 2 * 32 + 16)
     check("a Lookup tap picks at once (nothing typed in the same pass can move the selection first)", picked == [2], repr(picked))
 
+def test_drag_holds_the_redraw_until_the_finger_lifts():
+    print("redraw hold")
+    g = with_peers(16)
+    check("nothing is held by default", g._redraw_hold is None and g._redraw_held(5000) is False)
+    c = touch_ui.Controller(g)
+    c.service(1000)
+    c.event((DOWN, 100, 100, 1100))
+    c.event((MOVE, 100, 120, 1130))
+    c.event((MOVE, 100, 140, 1160))                # 40 px: two steps, one row
+    check("a drag step early in a stroke holds the redraw",
+          g._redraw_hold == 1100 + touch_ui.DRAG_HOLD_MS, repr(g._redraw_hold))
+    check("...so a flick is one refresh, not two", g._redraw_held(1170) is True)
+    c.event((UP, 100, 140, 1180))
+    check("lifting releases it at once", g._redraw_hold is None and g._redraw_held(1181) is False)
+    c.event((DOWN, 100, 100, 2000))
+    c.event((MOVE, 100, 140, 2100))
+    check("a finger that stays down gets its frame when the hold runs out",
+          g._redraw_held(2000 + touch_ui.DRAG_HOLD_MS - 1) is True
+          and g._redraw_held(2000 + touch_ui.DRAG_HOLD_MS) is False and g._redraw_hold is None)
+    c.event((MOVE, 100, 180, 2000 + touch_ui.DRAG_HOLD_MS + 500))
+    check("a slow drag is not held again: the frames follow the finger",
+          g._redraw_held(2000 + touch_ui.DRAG_HOLD_MS + 501) is False)
+    c.event((MOVE, 100, 100, 2000 + touch_ui.DRAG_HOLD_MS + 900))
+    g._redraw_hold = 1 << 20
+    g._screen_on = False
+    c.service(9000)
+    check("the screen going dark drops the hold", g._redraw_hold is None)
+    loop = _src("ui.py").split("async def gui_loop(")[1].split("\n    async def ")[0]
+    check("gui_loop asks before the throttled redraw", "not self._redraw_held(now)" in loop)
+
+
+def test_touch_is_sampled_during_a_refresh():
+    src = _src("board_tdeck_pro.py")
+    check("the panel's busy wait calls the sampler", "panel.idle = _touch_sample" in src)
+    sample = src.split("def _touch_sample():")[1].split("\ndef ")[0]
+    check("it only reads a chip that is up, with the screen on",
+          "touch.ready" in sample and "_screen_on" in sample and "touch.poll()" in sample)
+    check("it never acts on the UI mid-flush: events are only queued",
+          "_touch_handler" not in sample and "_touch_ctl" not in sample)
+    service = src.split("def _service_touch():")[1].split("\ndef ")[0]
+    check("the backlog is replayed before this pass's own events",
+          "_touch_backlog" in service and service.index("_touch_backlog") < service.index("touch.service("))
+
+
 if __name__ == "__main__":
+    test_drag_holds_the_redraw_until_the_finger_lifts()
+    test_touch_is_sampled_during_a_refresh()
     test_geometry_is_the_pros()
     test_hint_zones_follow_the_hints()
     test_hint_key_table()

@@ -10,12 +10,13 @@
 import time
 
 import ui as _u
-from touch_gestures import Recognizer, TAP, LONG, DRAG, FLICK, SWIPE, BACK
+from touch_gestures import Recognizer, UP, TAP, LONG, DRAG, FLICK, SWIPE, BACK
 
 _FOOT_REACH = 8          # px above the hint row that still count as the footer
 _FOOT_SNAP = 8           # a footer tap this close to a hint goes to it
 _PAGE = _u.BODY_ROWS - 2
 PENDING_MAX_MS = 1500    # how long a redraw may stay "pending" before taps count again
+DRAG_HOLD_MS = 300       # a drag's redraw waits this long after DOWN for the finger to lift
 _STAMP_MAX_AGE = 1 << 28 # ticks_diff is only valid within 2**29 ms (~6 days)
 _drag_acc = [None, 0]    # [stroke t_down, 16 px steps not yet turned into rows]
 
@@ -708,6 +709,7 @@ class Controller:
 
     def _fail(self, e):
         self.rec.cancel()
+        self.ui._redraw_hold = None
         if self._report is not None:
             try:
                 self._report("touch", e)
@@ -725,6 +727,7 @@ class Controller:
         ui = self.ui
         if not ui._screen_on:
             self.rec.cancel()
+            ui._redraw_hold = None
             self._key = None          # re-stamp when the screen comes back
             return
         k = layout_key(ui)
@@ -751,6 +754,8 @@ class Controller:
         try:
             for g in self.rec.feed(ev):
                 self._act(g)
+            if ev[0] == UP:
+                self.ui._redraw_hold = None    # the stroke is over: draw where it ended
         except Exception as e:
             self._fail(e)
 
@@ -768,6 +773,13 @@ class Controller:
             # The redraw this caused is the user's doing: the e-ink shim
             # spends its whole-panel refresh on those.
             self.ui.note_user_input()
+            if g[0] == DRAG:
+                # A refresh is ~750 ms and a flick is over in 100..250: a
+                # frame started on the first step would show one row of a
+                # swipe that goes on to move a page. Wait for the lift, but
+                # not long -- a finger still down after DRAG_HOLD_MS is
+                # dragging, and wants frames that follow it.
+                self.ui._redraw_hold = time.ticks_add(g[4], DRAG_HOLD_MS)
             if self._feedback is not None:
                 if g[0] == DRAG:
                     if self._drag_t0 == g[4]:

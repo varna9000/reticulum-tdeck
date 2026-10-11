@@ -123,6 +123,56 @@ def test_first_flush_rect_is_a_full_refresh():
     assert 0x10 in cmds and 0x13 in cmds and 0x12 in cmds
 
 
+class BusyPin:
+    """BUSY (active low) for the first `n` reads after each refresh command."""
+
+    def __init__(self, n):
+        self.n, self.left = n, 0
+
+    def value(self, v=None):
+        if self.left > 0:
+            self.left -= 1
+            return 0
+        return 1
+
+
+def make_busy_panel(n=6):
+    dc = FakePin(1)
+    spi = FakeSPI(dc)
+    busy = BusyPin(n)
+    panel = eink_gdeq031t10.GDEQ031T10(spi, FakePin(1), dc, busy)
+    real = panel._cmd
+
+    def cmd(c, data=None):
+        real(c, data)
+        if c == 0x12:
+            busy.left = busy.n
+    panel._cmd = cmd
+    return panel
+
+
+def test_idle_hook_runs_while_the_panel_refreshes():
+    # The refresh blocks the event loop for ~650 ms. The board uses this hook
+    # to keep sampling the touch panel, or a finger's path is lost meanwhile.
+    panel = make_busy_panel(6)
+    panel.flush()
+    calls = []
+    panel.idle = lambda: calls.append(1)
+    panel.flush_rect(0, 100, 32, 16)
+    assert len(calls) == 6, "idle ran %d times over 6 busy polls" % len(calls)
+
+
+def test_idle_hook_that_raises_does_not_break_the_refresh():
+    panel = make_busy_panel(4)
+    panel.flush()
+
+    def bad():
+        raise OSError("touch fell off the bus")
+    panel.idle = bad
+    panel.flush_rect(0, 100, 32, 16)        # must not raise
+    assert panel.idle is None, "a failing hook is dropped, not retried every 5 ms"
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

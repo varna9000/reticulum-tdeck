@@ -73,6 +73,10 @@ class GDEQ031T10:
         self._init_done = False
         self._hibernating = False
         self._initial_refresh = True
+        # Called on every pass of the busy wait. A refresh holds the event
+        # loop for ~650 ms; the board samples the touch panel from here so a
+        # finger's path is not lost meanwhile. It must not draw or flush.
+        self.idle = None
 
         stride = self.WIDTH // 8
         self._stride = stride
@@ -110,6 +114,11 @@ class GDEQ031T10:
         while self._busy.value() == 0:
             if time.ticks_diff(deadline, time.ticks_ms()) < 0:
                 return False
+            if self.idle is not None:
+                try:
+                    self.idle()
+                except Exception:
+                    self.idle = None    # a broken hook must not cost the refresh
             time.sleep_ms(5)
         return True
 

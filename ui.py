@@ -580,6 +580,10 @@ class UI:
         self._panel_flush = getattr(tft, "flush", None)
         self._user_redraw = False
         self._force_full_flush = False
+        # A tick until which gui_loop leaves a pending redraw alone, or None.
+        # The touch layer sets it while a stroke is young: on e-ink a frame
+        # started mid-flick costs ~750 ms and is stale when it lands.
+        self._redraw_hold = None
         # Footer hints name the gesture the board has: CLICK with a ball,
         # ENT without one (the Pro's keyboard; Enter mirrors the click).
         self._has_trackball = trackball
@@ -1028,6 +1032,17 @@ class UI:
         self._force_full_flush = False
         if self._panel_flush is not None:
             self._panel_flush(force_full=full, user=user)
+
+    def _redraw_held(self, now):
+        """True while the touch layer has asked gui_loop to wait (see
+        _redraw_hold). The hold ends itself: nothing can leave it set."""
+        h = self._redraw_hold
+        if h is None:
+            return False
+        if time.ticks_diff(now, h) >= 0:
+            self._redraw_hold = None
+            return False
+        return True
 
     def wake_screen(self, force=False, why=None):
         # One guard for every wake source — including the message/announce
@@ -5442,7 +5457,8 @@ class UI:
                 self._flush()
                 spi_release_display()
                 self._input_dirty = False
-            elif self.dirty and time.ticks_diff(now, self._last_draw) > _throttle:
+            elif (self.dirty and time.ticks_diff(now, self._last_draw) > _throttle
+                    and not self._redraw_held(now)):
                 spi_acquire_display()
                 self.draw()
                 self._flush()
