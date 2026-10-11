@@ -313,7 +313,10 @@ def _tap(ui, x, y):
     if st == _u.STATE_RECORDING:
         # Nothing may redraw while the mic thread runs, so the whole panel is
         # two targets: the upper half sends, the lower half cancels.
-        mid = _u.BODY_Y + (_u.BODY_ROWS // 2) * _u.CHAR_H
+        if _u._pro is not None:
+            mid = _u._pro.REC_MID          # the divider the Pro screen draws
+        else:
+            mid = _u.BODY_Y + (_u.BODY_ROWS // 2) * _u.CHAR_H
         ui.handle_key(b'\r' if y < mid else b'\x08')
         return True
     if y >= _u.SEP_Y - 6:

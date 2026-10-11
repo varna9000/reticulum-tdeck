@@ -899,6 +899,40 @@ def test_chat_tile_cut_by_the_window():
     check("scrolled one row up, both halves are drawn", find(t, "text", "image") is not None and g._visible_image_lines == {0: mid, 1: mid})
 
 
+def test_recording_screen():
+    print("recording")
+    P = ui_pro
+    g, t = mkchat()
+    g.state = ui.STATE_RECORDING
+    g._rec_warming = False
+    g._rec_warm_secs = 0
+    g._cache = [''] * ui.CACHE_ROWS
+    ui_pro.draw_recording(g)
+    ti = find(t, "bold", "* Recording *")
+    check("title, bold, in the send half", ti is not None and 42 <= ti[3] < 70, repr(ti))
+    s = find(t, "text", "tap to SEND")
+    c = find(t, "text", "tap to CANCEL")
+    check("send above the divider, cancel below", s is not None and c is not None and s[3] + 16 < P.REC_MID < c[3], repr((s, c)))
+    check("the divider", any(x[0] == "rect" and x[2] == P.REC_MID and x[4] == 1 and x[3] > 200 for x in t.calls))
+    disc = [x for x in t.calls if x[0] == "rect" and x[4] == 1 and x[2] < P.REC_MID and x[3] >= 50]
+    check("a filled disc in the send half", len(disc) >= 8, str(len(disc)))
+    f = [x for x in texts(t) if "BKSP=cancel" in x[1]]
+    check("footer names the Pro's keys", len(f) == 1 and "Enter=send" in f[0][1] and "Esc" not in f[0][1] and f[0][3] == ui.INPUT_Y, repr(f))
+    check("no stale footer zones", g._hint_zones == [])
+    del t.calls[:]
+    ui_pro.draw_recording(g)
+    check("painted once: a second draw draws nothing", t.calls == [], repr(t.calls[:2]))
+    g._rec_warming = True
+    g._rec_warm_secs = 2
+    ui_pro.draw_recording(g)
+    check("warming: the title counts", find(t, "bold", "Warming mic... 2s") is not None)
+    check("warming: nothing to send yet", find(t, "text", "tap to SEND") is None and find(t, "text", "tap to CANCEL") is not None)
+    del t.calls[:]
+    g._rec_warm_secs = 3
+    ui_pro.draw_recording(g)
+    check("a new second redraws the title only", find(t, "bold", "Warming mic... 3s") is not None and find(t, "text", "tap to CANCEL") is None)
+
+
 if __name__ == "__main__":
     test_pro_layout_is_active_on_the_pro()
     test_list_window_follows_the_selection()
@@ -933,6 +967,7 @@ if __name__ == "__main__":
     test_no_body_frame_on_the_pro_chat()
     test_chat_tiles()
     test_chat_tile_cut_by_the_window()
+    test_recording_screen()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

@@ -522,10 +522,10 @@ def test_recording():
     print("recording")
     g = mkui(ui.STATE_RECORDING)
     seen = keys_pressed(g)
-    mid = ui.BODY_Y + (ui.BODY_ROWS // 2) * ui.CHAR_H
-    check("upper half sends", tap(g, 120, mid - 40) is True and seen == [b'\r'], repr(seen))
+    check("a tap above the drawn divider sends", tap(g, 120, ui._pro.REC_MID - 2) is True and seen == [b'\r'], repr(seen))
     del seen[:]
-    check("lower half cancels", tap(g, 120, mid + 40) is True and seen == [b'\x08'], repr(seen))
+    settle(g)
+    check("a tap below it cancels", tap(g, 120, ui._pro.REC_MID + 2) is True and seen == [b'\x08'], repr(seen))
     del seen[:]
     check("an edge swipe cancels", touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is True and seen == [b'\x08'], repr(seen))
     check("a drag does nothing here", touch_ui.handle(g, (DRAG, 100, 100, 2, 200000), 0) is False)

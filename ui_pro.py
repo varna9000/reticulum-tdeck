@@ -785,3 +785,62 @@ def draw_chat(ui):
         tft.fill_rect(_u.SBAR_X, CHAT_Y, W - _u.SBAR_X, track, paper)
         if total > nrows:
             tft.fill_rect(_u.SBAR_X, bar_y, _u.SBAR_W, bar_h, ui.DIM_CYAN)
+
+
+# --- recording ---------------------------------------------------------------------
+# Two targets, because a tap has no key identity: the upper half sends, the
+# lower half cancels. Painted once per phase -- a redraw during capture holds
+# the GIL and starves the mic thread.
+
+REC_MID = 178
+
+_SEND = _u._icon((
+    "................##", "..............####", "...........#######", ".........########.", ".......##########.",
+    ".....############.", "...##############.", ".###############..", "...#############..", "......#########...",
+    ".........######...", ".........######...", "..........####....", "..........####....", "...........###....",
+    "...........##.....", "...........##.....", "............#....."))
+_CROSS = _u._icon((
+    ".#........#.", "###......###", ".###....###.", "..###..###..", "...######...", "....####....",
+    "....####....", "...######...", "..###..###..", ".###....###.", "###......###", ".#........#."))
+
+
+def _disc(tft, cx, cy, r, c):
+    rr = r * r
+    for dy in range(-r, r + 1):
+        w = int((rr - dy * dy) ** 0.5)
+        tft.fill_rect(cx - w, cy + dy, 2 * w + 1, 1, c)
+
+
+def draw_recording(ui):
+    tft = ui.tft
+    paper = ui.BG_DARK
+    ink = ui.NEON_CYAN
+    W = _u.SCREEN_W
+    CW = _u.CHAR_W
+    warm = ui._rec_warming
+    title = ("Warming mic... %ds" % ui._rec_warm_secs) if warm else "* Recording *"
+    if ui._cache[1] != title:
+        ui._cache[1] = title
+        tft.fill_rect(0, TAB_Y, W, 44, paper)
+        _bold(ui, title, (W - len(title) * CW) // 2, 46, ink, paper)
+    ck = "W" if warm else "R"
+    if ui._cache[2] == ck:
+        return
+    ui._cache[2] = ck
+    tft.fill_rect(0, 64, W, 236, paper)
+    cx = W // 2
+    if not warm:
+        _disc(tft, cx, 104, 28, ink)
+        ui._bitmap(_SEND, cx - 10, 95, paper)
+        s = "tap to SEND"
+        tft.text(ui.font, s, (W - len(s) * CW) // 2, 140, ink, paper)
+    tft.fill_rect(12, REC_MID, W - 24, 1, ink)
+    _disc(tft, cx, 222, 22, ink)
+    _disc(tft, cx, 222, 19, paper)
+    ui._bitmap(_CROSS, cx - 6, 216, ink)
+    s = "tap to CANCEL"
+    tft.text(ui.font, s, (W - len(s) * CW) // 2, 252, ink, paper)
+    ui._hint_zones = []
+    s = "BKSP=cancel" if warm else "Enter=send  BKSP=cancel"
+    tft.fill_rect(0, 299, W, 1, ui.DIM_CYAN)
+    tft.text(ui.font, _u._pad(s.center(_u.COLS)), 0, _u.INPUT_Y, ui.DIM_CYAN, paper)

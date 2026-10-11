@@ -3679,6 +3679,8 @@ class UI:
         during capture. Any redraw makes the C display driver hold the GIL,
         which starves the core-1 mic thread and hurts the audio, so there is no
         VU meter or live counter here (row cache skips the unchanged rows)."""
+        if _pro is not None:
+            return _pro.draw_recording(self)
         if self._rec_warming:
             # After a light sleep the v1's ADC takes a few seconds to come
             # back; the count shows it is still trying (the node cancels
