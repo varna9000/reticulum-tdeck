@@ -595,40 +595,74 @@ def test_image_viewer():
 
 # --- Task 6: setup, find, shell, rrc -----------------------------------------
 
-def test_setup():
-    print("setup")
+def srow(i):
+    return 42 + 32 * i + 16
+
+
+def mksetup(idx=0, scroll=0):
     g = mkui(ui.STATE_SETTINGS)
     g._settings_page = ui._SET_MAIN
-    g._settings_idx = 0
+    g._settings_idx = idx
+    g._settings_scroll = scroll
+    return g
+
+
+def test_setup():
+    print("setup (Pro layout)")
+    g = mksetup()
     seen = keys_pressed(g)
-    tap(g, 100, row_y(4))
+    check("tap row 4 is accepted", tap(g, 100, srow(4)) is True)
+    check("it selects at once", g._settings_idx == 4, str(g._settings_idx))
     settle(g)
-    check("tap row 4 selects it", g._settings_idx == 4 and seen == [], "%d %r" % (g._settings_idx, seen))
-    tap(g, 100, row_y(4))
+    check("and acts, with one tap (Enter)", seen == [b'\r'], repr(seen))
+    g = mksetup(idx=12, scroll=6)
+    seen = keys_pressed(g)
+    tap(g, 100, srow(7))
     settle(g)
-    check("tap it again activates it (Enter)", seen == [b'\r'], repr(seen))
+    check("rows map through the shown idx list: the last row is Id (idx 14)", g._settings_idx == 14 and seen == [b'\r'],
+          "%d %r" % (g._settings_idx, seen))
+    g = mksetup(idx=6, scroll=6)
+    tap(g, 100, 42 + 32 * 7 + 31)
+    check("the last pixel line of the last row is still that row, not the footer", g._settings_idx == 14, str(g._settings_idx))
+    g = mksetup(idx=3)
+    g._wifi_connected = True
+    seen = keys_pressed(g)
+    check("WiFi while connected: the first tap is accepted", tap(g, 100, srow(0)) is True and g._settings_idx == 0)
+    settle(g)
+    check("...but only selects (a click there disconnects)", seen == [], repr(seen))
+    tap(g, 100, srow(0))
+    settle(g)
+    check("a second tap on it acts", seen == [b'\r'], repr(seen))
+    g = mksetup(idx=3)
+    seen = keys_pressed(g)
+    tap(g, 100, srow(0))
+    settle(g)
+    check("WiFi while offline acts on one tap (it opens the scan)", seen == [b'\r'], repr(seen))
+    g = mksetup(idx=4)
     adj = []
     g._settings_adjust = lambda d: adj.append(d)
     check("swipe right on the selected row steps it up",
-          touch_ui.handle(g, (SWIPE, 60, row_y(4), 1, 200000), 0) is True)
-    settle(g)
-    check("...by +1", adj == [1], repr(adj))
+          touch_ui.handle(g, (SWIPE, 60, srow(4), 1, 200000), 0) is True and adj == [1], repr(adj))
     check("a swipe on another row does nothing",
-          touch_ui.handle(g, (SWIPE, 60, row_y(9), 1, 200000), 0) is False)
+          touch_ui.handle(g, (SWIPE, 60, srow(6), 1, 200000), 0) is False and adj == [1])
+    g = mksetup(idx=2)
+    touch_ui.handle(g, (DRAG, 100, 100, 1, 300000), 0)
+    settle(g)
+    check("a drag of one 16 px step is half a row: nothing yet", g._settings_idx == 2, str(g._settings_idx))
+    touch_ui.handle(g, (DRAG, 100, 100, 1, 300000), 0)
+    settle(g)
+    check("the second step moves one row", g._settings_idx == 3, str(g._settings_idx))
+    touch_ui.handle(g, (FLICK, 100, 100, 1, 400000), 0)
+    settle(g)
+    check("a flick pages seven rows", g._settings_idx == 10, str(g._settings_idx))
+    seen = keys_pressed(g)
+    check("header tap goes back", tap(g, 30, 30) is True and seen == [b'\x1b'], repr(seen))
     del seen[:]
     check("edge swipe goes back", touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is True and seen == [b'\x1b'], repr(seen))
     del seen[:]
     g._settings_page = g._TEXT_ENTRY_PAGES[0]
     check("on a text-entry page back does nothing (it would discard the entry)",
           touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is False and seen == [], repr(seen))
-    g = mkui(ui.STATE_SETTINGS)
-    g._settings_page = ui._SET_MAIN
-    g._settings_idx = ui._SET_MAIN_LAST
-    top = max(0, g._settings_idx - (ui.BODY_ROWS - 1) + 1)
-    tap(g, 100, row_y(0))
-    settle(g)
-    check("the main list is windowed from the selection, as it is drawn",
-          g._settings_idx == top, "%d vs %d" % (g._settings_idx, top))
 
 
 def test_find():
@@ -862,9 +896,9 @@ def test_lora_and_radio_pages_drag():
     g._settings_adjust = lambda d: adj.append(d)
     seen = keys_pressed(g)
     check("Setup: an edge swipe that starts on the selected row steps its value",
-          touch_ui.handle(g, (BACK, 5, row_y(4), 0, 200000), 0) is True and adj == [1] and seen == [], "%r %r" % (adj, seen))
+          touch_ui.handle(g, (BACK, 5, srow(4), 0, 200000), 0) is True and adj == [1] and seen == [], "%r %r" % (adj, seen))
     check("Setup: an edge swipe elsewhere is back",
-          touch_ui.handle(g, (BACK, 5, row_y(9), 0, 200000), 0) is True and seen == [b'\x1b'], repr(seen))
+          touch_ui.handle(g, (BACK, 5, srow(6), 0, 200000), 0) is True and seen == [b'\x1b'], repr(seen))
 
 
 def test_find_back_keeps_a_typed_query():

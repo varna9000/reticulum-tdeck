@@ -25,6 +25,27 @@ def _pro_list(ui):
     return _u._pro is not None and ui.state == _u.STATE_NODES and not ui._find
 
 
+def _pro_setup(ui):
+    """The Pro's own Setup main page is up (ui_pro.py): 32 px rows, one tap acts."""
+    return (_u._pro is not None and ui.state == _u.STATE_SETTINGS
+            and ui._settings_page == _u._SET_MAIN)
+
+
+def _tap_pro_setup(ui, y):
+    p = _u._pro
+    i = (y - p.LIST_Y) // p.ROW_H
+    if i < 0 or i >= p.SETUP_ROWS:
+        return False
+    idx = p.SETUP_IDX[min(ui._settings_scroll + i, len(p.SETUP_IDX) - 1)]
+    was = ui._settings_idx
+    ui._settings_idx = idx
+    ui.dirty = True
+    if idx == 0 and ui._wifi_connected and was != 0:
+        return True                        # a click here disconnects: ask for a second tap
+    ui.nav_event("click")                  # one tap acts: the rows are finger-sized
+    return True
+
+
 def _panel(ui):
     """(module, rows) for an open RRC panel, else (None, None)."""
     if not (ui._rrc_panel and ui.state in (_u.STATE_RRC_ROOMS, _u.STATE_RRC_CHAT)):
@@ -355,6 +376,8 @@ def _tap(ui, x, y):
             mid = _u.BODY_Y + (_u.BODY_ROWS // 2) * _u.CHAR_H
         ui.handle_key(b'\r' if y < mid else b'\x08')
         return True
+    if _pro_setup(ui) and _u._pro.LIST_Y <= y < _u._pro.TOOL_Y:
+        return _tap_pro_setup(ui, y)
     if y >= _u.SEP_Y - 6:
         return _tap_footer(ui, x)
     mod, prow = _panel(ui)
@@ -455,6 +478,13 @@ def _swipe(ui, d, y):
         if page == _u._SET_LORA:
             ui._settings_adjust(d)    # the field under the cursor
             return True
+        if page == _u._SET_MAIN and _u._pro is not None:
+            p = _u._pro
+            i = (y - p.LIST_Y) // p.ROW_H
+            if i < 0 or i >= p.SETUP_ROWS or ui._settings_scroll + i != p.setup_row(ui):
+                return False               # only the selected row, as below
+            ui._settings_adjust(d)
+            return True
         if page == _u._SET_MAIN:
             # The swipe must be on the selected row: stepping a value you
             # did not aim at is worse than a swipe that misses.
@@ -479,7 +509,7 @@ def handle(ui, g, changed_ms):
     if kind == LONG:
         return _long(ui, x, y)
     if kind == DRAG:
-        if _pro_list(ui):
+        if _pro_list(ui) or _pro_setup(ui):
             if _drag_acc[0] != t_down:
                 _drag_acc[0] = t_down
                 _drag_acc[1] = 0
@@ -493,7 +523,7 @@ def handle(ui, g, changed_ms):
             return True
         return _drag(ui, n)
     if kind == FLICK:
-        if _pro_list(ui):
+        if _pro_list(ui) or _pro_setup(ui):
             if ui._sheet is not None:
                 return False
             _steps(ui, n * (_u.LIST_ROWS - 1))
