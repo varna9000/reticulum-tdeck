@@ -1620,13 +1620,17 @@ class UI:
         if len(path) > 16:
             path = "..." + path[-13:]
         cache_key = title + path
-        if self._cache[1] != cache_key:
+        if _pro is not None:
+            # The band every Pro screen has: "< title" (a tap there leaves).
+            _pro.rrc_header(self, "< " + self.browser_title, path)
+        elif self._cache[1] != cache_key:
             self._cache[1] = cache_key
             self.tft.text(self.font, self._tb(_pad(title)), 0, BODY_Y, self.NEON_CYAN, self.BG_DARK)
             self.tft.text(self.font, ">", 0, BODY_Y, self.NEON_GREEN, self.BG_DARK)
             px = (COLS - len(path) - 1) * CHAR_W
             self.tft.text(self.font, self._tb(path), px, BODY_Y, self.DIM_CYAN, self.BG_DARK)
-        self.tft.fill_rect(0, BODY_Y + CHAR_H - 1, SCREEN_W, 1, self.DIM_CYAN)
+        if _pro is None:
+            self.tft.fill_rect(0, BODY_Y + CHAR_H - 1, SCREEN_W, 1, self.DIM_CYAN)
 
         _rows = BODY_ROWS - 1
         lines = self.browser_lines
@@ -4212,8 +4216,11 @@ class UI:
         n = 49
         top = BODY_Y + CHAR_H
         self.tft.fill_rect(0, BODY_Y, SCREEN_W, SEP_Y - BODY_Y, self.BG_DARK)
-        self.tft.text(self.font, "< Scan: Columba, MeshChatX", 0, BODY_Y,
-                      self.NEON_CYAN, self.BG_DARK)
+        if _pro is not None:
+            _pro.rrc_header(self, "< Scan: Columba, MeshChatX", "")
+        else:
+            self.tft.text(self.font, "< Scan: Columba, MeshChatX", 0, BODY_Y,
+                          self.NEON_CYAN, self.BG_DARK)
         s = min(SCREEN_W, SEP_Y - top) // (n + 8)
         side = (n + 8) * s
         x0 = (SCREEN_W - side) // 2

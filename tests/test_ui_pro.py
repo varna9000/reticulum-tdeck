@@ -1461,6 +1461,53 @@ def test_rrc_review_gaps():
     R.draw_rooms(g)
     check("an answered, empty list says so", find(t, "text", "hub lists no public rooms") is not None)
 
+
+# --- piece E: remaining headers, sleep screen ------------------------------------
+
+def mkbrowser(title="CICADA forums", path="/page/index.mu"):
+    g, t = mkui()
+    g.state = ui.STATE_BROWSER
+    g._prev_state = g.state
+    g.browser_title = title
+    g.browser_path = path
+    g.browser_lines = []
+    g.browser_scroll = 0
+    g.browser_cursor = 0
+    g._cache = [''] * ui.CACHE_ROWS
+    return g, t
+
+
+def test_browser_and_qr_bands():
+    print("headers: browser, QR")
+    P = ui_pro
+    g, t = mkbrowser()
+    g.draw_browser()
+    hd = find(t, "text", "< CICADA forums")
+    check("browser: '< title' in the band", hd is not None and hd[2] == 4 and 20 < hd[3] and hd[3] + 16 <= 41, repr(hd))
+    pa = find(t, "small", "/page/index.mu")
+    check("browser: the path small on the right", pa is not None and pa[2] + 14 * P.SW == 232, repr(pa))
+    check("browser: the old '> title' row is not drawn", [c for c in texts(t) if c[3] == ui.BODY_Y] == [])
+    check("a rule closes the band", any(c[0] == "rect" and c[2] == 41 and c[3] == 240 and c[4] == 1 for c in t.calls))
+    del t.calls[:]
+    g.draw_browser()
+    check("the band is cached", not any(c[0] == "text" and c[1].startswith("<") for c in t.calls))
+    g, t = mkbrowser("A node with a really long title that goes on", "/page/boards/lora-and-antennas/thread-0042.mu")
+    g.draw_browser()
+    pa = [c for c in texts(t, "small") if c[1].startswith("...")]
+    hd = [c for c in texts(t) if c[1].startswith("< A node")]
+    check("a long path keeps its tail", len(pa) == 1 and pa[0][1].endswith("0042.mu") and len(pa[0][1]) == 16, repr(pa))
+    check("a long title stops short of the path", len(hd) == 1 and hd[0][2] + len(hd[0][1]) * 8 <= pa[0][2] - 6, repr(hd))
+    g, t = mksetup()
+    g._settings_page = ui._SET_QR
+    g._qr = ("lxma://x", bytes(49 * 49))
+    g.draw()
+    hd = [c for c in texts(t) if c[1].startswith("< Scan")]
+    check("QR page: its title in the band", len(hd) == 1 and hd[0][2] == 4 and 20 < hd[0][3] and hd[0][3] + 16 <= 41, repr(hd))
+    check("QR page: not also at the old position", [c for c in texts(t) if c[3] == ui.BODY_Y] == [])
+    del t.calls[:]
+    g.draw()
+    check("QR page: painted once", not any(c[0] == "text" and c[1].startswith("< Scan") for c in t.calls))
+
 if __name__ == "__main__":
     test_pro_layout_is_active_on_the_pro()
     test_list_window_follows_the_selection()
@@ -1509,6 +1556,7 @@ if __name__ == "__main__":
     test_rrc_panel_rooms()
     test_rrc_panel_members()
     test_rrc_review_gaps()
+    test_browser_and_qr_bands()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

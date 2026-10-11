@@ -165,6 +165,15 @@ g.draw()
 ls = [(s, y) for s, x, y in g.tft.texts]
 check("v1 room header is the old row", ("#mesh", ui.BODY_Y) in ls, repr(ls[:6]))
 check("v1 member row is one line with [hash8]", ("[01010101]", rrc_ui.PANEL_Y + 22) in ls and ("alex", rrc_ui.PANEL_Y + 22) in ls, repr(ls))
+g.tft = type(g.tft)()
+g.state = ui.STATE_BROWSER
+g.browser_title = "CICADA"
+g.browser_path = "/page/index.mu"
+g.browser_lines = []
+g._cache = [''] * ui.CACHE_ROWS
+g.draw()
+ls = [(s, y) for s, x, y in g.tft.texts]
+check("v1 browser header is the old '> title' row", any(s.startswith("> CICADA") and y == ui.BODY_Y for s, y in ls), repr(ls[:5]))
 print()
 if fails:
     print("%d FAILED" % len(fails))
