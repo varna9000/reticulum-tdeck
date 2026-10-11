@@ -448,6 +448,24 @@ def get_key():
 _kbd_int = Pin(config.KBD_INT, Pin.IN, Pin.PULL_UP)
 
 
+# Sleep current, measured on battery 2026-10-11 (tools/tdeck_pro_*sleep*_probe.py):
+# the chip's stock light sleep, every pad isolated, is 7 mA; ours, with every
+# pad kept in its awake state, was 40 mA. Two pads' worth of difference:
+#   * the I2S LRCK line left driven (high or low) keeps the PCM5102A side
+#     awake: 13 mA. Isolated for the sleep it floats and the DAC idles
+#     (5-6 mA with every other pad still held). Nothing else on the board
+#     cares: panel, radio, I2C, the INT lines, touch reset, keyboard light,
+#     vibration, GPS/modem/SD, USB, mic, BCLK and DOUT each add nothing.
+#   * the flash/PSRAM pads without ESP-IDF's sleep pull-ups: ~20 mA.
+SLEEP_MSPI_STANDBY = True
+
+
+def sleep_isolate_pins():
+    """Pads the lowpower module switches to high impedance for each sleep
+    and back on wake (ESP-IDF's per-pad sleep configuration)."""
+    return (config.I2S_LRCK,)
+
+
 def sleep_wake_pins():
     """DIO1 wakes high and gets the LoRa driver's rising-edge ISR back; the
     TCA8418 INT wakes low and had no interrupt of its own. Its kind is

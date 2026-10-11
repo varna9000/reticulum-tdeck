@@ -405,6 +405,57 @@ p.counts.update({"lora": 0, "input": 0, "timer": 0, "other": 0})
 p.dark_reason = "key pending"; p._blocked = True
 check("key pending fits", len(p.summary()) <= 14 and p.summary() == "off key", p.summary())
 
+print("sleep pad policy")
+# Bench 2026-10-11 (Pro, battery): stock light sleep 7 mA, ours 40 mA. 13 mA
+# was the I2S LRCK pad left driven; ~20 mA the flash/PSRAM pads losing
+# ESP-IDF's sleep pull-ups when we keep every pad's awake state. The board
+# says which pads to let go and whether the flash/PSRAM pads get their
+# standby configuration; Power hands that to the lowpower module once.
+
+
+class CfgLowpower(FakeLowpower):
+    def __init__(self):
+        super().__init__()
+        self.cfg = []
+
+    def configure(self, pins, mspi):
+        self.cfg.append((pins, mspi))
+
+
+def _mk_cfg(lp, **board_attrs):
+    bd = FakeBoard(lp)
+    for k, v in board_attrs.items():
+        setattr(bd, k, v)
+    logs = []
+    p = power.Power(FakeGui(), bd, lp, lambda: FakeIface(), lambda: False, False,
+                    lambda: 10000, logs.append, read_pin=bd.read_pin)
+    return p, logs
+
+
+lp = CfgLowpower()
+_mk_cfg(lp, sleep_isolate_pins=lambda: [9], SLEEP_MSPI_STANDBY=True)
+check("the board's pads and flash-pin choice reach the module, once", lp.cfg == [((9,), True)], repr(lp.cfg))
+lp = CfgLowpower()
+_mk_cfg(lp)
+check("a board that says nothing changes nothing", lp.cfg == [((), False)], repr(lp.cfg))
+p, logs = _mk_cfg(FakeLowpower(), sleep_isolate_pins=lambda: (9,), SLEEP_MSPI_STANDBY=True)
+check("an older firmware's lowpower (no configure) still works", p is not None)
+
+
+class BadLowpower(FakeLowpower):
+    def configure(self, pins, mspi):
+        raise ValueError("bad gpio")
+
+
+p, logs = _mk_cfg(BadLowpower(), sleep_isolate_pins=lambda: (99,), SLEEP_MSPI_STANDBY=True)
+check("a refused configuration is logged, not fatal", p is not None and any("pad" in m for m in logs), repr(logs))
+
+for mod, want_pins in (("board_tdeck_pro", True), ("board_tdeck_v1", False)):
+    src = open(os.path.join(ROOT, mod + ".py")).read()
+    check(mod + " asks for the flash/PSRAM standby pads", "SLEEP_MSPI_STANDBY = True" in src)
+    check(mod + (" lets the I2S LRCK pad go in sleep" if want_pins else " isolates no pads of its own"),
+          ("def sleep_isolate_pins" in src) == want_pins)
+
 if _failures:
     print("\n%d FAILED: %s" % (len(_failures), ", ".join(_failures)))
     sys.exit(1)

@@ -118,6 +118,19 @@ class Power:
         self._last_change = ticks_ms()
         self._backoff_start = None
         self._vbus_since = None           # when usb_power() last turned true
+        # Which pads sleep. The lowpower module keeps every pad in its awake
+        # state through light sleep (the board's rails and pull-ups depend on
+        # it), and that has two costs measured on the Pro (2026-10-11): a pad
+        # left driving a chip that would otherwise idle, and the flash/PSRAM
+        # pads losing ESP-IDF's standby pull-ups. The board names the pads to
+        # let go and opts in to the flash/PSRAM configuration.
+        cfg = getattr(lowpower, "configure", None)
+        if cfg is not None:                # absent on firmware before 2026-10-11
+            iso = getattr(board, "sleep_isolate_pins", None)
+            try:
+                cfg(tuple(iso()) if iso else (), bool(getattr(board, "SLEEP_MSPI_STANDBY", False)))
+            except Exception as e:
+                log("power: sleep pad setup failed: " + str(e))
 
     def _quiet_ms(self, iface):
         """ms since the radio's byte counters last moved. The first reading

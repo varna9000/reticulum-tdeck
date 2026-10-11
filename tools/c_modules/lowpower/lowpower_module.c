@@ -7,6 +7,10 @@
 //
 //   lowpower.sleep(ms, pins) -> WAKE_TIMER | WAKE_GPIO | WAKE_OTHER
 //       pins: tuple of (gpio, wake_level, restore_trigger[, ...])
+//   lowpower.configure(isolate, mspi_standby)
+//       isolate: tuple of gpio numbers switched to high impedance for each
+//       sleep and back on wake; mspi_standby: give the flash/PSRAM pads
+//       ESP-IDF's sleep pull-ups. See lp_apply_sleep_pads().
 //   lowpower.usb_connected() -> bool     (a USB host is sending start-of-frame)
 //
 // The app's console is TinyUSB CDC on the USB OTG controller, not the
@@ -35,6 +39,7 @@
 #include "hal/gpio_ll.h"
 #include "soc/gpio_struct.h"
 #include "soc/usb_dwc_struct.h"
+#include "esp_private/spi_flash_os.h"
 
 #define LP_MAX_PINS 8
 #define LP_WAKE_TIMER 0
@@ -42,6 +47,47 @@
 #define LP_WAKE_OTHER 2
 
 static bool rtc_periph_kept = false;
+static int iso_gpio[LP_MAX_PINS];
+static size_t iso_n = 0;
+static bool mspi_standby = false;
+
+// Every pad keeps its awake configuration through sleep (see lp_sleep), and
+// that is right for the board's rails, pull-ups and wake lines. Two kinds of
+// pad are better off with ESP-IDF's sleep configuration, which
+// CONFIG_ESP_SLEEP_GPIO_RESET_WORKAROUND prepared for every pad at start-up
+// (high impedance, plus pull-ups on the flash/PSRAM pads) and which a pad
+// uses once its "sleep select" is enabled. Bench 2026-10-11, T-Deck Pro on
+// battery: stock light sleep 7 mA, ours 40 mA --
+//   * a pad left DRIVING a chip that would otherwise idle: the I2S LRCK line
+//     kept the PCM5102A awake, 13 mA. The board lists such pads.
+//   * the flash/PSRAM pads: without the sleep pull-ups (the PSRAM/flash
+//     "leakage workarounds" and MSPI_NEED_ALL_IO_PU) the memories do not sit
+//     in standby, ~20 mA.
+// The select is re-applied on every sleep: cheap, and nothing else may have
+// cleared it in between.
+static void lp_apply_sleep_pads(void) {
+    for (size_t i = 0; i < iso_n; i++) {
+        gpio_sleep_sel_en(iso_gpio[i]);
+    }
+    if (mspi_standby) {
+        static const esp_mspi_io_t io[] = {
+            ESP_MSPI_IO_CS0, ESP_MSPI_IO_CS1, ESP_MSPI_IO_CLK, ESP_MSPI_IO_Q,
+            ESP_MSPI_IO_D, ESP_MSPI_IO_HD, ESP_MSPI_IO_WP,
+        };
+        for (size_t i = 0; i < sizeof(io) / sizeof(io[0]); i++) {
+            gpio_sleep_sel_en(esp_mspi_get_io(io[i]));
+        }
+#if SOC_SPI_MEM_SUPPORT_OPI_MODE && CONFIG_SPIRAM_MODE_OCT
+        // Octal PSRAM (the T-Deck v1): the same pads ESP-IDF pulls up there.
+        static const esp_mspi_io_t oct[] = {
+            ESP_MSPI_IO_DQS, ESP_MSPI_IO_D4, ESP_MSPI_IO_D5, ESP_MSPI_IO_D6, ESP_MSPI_IO_D7,
+        };
+        for (size_t i = 0; i < sizeof(oct) / sizeof(oct[0]); i++) {
+            gpio_sleep_sel_en(esp_mspi_get_io(oct[i]));
+        }
+#endif
+    }
+}
 
 static void lp_restore(size_t n, const int *gpio, const int *restore) {
     for (size_t i = 0; i < n; i++) {
@@ -132,6 +178,7 @@ static mp_obj_t lp_sleep(mp_obj_t ms_in, mp_obj_t pins_in) {
         lp_restore(armed, gpio, restore);
         mp_raise_msg_varg(&mp_type_OSError, MP_ERROR_TEXT("lowpower arm: %d"), (int)err);
     }
+    lp_apply_sleep_pads();      // after esp_sleep_enable_gpio_switch(false) above
 
     esp_err_t slept = esp_light_sleep_start();
     esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
@@ -155,6 +202,33 @@ static mp_obj_t lp_sleep(mp_obj_t ms_in, mp_obj_t pins_in) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_2(lp_sleep_obj, lp_sleep);
 
+static mp_obj_t lp_configure(mp_obj_t pins_in, mp_obj_t mspi_in) {
+    size_t n;
+    mp_obj_t *items;
+    mp_obj_get_array(pins_in, &n, &items);
+    if (n > LP_MAX_PINS) {
+        mp_raise_ValueError(MP_ERROR_TEXT("too many pins"));
+    }
+    int g[LP_MAX_PINS];
+    for (size_t i = 0; i < n; i++) {
+        g[i] = mp_obj_get_int(items[i]);
+        if (!GPIO_IS_VALID_GPIO(g[i])) {
+            mp_raise_ValueError(MP_ERROR_TEXT("bad gpio"));
+        }
+    }
+    // A pad dropped from the list goes back to keeping its awake state.
+    for (size_t i = 0; i < iso_n; i++) {
+        gpio_sleep_sel_dis(iso_gpio[i]);
+    }
+    for (size_t i = 0; i < n; i++) {
+        iso_gpio[i] = g[i];
+    }
+    iso_n = n;
+    mspi_standby = mp_obj_is_true(mspi_in);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(lp_configure_obj, lp_configure);
+
 static mp_obj_t lp_usb_connected(void) {
     uint32_t a = USB_DWC.dsts_reg.soffn;
     mp_hal_delay_ms(3);
@@ -166,6 +240,7 @@ static MP_DEFINE_CONST_FUN_OBJ_0(lp_usb_connected_obj, lp_usb_connected);
 static const mp_rom_map_elem_t lowpower_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_lowpower) },
     { MP_ROM_QSTR(MP_QSTR_sleep), MP_ROM_PTR(&lp_sleep_obj) },
+    { MP_ROM_QSTR(MP_QSTR_configure), MP_ROM_PTR(&lp_configure_obj) },
     { MP_ROM_QSTR(MP_QSTR_usb_connected), MP_ROM_PTR(&lp_usb_connected_obj) },
     { MP_ROM_QSTR(MP_QSTR_WAKE_TIMER), MP_ROM_INT(LP_WAKE_TIMER) },
     { MP_ROM_QSTR(MP_QSTR_WAKE_GPIO), MP_ROM_INT(LP_WAKE_GPIO) },
