@@ -615,13 +615,13 @@ def test_setup():
     check("it selects at once", g._settings_idx == 4, str(g._settings_idx))
     settle(g)
     check("and acts, with one tap (Enter)", seen == [b'\r'], repr(seen))
-    g = mksetup(idx=12, scroll=6)
+    g = mksetup(idx=12, scroll=7)
     seen = keys_pressed(g)
     tap(g, 100, srow(7))
     settle(g)
     check("rows map through the shown idx list: the last row is Id (idx 14)", g._settings_idx == 14 and seen == [b'\r'],
           "%d %r" % (g._settings_idx, seen))
-    g = mksetup(idx=6, scroll=6)
+    g = mksetup(idx=6, scroll=7)
     tap(g, 100, 42 + 32 * 7 + 31)
     check("the last pixel line of the last row is still that row, not the footer", g._settings_idx == 14, str(g._settings_idx))
     g = mksetup(idx=3)
@@ -654,7 +654,7 @@ def test_setup():
     check("the second step moves one row", g._settings_idx == 3, str(g._settings_idx))
     touch_ui.handle(g, (FLICK, 100, 100, 1, 400000), 0)
     settle(g)
-    check("a flick pages seven rows", g._settings_idx == 10, str(g._settings_idx))
+    check("a flick pages seven rows", g._settings_idx == ui._pro.SETUP_IDX[3 + 7], str(g._settings_idx))
     seen = keys_pressed(g)
     check("header tap goes back", tap(g, 30, 30) is True and seen == [b'\x1b'], repr(seen))
     del seen[:]
@@ -1269,7 +1269,7 @@ def test_setup_guards():
           touch_ui.handle(g, (SWIPE, 60, srow(0), 1, 200000), 0) is False and adj == [])
     check("...so an edge swipe starting on it still goes back",
           touch_ui.handle(g, (BACK, 5, srow(0), 0, 200000), 0) is True and seen == [b'\x1b'] and adj == [], repr(seen))
-    g = mksetup(idx=11, scroll=6)
+    g = mksetup(idx=11, scroll=7)
     adj = []
     g._settings_adjust = lambda d: adj.append(d)
     check("a swipe finds the selected row in a scrolled window (Time zone at row 5)",
@@ -1479,7 +1479,28 @@ def test_a_rightward_swipe_is_back_where_it_means_nothing_else():
           touch_ui.handle(g, (SWIPE, 100, 150, 1, 200000), 0) is False and seen == [], repr(seen))
 
 
+def test_touch_feedback_is_a_setting():
+    src = _src("board_tdeck_pro.py")
+    fb = src.split("def _touch_feedback():")[1].split("\ndef ")[0]
+    check("no click and no blink unless the user turned feedback on", "_gui._haptics" in fb
+          and fb.index("_gui._haptics") < fb.index("haptic.click()"))
+    service = src.split("def _service_touch():")[1].split("\ndef ")[0]
+    check("the motor driver stays disabled while feedback is off (it idles at a current)",
+          "_gui._screen_on and _gui._haptics" in service)
+    node = _src("tdeck_node.py")
+    check("the choice is saved", 'settings["haptics"]' in node and "gui.on_haptics = " in node)
+    check("...and restored at boot, off when never set", 'settings.get("haptics", False)' in node)
+    g = mksetup()
+    seen = []
+    g.on_haptics = lambda on: seen.append(on)
+    k = ui._pro.SETUP_IDX.index(ui._SET_HAPTICS)
+    check("one tap on its Setup row toggles it", tap(g, 100, srow(k)) is True)
+    settle(g)
+    check("...through the click path", g._haptics is True and seen == [True], repr(seen))
+
+
 if __name__ == "__main__":
+    test_touch_feedback_is_a_setting()
     test_a_rightward_swipe_is_back_where_it_means_nothing_else()
     test_drag_holds_the_redraw_until_the_finger_lifts()
     test_touch_is_sampled_during_a_refresh()

@@ -110,6 +110,9 @@ BODY_ROWS = (SEP_Y - 4 - BODY_Y) // CHAR_H
 # so a narrower panel (the Pro) gives Addr and Id two rows each.
 _SET_MAIN_LAST = 13 if COLS >= 40 else 15
 _ADDR_ROWS = 1 if COLS >= 40 else 2      # Setup rows 12.. that are the address
+# Touch feedback (the Pro's motor click). Past the last row either layout
+# numbers, so the v1 cannot reach it; ui_pro.SETUP_IDX places it.
+_SET_HAPTICS = 16
 _QR_HOLD_MS = 120000                     # QR page keeps the screen on this long
 
 # Row cache slots: the navbar, one per body row, then the footer hint line and
@@ -893,6 +896,8 @@ class UI:
         self.on_volume = None         # (level) -> None
         self.on_kbd_backlight = None  # (enabled) -> bool; persists the setting
         self.on_kbd_backlight_drive = None  # (on) -> bool; drives only, no save
+        self._haptics = False         # a click for every accepted touch (Pro); off unless saved on
+        self.on_haptics = None        # (enabled); persists the setting
         self.on_battery = None        # () -> volts | None, set from the board
         self.on_audio_play = None     # (codec2_bytes, mode) -> None
         self.on_record_start = None   # () -> None
@@ -3891,6 +3896,16 @@ class UI:
                     return True
                 elif self._settings_idx == 11:  # Time zone
                     self._step_tz(1)
+                    self._cache = [''] * CACHE_ROWS
+                    self.dirty = True
+                    return True
+                elif self._settings_idx == _SET_HAPTICS:  # Touch feedback toggle (Pro)
+                    self._haptics = not self._haptics
+                    if self.on_haptics:
+                        try:
+                            self.on_haptics(self._haptics)
+                        except Exception:
+                            pass
                     self._cache = [''] * CACHE_ROWS
                     self.dirty = True
                     return True

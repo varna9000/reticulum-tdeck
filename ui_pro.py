@@ -859,7 +859,9 @@ def draw_recording(ui):
 # rows 13 and 15 on the second halves of the two hashes, which this layout
 # shows whole on one small-font line, so those two are never selected here.
 
-SETUP_IDX = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14)
+# Touch feedback (ui._SET_HAPTICS) exists only here; it sits under the keyboard
+# light, out of numeric order.
+SETUP_IDX = (0, 1, 2, 3, 4, 5, _u._SET_HAPTICS, 6, 7, 8, 9, 10, 11, 12, 14)
 SETUP_ROWS = 8
 
 
@@ -867,6 +869,8 @@ def setup_row(ui):
     """The shown row of ui._settings_idx (an idx with no row of its own
     counts as the row before it)."""
     idx = ui._settings_idx
+    if idx in SETUP_IDX:
+        return SETUP_IDX.index(idx)
     r = 0
     for k in range(len(SETUP_IDX)):
         if SETUP_IDX[k] <= idx:
@@ -898,6 +902,7 @@ def setup_items(ui):
         ("LoRa", "Online" if ui.lora_online else "OFFLINE - select to reset", False, False),
         ("Volume", "[" + "#" * v + "." * (10 - v) + "] " + str(v), False, False),
         ("Keyboard light", "ON" if ui._kbd_bl else "OFF", False, False),
+        ("Touch feedback", "ON" if ui._haptics else "OFF", False, False),
         ("Announce", "AUTO" if ui._auto_announce else "manual", False, False),
         ("Sleep", ui._timeout_label(), False, False),
         ("Wake", ui._wake_label(), False, False),

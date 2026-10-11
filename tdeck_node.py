@@ -1318,6 +1318,17 @@ def on_volume(v):
 
 gui.on_volume = on_volume
 gui.on_kbd_backlight = set_kbd_backlight
+
+
+def set_haptics(on):
+    """Setup > Touch feedback (T-Deck Pro): persist the choice. The board
+    reads gui._haptics itself."""
+    settings = _load_settings()
+    settings["haptics"] = bool(on)
+    _save_settings(settings)
+
+
+gui.on_haptics = set_haptics
 # Sleep and wake drive the light straight at the board: set_kbd_backlight
 # saves settings.json, which must not happen on every idle timeout.
 gui.on_kbd_backlight_drive = board.set_kbd_backlight
@@ -1772,6 +1783,7 @@ def _auto_connect_wifi():
     # Always write the preference -- an OFF too. The keyboard MCU keeps its
     # own backlight state across an S3 restart and M5Launcher leaves it lit.
     gui.restore_kbd_backlight(settings.get("kbd_backlight"))
+    gui._haptics = bool(settings.get("haptics", False))
     saved_vol = settings.get("volume")
     if saved_vol is not None:
         sound.set_volume(saved_vol)

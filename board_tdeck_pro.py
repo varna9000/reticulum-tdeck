@@ -358,6 +358,8 @@ def attach_ui(gui):
 def _touch_feedback():
     """An accepted touch: say so now, the panel will catch up in ~700 ms."""
     global _blink_until
+    if _gui is None or not _gui._haptics:
+        return                      # Setup > Touch feedback, off unless turned on
     if haptic is not None:
         haptic.click()
     elif HAS_HAPTICS and _gui is not None and _blink_until is None:
@@ -418,8 +420,10 @@ def _service_touch():
     if _blink_until is not None and time.ticks_diff(now, _blink_until) >= 0:
         _blink_until = None
         set_kbd_backlight(_gui._kbd_bl_lit)
-    if haptic is not None and haptic.enabled != _gui._screen_on:
-        haptic.enable(_gui._screen_on)
+    if haptic is not None:
+        want = _gui._screen_on and _gui._haptics
+        if haptic.enabled != want:
+            haptic.enable(want)
     _touch_ctl.service(now)
     if _touch_backlog:
         evs = _touch_backlog[:]

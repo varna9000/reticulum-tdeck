@@ -1019,19 +1019,20 @@ def test_setup_items():
     P = ui_pro
     g, t = mksetup()
     it = P.setup_items(g)
-    check("fourteen rows, one per shown idx", len(it) == 14 == len(P.SETUP_IDX) and P.SETUP_IDX == (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14))
-    check("labels", [x[0] for x in it] == ["WiFi", "TCP", "Name", "LoRa", "Volume", "Keyboard light", "Announce", "Sleep",
-                                           "Wake", "Radio stats", "LoRa cfg", "Time zone", "Addr", "Id"], repr([x[0] for x in it]))
+    check("fifteen rows, one per shown idx", len(it) == 15 == len(P.SETUP_IDX)
+          and P.SETUP_IDX == (0, 1, 2, 3, 4, 5, ui._SET_HAPTICS, 6, 7, 8, 9, 10, 11, 12, 14))
+    check("labels", [x[0] for x in it] == ["WiFi", "TCP", "Name", "LoRa", "Volume", "Keyboard light", "Touch feedback", "Announce",
+                                           "Sleep", "Wake", "Radio stats", "LoRa cfg", "Time zone", "Addr", "Id"], repr([x[0] for x in it]))
     check("offline WiFi: says so and opens the scan", it[0][1] == "not connected" and it[0][2] is True, repr(it[0]))
     check("TCP off without WiFi: no sub-page", it[1][1] == "OFF" and not it[1][2])
     check("name and its marker", it[2][1] == "Pro" and it[2][2])
     check("LoRa online", it[3][1] == "Online" and not it[3][2])
     check("volume bar", it[4][1] == "[" + "#" * g._volume + "." * (10 - g._volume) + "] " + str(g._volume))
-    check("sleep / wake / tz come from ui's own labels", it[7][1] == g._timeout_label() and it[8][1] == g._wake_label()
-          and it[11][1] == ui._tz_label(g._tz_min))
-    check("radio stats and LoRa cfg open pages", it[9][2] and it[10][2] and "SF" in it[10][1])
-    check("the hashes are whole and small", it[12][1] == g.my_address and it[12][3] and it[13][1] == g.my_identity_hash and it[13][3])
-    check("Addr opens its QR when there is a contact URI", it[12][2] is True and not it[13][2])
+    check("sleep / wake / tz come from ui's own labels", it[8][1] == g._timeout_label() and it[9][1] == g._wake_label()
+          and it[12][1] == ui._tz_label(g._tz_min))
+    check("radio stats and LoRa cfg open pages", it[10][2] and it[11][2] and "SF" in it[11][1])
+    check("the hashes are whole and small", it[13][1] == g.my_address and it[13][3] and it[14][1] == g.my_identity_hash and it[14][3])
+    check("Addr opens its QR when there is a contact URI", it[13][2] is True and not it[14][2])
     g._wifi_connected = True
     g._wifi_ssid_current = "home"
     g._wifi_ip = "10.0.0.7"
@@ -1041,7 +1042,7 @@ def test_setup_items():
     check("connected WiFi: ssid [ip], no marker (a click disconnects)", it[0][1] == "home [10.0.0.7]" and not it[0][2], repr(it[0]))
     check("TCP then offers its host page", it[1][2] is True)
     check("LoRa offline says what selecting does", it[3][1].startswith("OFFLINE") and "reset" in it[3][1])
-    check("no URI, no QR", not it[12][2])
+    check("no URI, no QR", not it[13][2])
 
 
 def test_setup_step():
@@ -1060,7 +1061,7 @@ def test_setup_step():
             seen.append(g._settings_idx)
     check("up walks them back", seen == list(reversed(P.SETUP_IDX)), repr(seen))
     g._settings_idx = 13
-    check("an idx the Pro does not show counts as the row before it", P.setup_row(g) == 12)
+    check("an idx the Pro does not show counts as the row before it", P.SETUP_IDX[P.setup_row(g)] == 12)
     g._settings_scroll_down()
     check("...and steps on from there", g._settings_idx == 14)
 
@@ -1076,7 +1077,7 @@ def test_setup_draw():
     check("a rule closes the band", any(c[0] == "rect" and c[2] == 41 and c[3] == 240 and c[4] == 1 for c in t.calls))
     check("no second rule under the last row's own (two lines 2 px apart looked like a mistake)",
           not any(c[0] == "rect" and c[2] == 299 and c[5] != g.BG_DARK for c in t.calls))
-    lab = [c for c in texts(t, "small") if c[1] in ("WiFi", "TCP", "Name", "LoRa", "Volume", "Keyboard light", "Announce", "Sleep")]
+    lab = [c for c in texts(t, "small") if c[1] in ("WiFi", "TCP", "Name", "LoRa", "Volume", "Keyboard light", "Touch feedback", "Announce")]
     check("eight labels in the small font, one per 32 px row", [(c[2], c[3]) for c in lab] == [(16, srow_y(i) + 3) for i in range(8)], repr(lab[:2]))
     v = find(t, "text", "Pro")
     check("the value under its label in the main font", v is not None and v[2] == 16 and v[3] == srow_y(2) + 15, repr(v))
@@ -1106,7 +1107,7 @@ def test_setup_window_and_hashes():
     g, t = mksetup()
     g._settings_idx = 14
     g.draw_settings()
-    check("the window follows the selection to the last row", g._settings_scroll == 6, str(g._settings_scroll))
+    check("the window follows the selection to the last row", g._settings_scroll == 7, str(g._settings_scroll))
     a = find(t, "small", g.my_address)
     i = find(t, "small", g.my_identity_hash)
     check("both hashes whole, on one small-font line each", a is not None and i is not None and a[3] == srow_y(6) + 17 and i[3] == srow_y(7) + 17
@@ -1119,7 +1120,7 @@ def test_setup_window_and_hashes():
     g._settings_idx = 12
     g._settings_scroll = 0              # what closing the QR page leaves
     g.draw_settings()
-    check("a jump from a closing sub-page is followed", g._settings_scroll == 5, str(g._settings_scroll))
+    check("a jump from a closing sub-page is followed", g._settings_scroll == 6, str(g._settings_scroll))
 
 
 def test_setup_sub_page_round_trip():
@@ -1155,7 +1156,7 @@ def test_setup_review_gaps():
     g.my_identity_hash = None
     g.my_lxma_uri = None
     it = P.setup_items(g)
-    check("before the identity loads the hash rows show '?'", it[12][1] == "?" and it[13][1] == "?")
+    check("before the identity loads the hash rows show '?'", it[13][1] == "?" and it[14][1] == "?")
     g._settings_idx = 14
     g.draw_settings()
     check("...and draw", find(t, "small", "?") is not None)
@@ -1163,7 +1164,7 @@ def test_setup_review_gaps():
     g._settings_idx = 9
     g._settings_scroll = 14              # what a scrolled Radio stats page leaves behind
     g.draw_settings()
-    check("an inherited scroll past the end is clamped", g._settings_scroll == 6, str(g._settings_scroll))
+    check("an inherited scroll past the end is clamped", g._settings_scroll == 7, str(g._settings_scroll))
     g, t = mksetup()
     g._settings_idx = 2
     g.draw_settings()
@@ -1180,9 +1181,9 @@ def test_setup_review_gaps():
     g._auto_announce = True
     it = P.setup_items(g)
     check("TCP target, light and announce follow the state", it[1][1] == "rns.example.org:4242" and not it[1][2]
-          and it[5][1] == "ON" and it[6][1] == "AUTO", repr(it[1:7]))
+          and it[5][1] == "ON" and it[7][1] == "AUTO", repr(it[1:8]))
     c = g._lora_cfg
-    check("LoRa cfg shows frequency, SF and bandwidth", it[10][1] == "%dk SF%d BW%s" % (c["freq_khz"], c["sf"], c["bw"]))
+    check("LoRa cfg shows frequency, SF and bandwidth", it[11][1] == "%dk SF%d BW%s" % (c["freq_khz"], c["sf"], c["bw"]))
 
 
 def test_setup_sub_pages_have_a_back_header():
@@ -1910,7 +1911,30 @@ def test_find_count_row_fits():
               len(sm) == 2 and sm[0][2] + len(sm[0][1]) * P.SW < sm[1][2] and sm[0][1][0].isdigit()
               and sm[1][1] == "0=listen Ent=add Bsp=back", repr(sm))
 
+def test_setup_touch_feedback_row():
+    print("setup: touch feedback")
+    P = ui_pro
+    g, t = mksetup()
+    check("off until the user turns it on", g._haptics is False)
+    it = P.setup_items(g)
+    k = P.SETUP_IDX.index(ui._SET_HAPTICS)
+    check("its row sits under Keyboard light", it[k - 1][0] == "Keyboard light" and it[k][0] == "Touch feedback", repr(it[k]))
+    check("...and says OFF", it[k][1] == "OFF")
+    saved = []
+    g.on_haptics = lambda on: saved.append(on)
+    g._settings_idx = ui._SET_HAPTICS
+    check("the row is its own row, not the one before it", P.setup_row(g) == k)
+    g.handle_key(b'\r')
+    check("Enter turns it on and hands the choice to be saved", g._haptics is True and saved == [True], repr(saved))
+    check("the row says ON", P.setup_items(g)[k][1] == "ON")
+    g.handle_key(b'\r')
+    check("and off again", g._haptics is False and saved == [True, False])
+    g._settings_idx = 13
+    check("a hash continuation idx still counts as the Addr row", P.SETUP_IDX[P.setup_row(g)] == 12)
+
+
 if __name__ == "__main__":
+    test_setup_touch_feedback_row()
     test_pro_layout_is_active_on_the_pro()
     test_list_window_follows_the_selection()
     test_l_opens_find()
