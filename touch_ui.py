@@ -712,7 +712,6 @@ class Controller:
         self._changed = 0
         self._pending = False         # a layout change is waiting for its redraw
         self._pending_since = 0
-        self._drag_t0 = None          # the stroke whose drag already clicked
 
     def key(self, now_ms):
         self.rec.note_key(now_ms)
@@ -790,11 +789,10 @@ class Controller:
                 # not long -- a finger still down after DRAG_HOLD_MS is
                 # dragging, and wants frames that follow it.
                 self.ui._redraw_hold = time.ticks_add(g[4], DRAG_HOLD_MS)
-            if self._feedback is not None:
-                if g[0] == DRAG:
-                    if self._drag_t0 == g[4]:
-                        return        # one click per drag, at its start
-                    self._drag_t0 = g[4]
+            # Feedback answers a press: a tap or a long press, which show
+            # nothing for ~700 ms. A drag, flick or swipe is felt by the
+            # finger that makes it.
+            if self._feedback is not None and (g[0] == TAP or g[0] == LONG):
                 self._feedback()
         except Exception as e:
             self._fail(e)

@@ -302,7 +302,15 @@ def test_controller_flow():
     for i in range(1, 6):
         c.event((MOVE, 100, 100 + 20 * i, 3000 + 200 * i))
     c.event((UP, 100, 200, 5000))
-    check("a drag of several steps clicks once, at its start", clicks == [1], repr(clicks))
+    check("a drag gives no feedback: it is for presses only", clicks == [], repr(clicks))
+    g = with_peers(6)
+    c = touch_ui.Controller(g, feedback=lambda: clicks.append(1))
+    c.service(6100)
+    c.event((DOWN, 60, 150, 6200))
+    c.event((MOVE, 110, 152, 6260))
+    c.event((MOVE, 170, 155, 6320))
+    c.event((UP, 170, 155, 6340))
+    check("nor does a swipe, though it acted", g._irq_right == 1 and clicks == [], "%d %r" % (g._irq_right, clicks))
 
 
 def test_controller_stamps_layout_changes():
