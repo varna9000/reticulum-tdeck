@@ -151,6 +151,20 @@ g.get_radio_stats = lambda: [("RF", "868000kHz SF8 17dBm and a very long tail")]
 ls = v1_lines(ui._SET_RADIO, _settings_scroll=0)
 check("v1 Radio stats rows are unchanged (14-column labels, cut at the edge)",
       ("  " + ui._pad("RF", 14) + "868000kHz SF8 17dBm and a very long tail")[:ui.COLS].rstrip() in ls and g._radio_rows == 1, repr(ls))
+import rrc_ui  # noqa: E402
+check("v1 RRC panel keeps its seven thin rows", rrc_ui.PANEL_ROWS == 7 and rrc_ui.PANEL_H == 158)
+g.tft = type(g.tft)()
+g.state = ui.STATE_RRC_CHAT
+g._rrc_room = "mesh"
+g._rrc_members = 3
+g._rrc_roster = [(b"\x01" * 16, "alex")]
+g._rrc_panel = True
+g._rrc_panel_kind = "members"
+g._cache = [''] * ui.CACHE_ROWS
+g.draw()
+ls = [(s, y) for s, x, y in g.tft.texts]
+check("v1 room header is the old row", ("#mesh", ui.BODY_Y) in ls, repr(ls[:6]))
+check("v1 member row is one line with [hash8]", ("[01010101]", rrc_ui.PANEL_Y + 22) in ls and ("alex", rrc_ui.PANEL_Y + 22) in ls, repr(ls))
 print()
 if fails:
     print("%d FAILED" % len(fails))

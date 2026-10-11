@@ -1265,6 +1265,151 @@ def test_setup_sub_pages_fit_30_columns():
     hd = [c for c in texts(t) + texts(t, "small") if c[1].startswith("< Connect")]
     check("WiFi password: the header shows the network name", len(hd) == 1 and "A-rather-long-network" in hd[0][1], repr(hd))
 
+
+# --- piece D: RRC ---------------------------------------------------------------
+
+def mkrrc(state=None):
+    import rrc_ui
+    g, t = mkui()
+    g.state = ui.STATE_RRC_CHAT if state is None else state
+    g._prev_state = g.state
+    g._rrc_hub_name = "Varna Hub"
+    g._rrc_status = ""
+    g._rrc_room = "mesh"
+    g._rrc_members = 7
+    g._rrc_members_exact = True
+    g._rrc_roster = [(bytes([0x93, 0x48, 0x1a, 0x35]) * 4, "alex"), (b"\xaa" * 16, None), (b"\xc0" * 16, "vesna")]
+    g._rrc_rooms = [("mesh", "general LoRa chatter"), ("ops", ""), ("bg", "a topic that is far too long to fit on one small line")]
+    g._rrc_list_seen = True
+    g._rrc_panel = False
+    g._rrc_panel_idx = 0
+    g._rrc_panel_scroll = 0
+    g._rrc_input = ""
+    g._rrc_prompt = False
+    g._cache = [''] * ui.CACHE_ROWS
+    return g, t, rrc_ui
+
+
+def prow_y(i):
+    return 80 + 32 * i
+
+
+def test_rrc_header_band():
+    print("rrc: header band")
+    P = ui_pro
+    g, t, R = mkrrc(ui.STATE_RRC_ROOMS)
+    g._rrc_status = "connected"
+    R.draw_rooms(g)
+    hd = find(t, "text", "< Varna Hub")
+    check("console: '< hub name' in the band, main font", hd is not None and hd[2] == 4 and 20 < hd[3] and hd[3] + 16 <= 41, repr(hd))
+    st = find(t, "small", "connected")
+    check("console: the status in the small font, right-aligned to x 232", st is not None and st[2] + 9 * P.SW == 232 and 20 < st[3] < 41, repr(st))
+    check("a rule closes the band", any(c[0] == "rect" and c[2] == 41 and c[3] == 240 and c[4] == 1 for c in t.calls))
+    check("the old header row is not drawn", [c for c in texts(t) if c[3] == ui.BODY_Y] == [])
+    del t.calls[:]
+    R.draw_rooms(g)
+    check("the band is cached", not any(c[0] == "text" and c[1].startswith("<") for c in t.calls))
+    g, t, R = mkrrc(ui.STATE_RRC_ROOMS)
+    g._rrc_hub_name = None
+    g._rrc_status = "waiting for the hub to answer"
+    R.draw_rooms(g)
+    hd = [c for c in texts(t) if c[1].startswith("< ")]
+    check("before WELCOME the status has the band to itself", len(hd) == 1 and hd[0][1].startswith("< waiting for the hub") and texts(t, "small") == [], repr(hd))
+    g, t, R = mkrrc(ui.STATE_RRC_ROOMS)
+    g._rrc_hub_name = "A hub with a very long announced name"
+    g._rrc_status = "rate limited"
+    R.draw_rooms(g)
+    hd = [c for c in texts(t) if c[1].startswith("< ")][0]
+    st = find(t, "small", "rate limited")
+    check("a long hub name is cut short of the status", st is not None and hd[2] + len(hd[1]) * 8 <= st[2] - 6, repr((hd, st)))
+    g, t, R = mkrrc()
+    R.draw_room(g)
+    hd = find(t, "text", "#mesh")
+    ct = find(t, "small", "7 users")
+    check("room: '#room' in the band and the member count small on the right",
+          hd is not None and hd[2] == 4 and 20 < hd[3] < 41 and ct is not None and ct[2] + 7 * P.SW == 232, repr((hd, ct)))
+
+
+def test_rrc_panel_rooms():
+    print("rrc: panel")
+    P = ui_pro
+    g, t, R = mkrrc(ui.STATE_RRC_ROOMS)
+    check("the Pro panel has five rows in a taller box", R.PANEL_ROWS == 5 and R.PANEL_H == 204 and R.PANEL_Y == 58 and R.PANEL_X == 8)
+    g._rrc_panel = True
+    g._rrc_panel_kind = "rooms"
+    g._rrc_panel_idx = 1
+    R.draw_rooms(g)
+    ti = find(t, "text", "#rooms")
+    check("title band: '#rooms' inverted at the top of the box", ti is not None and ti[3] == 61 and ti[5] == g.SEL_BG and ti[4] == g.BG_DARK, repr(ti))
+    check("...and the count", find(t, "small", "3 rooms") is not None or find(t, "text", "3 rooms") is not None)
+    frame = [c for c in t.calls if c[0] == "rect" and c[1] == 8 and c[2] == 58 and c[3] == 224 and c[4] == 1]
+    check("the box starts at 8,58 and is 224 wide", len(frame) == 1, repr(frame))
+    check("...and 204 tall", any(c[0] == "rect" and c[1] == 8 and c[2] == 58 + 203 and c[3] == 224 for c in t.calls))
+    j = find(t, "text", "+ join by name...")
+    check("the join action is the first row, on one line", j is not None and j[2] == 16 and prow_y(0) < j[3] < prow_y(0) + 16, repr(j))
+    n = find(t, "text", "#mesh")
+    tp = find(t, "small", "general LoRa chatter")
+    check("a room: '#name' over its topic in the small font", n is not None and n[2] == 16 and n[3] == prow_y(1) + 1
+          and tp is not None and tp[2] == 16 and tp[3] == prow_y(1) + 18, repr((n, tp)))
+    check("the selected row is inverted", n[4] == g.BG_DARK and n[5] == g.SEL_BG and tp[5] == g.SEL_BG)
+    o = find(t, "text", "#ops")
+    check("a room with no topic shows its name only", o is not None and o[3] == prow_y(2) + 1
+          and not any(c[3] == prow_y(2) + 18 for c in texts(t, "small")), repr(o))
+    lt = [c for c in texts(t, "small") if c[3] == prow_y(3) + 18]
+    check("a long topic is cut inside the box, clear of the scroll bar",
+          len(lt) == 1 and lt[0][2] + len(lt[0][1]) * P.SW <= 224, repr(lt))
+    rules = sorted(c[2] for c in t.calls if c[0] == "rect" and c[4] == 1 and c[1] == 10 and prow_y(0) <= c[2] < 240)
+    check("a rule under each of the four rows the list has; the empty fifth slot is blank", rules == [prow_y(i) + 31 for i in range(4)], repr(rules))
+    ft = [c for c in texts(t) if c[3] == 242]
+    check("foot band: how to close and what Enter does", "".join(c[1] for c in ft).replace(" ", "") .find("BKSP") >= 0
+          and any("join" in c[1] for c in ft) and all(c[5] == g.SEL_BG for c in ft), repr(ft))
+    under = [c for c in texts(t) if 58 <= c[3] < 262 and c[2] == 0]
+    check("scrollback rows under the box are not drawn over it", under == [], repr(under[:2]))
+    del t.calls[:]
+    R.draw_rooms(g)
+    check("a second draw of the open panel draws nothing in the box",
+          not any(c[0] in ("text", "small") and 58 <= c[3] < 262 for c in t.calls), repr(t.calls[:3]))
+    R.panel_scroll(g, 1)
+    del t.calls[:]
+    R.draw_rooms(g)
+    rows = sorted(set(c[2] for c in t.calls if c[0] == "rect" and c[4] == 31))
+    check("moving the highlight repaints the two rows involved", rows == [prow_y(1), prow_y(2)], repr(rows))
+    g, t, R = mkrrc(ui.STATE_RRC_ROOMS)
+    g._rrc_rooms = []
+    g._rrc_list_seen = False
+    g._rrc_panel = True
+    g._rrc_panel_kind = "rooms"
+    R.draw_rooms(g)
+    m = find(t, "text", "asking hub...")
+    check("the empty picker says it is asking, in the second row's slot", m is not None and prow_y(1) <= m[3] < prow_y(2), repr(m))
+
+
+def test_rrc_panel_members():
+    P = ui_pro
+    g, t, R = mkrrc()
+    g._rrc_panel = True
+    g._rrc_panel_kind = "members"
+    g._rrc_panel_idx = 0
+    R.draw_room(g)
+    check("title is the room, count the members", find(t, "text", "#mesh") is not None and any(c[1] == "7 users" and 58 < c[3] < 80 for c in t.calls if c[0] in ("text", "small")))
+    a = [c for c in texts(t) if c[1] == "alex"]
+    h = find(t, "small", "93481a3593481a35")
+    check("a member: nick over 16 hex of the hash", len(a) == 1 and a[0][2] == 16 and a[0][3] == prow_y(0) + 1
+          and h is not None and h[3] == prow_y(0) + 18, repr((a, h)))
+    q = [c for c in texts(t) if c[1] == "?" and c[3] == prow_y(1) + 1]
+    check("a member who never spoke is '?'", len(q) == 1, repr(q))
+    check("foot band names the mention", any("mention" in c[1] and c[3] == 242 for c in texts(t)))
+    g._rrc_roster = [(bytes([i]) * 16, "n%d" % i) for i in range(12)]
+    g._rrc_pc = {}
+    g._rrc_panel_idx = 0
+    for _ in range(6):
+        R.panel_scroll(g, 1)
+    check("five visible rows drive the panel's scrolling", g._rrc_panel_idx == 6 and g._rrc_panel_scroll == 2, "%d %d" % (g._rrc_panel_idx, g._rrc_panel_scroll))
+    del t.calls[:]
+    R.draw_room(g)
+    check("a scroll thumb inside the box", any(c[0] == "rect" and c[1] == 226 and c[3] == 4 and 80 <= c[2] < 240 and c[5] != g.BG_DARK for c in t.calls))
+    check("nothing goes through ui._sdraw", texts(t, "big") == [])
+
 if __name__ == "__main__":
     test_pro_layout_is_active_on_the_pro()
     test_list_window_follows_the_selection()
@@ -1309,6 +1454,9 @@ if __name__ == "__main__":
     test_setup_review_gaps()
     test_setup_sub_pages_have_a_back_header()
     test_setup_sub_pages_fit_30_columns()
+    test_rrc_header_band()
+    test_rrc_panel_rooms()
+    test_rrc_panel_members()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

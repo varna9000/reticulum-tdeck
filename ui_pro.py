@@ -993,3 +993,117 @@ def draw_setup(ui):
     if ui._cache[_u.FOOT_SLOT] != "\x03setup":
         ui._cache[_u.FOOT_SLOT] = "\x03setup"
         ui._draw_settings_bottom_bar(False)    # back only: rows act under the finger
+
+
+# --- RRC: header band and the panel ------------------------------------------------
+# rrc_ui.py keeps the panel's state and logic (what the rows are, the cursor,
+# what a click does, its part cache); these only draw. The box and its five
+# 32 px rows come from rrc_ui's PANEL_* constants, which take the Pro's values
+# when this module is active.
+
+def rrc_header(ui, left, right):
+    """The hub console's and the room's title row as the band the other
+    screens have: left in the main font, a note on the right in the small one."""
+    ck = "R" + left + "\x01" + right
+    if ui._cache[1] == ck:
+        return
+    ui._cache[1] = ck
+    tft = ui.tft
+    W = _u.SCREEN_W
+    paper = ui.BG_DARK
+    tft.fill_rect(0, TAB_Y, W, TAB_H, paper)
+    right = right[:24]
+    rx = 232 - len(right) * SW
+    room = ((rx - 8) if right else 232) - 4
+    tft.text(ui.font, ui._tb(_u._ascii(left)[:room // _u.CHAR_W]), 4, TAB_Y + 3, ui.NEON_CYAN, paper)
+    if right:
+        _sd(ui, right, rx, TAB_Y + 5, ui.DIM_CYAN, paper)
+    tft.fill_rect(0, TAB_Y + TAB_H - 1, W, 1, ui.NEON_CYAN)
+
+
+def draw_rrc_panel(ui):
+    """The room picker or the member panel: one box, two-line rows."""
+    import rrc_ui as R
+    tft = ui.tft
+    paper = ui.BG_DARK
+    ink = ui.NEON_CYAN
+    band = ui.SEL_BG
+    X = R.PANEL_X
+    Y = R.PANEL_Y
+    W = R.PANEL_W
+    H = R.PANEL_H
+    n_rows = R.PANEL_ROWS
+    rooms = ui._rrc_panel_kind == "rooms"
+    if rooms:
+        rows = R._room_rows(ui)
+        title = "#rooms"
+        count = "%d rooms" % (len(rows) - 1)
+        action = "join"
+    else:
+        rows = ui._rrc_roster
+        title = R._hashed(ui._rrc_room)
+        count = R._member_count(ui)
+        action = "mention"
+    key = (ui._rrc_panel_kind, title, count)
+    if R._pc(ui, "chrome", key):
+        ui._rrc_pc = {"chrome": key}       # the fill below wipes every other part
+        tft.fill_rect(X, Y, W, H, paper)
+        for i in range(2):
+            tft.fill_rect(X + i, Y + i, W - 2 * i, 1, ink)
+            tft.fill_rect(X + i, Y + H - 1 - i, W - 2 * i, 1, ink)
+            tft.fill_rect(X + i, Y + i, 1, H - 2 * i, ink)
+            tft.fill_rect(X + W - 1 - i, Y + i, 1, H - 2 * i, ink)
+        tft.fill_rect(X + 2, Y + 2, W - 4, 18, band)
+        tft.text(ui.font, ui._tb(_u._ascii(title)[:14]), MARGIN, Y + 3, paper, band)
+        _sd(ui, count, X + W - 8 - len(count) * SW, Y + 5, paper, band)
+    msg = None
+    if rooms and len(rows) == 1:
+        msg = "hub lists no public rooms" if ui._rrc_list_seen else "asking hub..."
+    top = ui._rrc_panel_scroll
+    rw = W - 4 - 6                           # row width: inside the frame, left of the scroll bar
+    for i in range(n_rows):
+        y = Y + 22 + i * ROW_H
+        idx = top + i
+        row = None
+        if idx < len(rows):
+            row = rows[idx]
+            on = idx == ui._rrc_panel_idx
+            pk = (row, on)
+        elif msg and i == 1:
+            pk = ("msg", msg)
+        else:
+            pk = None
+        if not R._pc(ui, i, pk):
+            continue
+        if pk is None or pk[0] == "msg":
+            tft.fill_rect(X + 2, y, rw, ROW_H, paper)
+            if pk is not None:
+                tft.text(ui.font, ui._tb(msg[:25]), MARGIN, y + 8, ui.DIM_CYAN, paper)
+            continue
+        bg = band if on else paper
+        fg = paper if on else ink
+        dim = paper if on else ui.DIM_CYAN
+        tft.fill_rect(X + 2, y, rw, ROW_H - 1, bg)
+        tft.fill_rect(X + 2, y + ROW_H - 1, rw, 1, ui.DIM_CYAN)
+        if rooms and row is None:
+            tft.text(ui.font, R.JOIN_ROW[:25], MARGIN, y + 8, fg, bg)
+        elif rooms:
+            tft.text(ui.font, ui._tb(_u._ascii(R._hashed(row[0]))[:25]), MARGIN, y + 1, fg, bg)
+            if row[1]:
+                _sd(ui, _u._ascii(row[1])[:33], MARGIN, y + 18, dim, bg)
+        else:
+            src, nick = row
+            tft.text(ui.font, ui._tb((_u._ascii(nick) if nick else "?")[:25]), MARGIN, y + 1, fg, bg)
+            _sd(ui, src.hex()[:16], MARGIN, y + 18, dim, bg)
+    if R._pc(ui, "sb", (len(rows), top)):
+        ty = Y + 22
+        th = n_rows * ROW_H
+        tft.fill_rect(X + W - 6, ty, 4, th, paper)
+        if len(rows) > n_rows:
+            tft.fill_rect(X + W - 6, ty + th * top // len(rows), 4, max(6, th * n_rows // len(rows)), ink)
+    if R._pc(ui, "foot", action):
+        fy = Y + H - 22
+        tft.fill_rect(X + 2, fy, W - 4, 20, band)
+        tft.text(ui.font, "(BKSP)close", MARGIN, fy + 2, paper, band)
+        s = "(ENT)" + action
+        tft.text(ui.font, s, X + W - 8 - len(s) * _u.CHAR_W, fy + 2, paper, band)

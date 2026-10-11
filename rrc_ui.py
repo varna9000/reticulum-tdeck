@@ -13,6 +13,7 @@ from ui import (UI, BODY_Y, CACHE_ROWS, CHAR_H, CHAR_W, COLS, INPUT_Y,
                 STATE_RRC_ROOMS, TAB_RRC, FOOT_SLOT, _pad, _ascii, _ascii_keep_spacing)
 # SCREEN_H and SEP_Y are unused here.
 
+import ui as _u             # for _u._pro, the T-Deck Pro's own drawing (None on the v1)
 import rrc_proto as _P      # constants only -- for the composer's fallback cap
 import time
 
@@ -68,6 +69,8 @@ def open_selected_hub(ui):
 def _draw_header(ui, left, right):
     # Cached like draw_browser's header -- the key covers everything the
     # row shows, so a hub-name or status change still repaints it.
+    if _u._pro is not None:
+        return _u._pro.rrc_header(ui, "< " + left, right)
     cache_key = left + "\x01" + right
     if ui._cache[1] != cache_key:
         ui._cache[1] = cache_key
@@ -537,6 +540,12 @@ PANEL_W = SCREEN_W - 16
 PANEL_Y = 58
 PANEL_H = 158
 PANEL_ROWS = 7
+if _u._pro is not None:
+    # The Pro draws the panel itself (ui_pro.draw_rrc_panel): five two-line
+    # 32 px rows a finger can hit, in a taller box. Everything here that
+    # windows or skips by these two follows.
+    PANEL_H = 204
+    PANEL_ROWS = 5
 _PANEL_TEXT_X = PANEL_X + 8
 _PANEL_HASH_X = PANEL_X + PANEL_W - 8 - 10 * CHAR_W
 # Columns the nick may use before it runs into the [hash8] column, less one
@@ -686,6 +695,8 @@ def _panel_hint(ui, key, rest, x, y):
 
 def draw_panel(ui):
     """Draw whichever panel is open."""
+    if _u._pro is not None:
+        return _u._pro.draw_rrc_panel(ui)
     if ui._rrc_panel_kind == "rooms":
         draw_rooms_panel(ui)
     else:
@@ -939,6 +950,13 @@ def draw_room(ui):
     # at x=0 the name sat on the body frame's left rail. The console header
     # gets the same clearance from its "<" glyph; this row has no glyph, so
     # it pays for the space directly.
+    if _u._pro is not None:
+        _u._pro.rrc_header(ui, room, count)
+        _draw_scrollback(ui)
+        if ui._rrc_panel:
+            draw_panel(ui)
+        _draw_composer(ui)
+        return
     name = _ascii(room)[:COLS - len(count) - 3]
     # Cached like _draw_header/draw_browser's header -- the key covers
     # both the room name and the member count, so either changing repaints.
