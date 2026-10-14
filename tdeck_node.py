@@ -706,13 +706,26 @@ def _save_settings(data):
 
 # --- WiFi / TCP ---
 
+def _wifi_radio_off():
+    """Station off, the saved wish untouched."""
+    global _wifi_sta_on
+    import network
+    wlan = network.WLAN(network.STA_IF)
+    try:
+        wlan.disconnect()
+    except Exception:
+        pass
+    wlan.active(False)
+    _wifi_sta_on = False
+    gui._wifi_connected = False
+    gui._wifi_ssid_current = ""
+    gui._wifi_ip = ""
+
+
 def _stop_wifi():
     """Deactivate WiFi radio."""
     global _wifi_enabled
-    import network
-    wlan = network.WLAN(network.STA_IF)
-    wlan.disconnect()
-    wlan.active(False)
+    _wifi_radio_off()
     settings = _load_settings()
     settings["wifi_enabled"] = False
     _wifi_enabled = False
@@ -762,7 +775,7 @@ def wifi_scan():
 
 
 def wifi_connect(ssid, password):
-    global _wifi_enabled
+    global _wifi_enabled, _wifi_sta_on, _wlan, _wifi_last_try
     import network
     wlan = network.WLAN(network.STA_IF)
     # Reset radio state — ESP32 throws "Wifi Internal State Error"
@@ -774,6 +787,9 @@ def wifi_connect(ssid, password):
     wlan.active(False)
     time.sleep_ms(100)
     wlan.active(True)
+    _wlan = wlan
+    _wifi_sta_on = True
+    _wifi_last_try = time.ticks_ms()
     wlan.connect(ssid, password)
     for _ in range(40):  # ~8s timeout
         if wlan.isconnected():
@@ -798,19 +814,23 @@ def wifi_connect(ssid, password):
     return False
 
 
-def wifi_connect_async(ssid, password):
+def wifi_connect_async(ssid, password, auto=False):
     """GUI callback: connect without blocking the event loop. The UI shows
-    'Connecting...' and gui.set_wifi_result() is called with the result."""
+    'Connecting...' and gui.set_wifi_result() is called with the result.
+    auto=True is the boot restore and the policy loop's retry: no Setup
+    page changes either way, and the saved TCP link is brought up on
+    success."""
     import uasyncio as asyncio
-    asyncio.create_task(_wifi_connect_task(ssid, password))
+    asyncio.create_task(_wifi_connect_task(ssid, password, auto))
 
 
-async def _wifi_connect_task(ssid, password):
-    global _wifi_enabled
+async def _wifi_connect_task(ssid, password, auto=False):
+    global _wifi_enabled, _wifi_sta_on, _wlan, _wifi_last_try
     import uasyncio as asyncio
     import network
     await asyncio.sleep_ms(50)  # let the UI paint "Connecting..." first
     ip = None
+    _wifi_last_try = time.ticks_ms()
     # WLAN init itself can throw (ESP_ERR_NO_MEM) — keep it inside the try so
     # set_wifi_result() always runs and the UI never sticks on "Connecting...".
     try:
@@ -822,6 +842,8 @@ async def _wifi_connect_task(ssid, password):
         wlan.active(False)
         await asyncio.sleep_ms(100)
         wlan.active(True)
+        _wlan = wlan
+        _wifi_sta_on = True
         wlan.connect(ssid, password)
         for _ in range(40):  # ~8s, yielding so the UI/LoRa keep running
             if wlan.isconnected():
@@ -843,8 +865,99 @@ async def _wifi_connect_task(ssid, password):
             print("[WiFi] async connect error:", e)
     if DEBUG >= 1:
         print("[WiFi]", "connected " + ip if ip else "connect failed", ssid)
-    gui.set_wifi_result(ip)
+    if not auto:
+        gui.set_wifi_result(ip)
+    elif ip:
+        gui._wifi_connecting = False
+        gui._wifi_connected = True
+        gui._wifi_ssid_current = ssid
+        gui._wifi_ip = ip
+        asyncio.create_task(_start_saved_tcp())
     gc.collect()
+
+
+def _wifi_give_up():
+    """The deck has been dark with its station hunting for an AP that is
+    not there: station off, and the TCP link (if any) with it, which puts
+    LoRa back. The saved wishes stay so the next lit screen tries again."""
+    global _wifi_enabled
+    settings = _load_settings()
+    want_tcp = bool(settings.get("tcp_enabled")) or _tcp_iface is not None
+    if _tcp_iface is not None:
+        tcp_toggle(False)            # also stops WiFi and restarts LoRa; clears both flags
+        gui._tcp_enabled = False     # the Setup page clears this itself; here nobody else does
+    else:
+        _wifi_radio_off()
+    settings = _load_settings()
+    settings["wifi_enabled"] = True
+    settings["tcp_enabled"] = want_tcp
+    _save_settings(settings)
+    _wifi_enabled = True
+    if DEBUG >= 1:
+        print("[WiFi] no AP while dark; station off until the screen wakes")
+
+
+async def _wifi_policy_loop():
+    """Every few seconds: is the station still worth running (power.wifi_action)."""
+    global _wifi_unconnected_since, _wifi_last_try
+    import uasyncio as asyncio
+    import power
+    while True:
+        await asyncio.sleep(5)
+        if not _wifi_enabled:
+            _wifi_unconnected_since = None
+            continue
+        now = time.ticks_ms()
+        connected = False
+        if _wifi_sta_on and _wlan is not None:
+            try:
+                connected = bool(_wlan.isconnected())
+            except Exception:
+                connected = False
+        if connected:
+            _wifi_unconnected_since = None
+        elif _wifi_unconnected_since is None:
+            _wifi_unconnected_since = now
+            if gui._wifi_connected and _wifi_sta_on:
+                gui._wifi_connected = False      # the AP went away under us
+        unconnected_ms = 0 if _wifi_unconnected_since is None else time.ticks_diff(now, _wifi_unconnected_since)
+        since_try_ms = power.WIFI_RETRY_MS if _wifi_last_try is None else time.ticks_diff(now, _wifi_last_try)
+        act = power.wifi_action(True, connected, _wifi_sta_on, bool(gui._screen_on),
+                                unconnected_ms, since_try_ms)
+        if act == "off":
+            _wifi_give_up()
+            _wifi_unconnected_since = None
+        elif act == "on":
+            settings = _load_settings()
+            ssid = settings.get("wifi_ssid")
+            password = settings.get("wifi_pass")
+            _wifi_last_try = now
+            if ssid and password and not gui._wifi_connecting:
+                if DEBUG >= 1:
+                    print("[WiFi] screen lit, trying", ssid, "again")
+                wifi_connect_async(ssid, password, auto=True)
+
+
+async def _low_battery_loop():
+    """Cut the pack before the chip browns out (power.LowBattery). Reads the
+    voltage the battery loop keeps fresh; on the cutting sample paints the
+    battery-empty page and opens the charger's battery switch. A board that
+    cannot cut never starts this loop."""
+    import uasyncio as asyncio
+    import power
+    lb = power.LowBattery()
+    while True:
+        await asyncio.sleep(10)
+        if lb.sample(gui.bat_v, board.usb_power()):
+            if DEBUG >= 1:
+                print("[power] battery %.2fV on battery: powering off" % gui.bat_v)
+            try:
+                gui.power_off_screen()
+            except Exception as e:
+                if DEBUG >= 1:
+                    print("[power] battery-empty page failed:", e)
+            if not board.power_off():
+                print("[power] power_off failed; the deck will run to brownout")
 
 
 def _stop_lora():
@@ -943,7 +1056,17 @@ def on_lora_config(params):
 _tcp_iface = None  # track separately so rns.run() doesn't double-start it
 _lora_task = None  # track poll_loop task to cancel on restart
 _tcp_task = None
-_wifi_enabled = False  # mirrors settings["wifi_enabled"]; power.py gates on it
+_wifi_enabled = False  # mirrors settings["wifi_enabled"]: the user wants WiFi
+# The station itself: up (connected or hunting for its AP) or switched off.
+# power.py gates sleep on this, not on the wish above -- a deck carried out
+# of its AP's range used to stay awake at WiFi-scan current until the pack
+# was flat (Pro, 2026-10-13). _wifi_policy_loop switches a hunting station
+# off once the deck has been dark a while and tries again while it is lit.
+_wifi_sta_on = False
+_wlan = None
+_wifi_unconnected_since = None
+_wifi_last_try = None
+_tcp_starting = False
 
 
 def tcp_toggle(enabled, host=None, port=None):
@@ -1819,40 +1942,50 @@ async def _auto_connect_wifi_async():
         if ssid and password:
             if DEBUG >= 1:
                 print("[Boot] Reconnecting WiFi:", ssid)
-            wifi_connect_async(ssid, password)   # fires a task; sets gui._wifi_connected on success
+            wifi_connect_async(ssid, password, auto=True)   # sets gui._wifi_connected, starts saved TCP
 
 
 async def _auto_start_tcp():
-    """Start TCP interface if saved settings say so (needs event loop)."""
+    """Restore the TCP host entry from saved settings (needs the event loop).
+    The link itself is started by the WiFi connect's success path."""
     import uasyncio as asyncio
     await asyncio.sleep(0)
     settings = _load_settings()
-    wifi_enabled = settings.get("wifi_enabled")
-    if True == wifi_enabled: # Enable TCP only if WiFI should be enabled
-        # Always restore last used address for the TCP host input page
-        host = settings.get("tcp_host")
-        port = settings.get("tcp_port")
-        if host and port:
-            gui._tcp_target = host + ":" + str(port)
-        # Auto-connect if it was enabled last session — wait (bounded) for the
-        # deferred WiFi reconnect to come up first.
-        if settings.get("tcp_enabled") and host and port:
-            for _ in range(40):                  # up to ~20s for WiFi
-                if gui._wifi_connected:
-                    break
-                await asyncio.sleep(0.5)
-            # Retry: right after WiFi associates, DNS often isn't answering
-            # yet (getaddrinfo -202), and one failure used to leave TCP off
-            # for the whole session. Stop if the user connects by hand.
-            for attempt in range(6):
-                if not gui._wifi_connected or gui._tcp_enabled:
-                    break
-                if tcp_toggle(True, host, port):
-                    gui._tcp_enabled = True
-                    break
-                if DEBUG >= 1:
-                    print("[TCP] auto-connect attempt", attempt + 1, "failed")
-                await asyncio.sleep(10)
+    host = settings.get("tcp_host")
+    port = settings.get("tcp_port")
+    if settings.get("wifi_enabled") == True and host and port:
+        gui._tcp_target = host + ":" + str(port)
+    gc.collect()
+
+
+async def _start_saved_tcp():
+    """Bring the saved TCP link up after WiFi connected, if it was enabled
+    last session and is not up already. Retries: right after WiFi
+    associates, DNS often isn't answering yet (getaddrinfo -202), and one
+    failure used to leave TCP off for the whole session. Stops if the user
+    connects by hand or WiFi goes away."""
+    global _tcp_starting
+    import uasyncio as asyncio
+    if _tcp_starting:
+        return
+    settings = _load_settings()
+    host = settings.get("tcp_host")
+    port = settings.get("tcp_port")
+    if not (settings.get("tcp_enabled") and host and port):
+        return
+    _tcp_starting = True
+    try:
+        for attempt in range(6):
+            if not gui._wifi_connected or gui._tcp_enabled or _tcp_iface is not None:
+                break
+            if tcp_toggle(True, host, port):
+                gui._tcp_enabled = True
+                break
+            if DEBUG >= 1:
+                print("[TCP] auto-connect attempt", attempt + 1, "failed")
+            await asyncio.sleep(10)
+    finally:
+        _tcp_starting = False
     gc.collect()
 
 
@@ -1874,7 +2007,7 @@ async def _start_power():
         return None
 
     def _wifi_on():
-        return _wifi_enabled or _tcp_iface is not None
+        return _wifi_sta_on or _tcp_iface is not None
 
     def _log(msg):
         if DEBUG >= 1:
@@ -1924,6 +2057,9 @@ def main():
             "battery", lambda: gui.battery_loop(spi_acquire_display, spi_release_display)))
         asyncio.create_task(supervise.run("ticker", gui.ticker_loop))
         asyncio.create_task(supervise.run("power", _start_power))
+        asyncio.create_task(supervise.run("wifi", _wifi_policy_loop))
+        if board.HAS_POWER_OFF:
+            asyncio.create_task(supervise.run("lowbat", _low_battery_loop))
         await _original_run()
 
     try:

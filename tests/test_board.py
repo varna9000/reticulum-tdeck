@@ -43,6 +43,7 @@ CONTRACT = (
     "get_key", "set_kbd_backlight", "attach_ui",
     "battery_voltage", "battery_percent",
     "sleep_wake_pins", "before_sleep", "after_wake", "usb_power",
+    "HAS_POWER_OFF", "power_off",
 )
 
 

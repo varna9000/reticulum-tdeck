@@ -1137,6 +1137,27 @@ class UI:
         self._cache = [''] * CACHE_ROWS
         self._shell_cache = [''] * len(self._shell_cache)
 
+    def power_off_screen(self):
+        """The last frame before the deck cuts its own battery (power.py
+        LowBattery -> board.power_off): e-ink keeps it for free, so it says
+        what happened and what brings the deck back. A whole-panel refresh;
+        nothing will draw after it."""
+        acquire = getattr(self, "_spi_acquire", None)
+        release = getattr(self, "_spi_release", None)
+        if acquire:
+            acquire()
+        try:
+            self.tft.fill(self.BG_DARK)
+            mid = SCREEN_H // 2
+            self._center_text("battery empty", mid - 2 * CHAR_H, self.NEON_CYAN)
+            self._center_text("%.2fV" % self.bat_v, mid, self.DIM_CYAN)
+            self._center_text("plug in to charge", mid + 2 * CHAR_H, self.DIM_CYAN)
+            self._force_full_flush = True
+            self._flush()
+        finally:
+            if release:
+                release()
+
     def lock(self):
         """Blank the screen and ignore input until the next trackball click.
         Sounds, unread counters and the radio keep running."""

@@ -97,6 +97,11 @@ attach_ui = _impl.attach_ui
 # enumeration (charger status on the Pro, the battery ADC on the v1): the
 # OTG frame counter alone cannot see a cable plugged into a sleeping deck.
 usb_power = _impl.usb_power
+# power_off() cuts the battery from the board (the Pro's charger ship mode,
+# left by plugging a cable in) and returns True; a board that cannot returns
+# False and the low-battery policy in tdeck_node leaves it alone.
+HAS_POWER_OFF = _impl.HAS_POWER_OFF
+power_off = _impl.power_off
 sleep_wake_pins = _impl.sleep_wake_pins
 before_sleep = _impl.before_sleep
 after_wake = _impl.after_wake

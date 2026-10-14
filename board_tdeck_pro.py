@@ -531,6 +531,26 @@ def usb_power():
         return False
 
 
+HAS_POWER_OFF = True     # the BQ25896's ship mode, see power_off()
+
+
+def power_off():
+    """Cut the pack from the board: the BQ25896's ship mode (REG09 bit 5,
+    BATFET_DIS) opens the FET between battery and system, and the whole
+    board is off at the charger's shipping current. The charger leaves ship
+    mode again when a cable is plugged in (VBUS), which is how a deck that
+    ran its battery down is meant to come back. Only called on battery:
+    with VBUS present the system would just keep running from USB. Bit 3
+    (BATFET_DLY) is cleared so the FET opens now rather than 10 s later.
+    True when the write went in; the deck is then gone within a moment."""
+    try:
+        r = i2c.readfrom_mem(BQ25896_ADDR, 0x09, 1)[0]
+        i2c.writeto_mem(BQ25896_ADDR, 0x09, bytes([(r | 0x20) & ~0x08]))
+        return True
+    except Exception:
+        return False
+
+
 def before_sleep():
     """None to sleep, False to veto: a key pressed since the last poll is
     still in the TCA8418 FIFO, and the chip re-asserts INT while the FIFO

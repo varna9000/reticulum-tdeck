@@ -466,6 +466,60 @@ pu = src[src.index("def power_up():"):src.index("power_up()\n\n")]
 check("the Pro parks the GPS serial line at power-up", "Pin(config.GPS_TX, Pin.IN, Pin.PULL_DOWN)" in pu, pu[-400:])
 check("...after switching the GPS off", pu.index("config.GPS_EN") < pu.index("config.GPS_TX"))
 
+
+print("wifi_action (an unreachable AP must not hold the deck awake)")
+_W = dict(wanted=True, connected=False, sta_on=True, screen_on=False,
+          unconnected_ms=power.WIFI_GIVEUP_MS, since_try_ms=power.WIFI_RETRY_MS)
+
+
+def _wa(**over):
+    d = dict(_W)
+    d.update(over)
+    return power.wifi_action(**d)
+
+
+check("not wanted: nothing", _wa(wanted=False) is None)
+check("connected: nothing", _wa(connected=True) is None)
+check("dark, unconnected past give-up: off", _wa() == "off")
+check("dark, unconnected before give-up: wait", _wa(unconnected_ms=power.WIFI_GIVEUP_MS - 1) is None)
+check("lit, unconnected: never off", _wa(screen_on=True, unconnected_ms=10 ** 7) is None)
+check("lit, radio off, retry due: on", _wa(screen_on=True, sta_on=False) == "on")
+check("lit, radio off, retry not due: wait",
+      _wa(screen_on=True, sta_on=False, since_try_ms=power.WIFI_RETRY_MS - 1) is None)
+check("dark, radio off: never on", _wa(sta_on=False, since_try_ms=10 ** 7) is None)
+
+print("LowBattery (cut the pack before the chip browns out)")
+check("threshold above the brownout, below the empty mark", 2.9 < power.LOW_BATTERY_V <= 3.3)
+lb = power.LowBattery()
+check("one low read is not enough", lb.sample(power.LOW_BATTERY_V - 0.1, False) is False)
+check("second consecutive low read cuts", lb.sample(power.LOW_BATTERY_V - 0.1, False) is True)
+lb = power.LowBattery()
+lb.sample(3.0, False)
+check("a healthy read in between resets the count",
+      lb.sample(3.5, False) is False and lb.sample(3.0, False) is False)
+lb = power.LowBattery()
+check("never on external power", lb.sample(3.0, True) is False and lb.sample(3.0, True) is False)
+lb = power.LowBattery()
+check("no reading is not low", lb.sample(None, False) is False and lb.sample(0.0, False) is False
+      and lb.sample(None, False) is False)
+lb = power.LowBattery()
+check("exactly at threshold counts as low",
+      lb.sample(power.LOW_BATTERY_V, False) is False and lb.sample(power.LOW_BATTERY_V, False) is True)
+lb = power.LowBattery()
+check("just above threshold is fine", lb.sample(power.LOW_BATTERY_V + 0.01, False) is False
+      and lb.sample(power.LOW_BATTERY_V + 0.01, False) is False)
+
+print("board power-off (source scan)")
+_pro_src = open(os.path.join(ROOT, "board_tdeck_pro.py")).read()
+_v1_src = open(os.path.join(ROOT, "board_tdeck_v1.py")).read()
+_board_src = open(os.path.join(ROOT, "board.py")).read()
+check("board.py re-exports power_off", "power_off = _impl.power_off" in _board_src)
+check("pro: power_off is the charger's ship mode (REG09 BATFET_DIS)",
+      "def power_off" in _pro_src and "0x09" in _pro_src.split("def power_off", 1)[1][:1500]
+      and "0x20" in _pro_src.split("def power_off", 1)[1][:1500])
+check("v1: power_off exists and says it cannot", "def power_off" in _v1_src
+      and "return False" in _v1_src.split("def power_off", 1)[1][:600])
+
 if _failures:
     print("\n%d FAILED: %s" % (len(_failures), ", ".join(_failures)))
     sys.exit(1)

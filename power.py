@@ -16,6 +16,24 @@ BACKOFF_MS = 60000     # after a failed sleep call
 POLL_MS = 100          # how often the loop re-evaluates (awake gap between sleeps)
 USB_GRACE_MS = 3000    # VBUS seen but no host frames yet: give enumeration this long
 
+# WiFi away from its access point. The saved "wifi_enabled" used to gate
+# sleep on its own, and MicroPython's station reconnects to a missing AP
+# forever: a deck carried out of range never slept and ran at WiFi-scan
+# current until the pack was flat (Pro, 2026-10-13: 1400 mAh gone in a day,
+# cell at 2 V). The station is switched off once the deck has been dark and
+# unconnected this long, and tried again while someone is looking at it.
+WIFI_GIVEUP_MS = 30000
+WIFI_RETRY_MS = 60000
+
+# Low battery. Nothing else stops the discharge: the chip runs until its
+# brownout detector trips (about 2.5 V on the 3.3 V rail, so a cell near
+# 2.8 V), reboots, transmits its announce, and browns out again, which pulls
+# a lithium cell well under its own protection threshold. Cut the pack at a
+# safe voltage instead, after two readings in a row (the battery loop reads
+# every 10 s) so one sag under a transmission does not do it.
+LOW_BATTERY_V = 3.2
+LOW_BATTERY_READS = 2
+
 
 def _default_ticks_diff(a, b):
     """time.ticks_diff on the device; the same 2^30 wrap arithmetic on the
@@ -67,6 +85,36 @@ def may_sleep(s):
     if s.backoff_ms > 0:
         return "backoff"
     return None
+
+
+def wifi_action(wanted, connected, sta_on, screen_on, unconnected_ms, since_try_ms):
+    """What to do about the WiFi station this pass: "off" (stop a station
+    that has been hunting for its AP while the deck was dark), "on" (try
+    again, the screen is lit and the last try is old enough) or None."""
+    if not wanted or connected:
+        return None
+    if sta_on:
+        if not screen_on and unconnected_ms >= WIFI_GIVEUP_MS:
+            return "off"
+        return None
+    if screen_on and since_try_ms >= WIFI_RETRY_MS:
+        return "on"
+    return None
+
+
+class LowBattery:
+    """Counts consecutive low readings on battery; sample() is True on the
+    reading that should power the deck off."""
+
+    def __init__(self):
+        self.low = 0
+
+    def sample(self, volts, usb):
+        if usb or not volts or volts > LOW_BATTERY_V:
+            self.low = 0
+            return False
+        self.low += 1
+        return self.low >= LOW_BATTERY_READS
 
 
 WAKE_KINDS = ("lora", "input", "timer", "other")

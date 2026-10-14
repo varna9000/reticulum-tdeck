@@ -195,6 +195,15 @@ def sleep_wake_pins():
     )
 
 
+HAS_POWER_OFF = False     # no charger IC to open the battery switch
+
+
+def power_off():
+    """No charger IC to open the battery FET here: the low-battery cutoff
+    is the Pro's. The v1 runs down to its brownout as it always did."""
+    return False
+
+
 def usb_power():
     """External power, from the battery ADC: with USB in, the sensed rail
     sits above any lithium cell voltage (the Radio page uses the same 4.3 V
