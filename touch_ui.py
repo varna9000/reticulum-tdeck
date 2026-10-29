@@ -576,7 +576,7 @@ def _drag(ui, n):
         return False
     if _scroll_content(ui, n):
         return True
-    if st == _u.STATE_SETTINGS and ui._settings_page in (_u._SET_LORA, _u._SET_RADIO):
+    if st == _u.STATE_SETTINGS and ui._settings_page in (_u._SET_LORA, _u._SET_TCP_HOST, _u._SET_RADIO):
         _steps(ui, n)                 # the field cursor / the stats scroll
         return True
     if _rows(ui) is not None:
@@ -597,7 +597,7 @@ def _swipe(ui, d, y):
         return True
     if st == _u.STATE_SETTINGS:
         page = ui._settings_page
-        if page == _u._SET_LORA:
+        if page == _u._SET_LORA or page == _u._SET_TCP_HOST:
             ui._settings_adjust(d)    # the field under the cursor
             return True
         if page == _u._SET_MAIN and _u._pro is not None:

@@ -193,9 +193,9 @@ def test_navigation_stays_in_bounds():
     g._lora_field = 0
     g._settings_scroll_up()
     assert g._lora_field == 0                  # can't go above first field
-    g._lora_field = 5
+    g._lora_field = ui._LORA_APPLY
     g._settings_scroll_down()
-    assert g._lora_field == 5                  # Apply row is the last selectable
+    assert g._lora_field == ui._LORA_APPLY     # Apply row is the last selectable
 
 
 def test_apply_calls_callback_and_commits_on_success():
@@ -206,7 +206,7 @@ def test_apply_calls_callback_and_commits_on_success():
     # change SF then move to Apply row
     g._lora_field = 2
     g._settings_adjust(1)                      # SF 7 -> 8
-    g._lora_field = 5                          # Apply & Save
+    g._lora_field = ui._LORA_APPLY             # Apply & Save
     g.handle_key(b"\x0d")
     assert len(applied) == 1
     assert applied[0]["sf"] == 8
@@ -221,7 +221,7 @@ def test_apply_failure_leaves_live_cfg_unchanged():
     g.on_lora_config = lambda p: False         # radio refused
     g._lora_field = 2
     g._settings_adjust(1)                      # SF 7 -> 8 (pending)
-    g._lora_field = 5
+    g._lora_field = ui._LORA_APPLY
     g.handle_key(b"\x0d")
     assert g._lora_cfg["sf"] == 7              # live cfg untouched
     assert g._lora_applying == "failed"

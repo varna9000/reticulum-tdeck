@@ -259,6 +259,30 @@ def scene_setup(out):
     g._cache = [''] * ui.CACHE_ROWS
     g.draw()
     t.png(os.path.join(out, "setup_lora.png"))
+    # The editor open on a mesh with an access code, Net selected (issue #20)
+    g.set_lora_config({"networkname": "mymesh", "passphrase": "correct horse"})
+    g._lora_edit = dict(g._lora_cfg)
+    g._lora_field = 5
+    g._cache = [''] * ui.CACHE_ROWS
+    g.draw()
+    t.png(os.path.join(out, "setup_lora_code.png"))
+    g._lora_edit = None
+    g._lora_field = 0
+    g.set_lora_config({"networkname": "", "passphrase": ""})
+    # The TCP form: saved link with a code, then the Passphrase entry page
+    g._tcp_target = "rns.varnatransport.com:4242"
+    g.set_tcp_ifac("mymesh", "correct horse", 16)
+    g._open_tcp_form()
+    g.draw()
+    t.png(os.path.join(out, "setup_tcp.png"))
+    g._tcp_field = 2
+    g.handle_key(b"\r")                        # Pass -> text entry
+    g.cmd_buf = bytearray(b"correct horse")
+    g.draw()
+    t.png(os.path.join(out, "setup_text.png"))
+    g.handle_key(b"\x1b")
+    g.handle_key(b"\x1b")
+    g._settings_idx = 0
     g._settings_page = ui._SET_WIFI_SCAN
     g._wifi_networks = [("homenet", -41), ("A-rather-long-network-name", -67), ("cafe", -80)]
     g._settings_idx = 1

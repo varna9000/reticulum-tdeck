@@ -126,12 +126,19 @@ def test_settings_main_moves_but_its_text_pages_type():
 
     for page, name in ((ui._SET_NODE_NAME, "node name"),
                        (ui._SET_WIFI_PASS, "wifi password"),
-                       (ui._SET_TCP_HOST, "tcp host")):
+                       (ui._SET_TEXT, "form text")):
         g = mkui(ui.STATE_SETTINGS, page)
+        g._text_entry = ("Host", {}, "host", ui._SET_TCP_HOST, True)
         g.cmd_buf = bytearray()
         g.handle_key(b'e')
         check("the %s field types an e" % name,
               moved(g) == (0, 0) and b'e' in g.cmd_buf, repr(bytes(g.cmd_buf)))
+
+    # The TCP page is a form now (issue #20): a bare x moves its cursor.
+    g = mkui(ui.STATE_SETTINGS, ui._SET_TCP_HOST)
+    g._tcp_edit = g._tcp_seed()
+    g.handle_key(b'x')
+    check("the tcp form moves on x", moved(g) == (0, 1))
 
     # The frequency field is digits only, so it drops an e rather than typing
     # it. What matters is that it drops it instead of moving the selection --

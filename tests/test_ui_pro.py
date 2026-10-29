@@ -1190,7 +1190,7 @@ def test_setup_sub_pages_have_a_back_header():
     print("device pass: sub-page headers")
     # Found on the device: the Name page had no header to tap and Backspace
     # deletes the name there, so there was no visible way back.
-    for page, title in ((ui._SET_NODE_NAME, "Node Name"), (ui._SET_TCP_HOST, "TCP Server Address"),
+    for page, title in ((ui._SET_NODE_NAME, "Node Name"), (ui._SET_TCP_HOST, "TCP Server"),
                         (ui._SET_LORA_FREQ, "LoRa Frequency (kHz)"), (ui._SET_RADIO, None), (ui._SET_LORA, None),
                         (ui._SET_WIFI_SCAN, None)):
         g, t = mksetup()
@@ -1239,13 +1239,14 @@ def test_setup_sub_pages_fit_30_columns():
     rows = body_lines(t)
     joined = " ".join(c[1].strip() for c in rows)
     check("LoRa cfg: every row fits", all(c[2] + len(c[1].rstrip()) * 8 <= 240 for c in rows), repr([c[1] for c in rows]))
-    check("LoRa cfg: the hint is whole, wrapped", "must match every peer you talk to" in joined, joined)
+    check("LoRa cfg: the access-code group and the Apply row are on the page",
+          "Access code (optional)" in joined and "Net    none" in joined and "[ Apply & Save ]" in joined, joined)
     g._lora_applying = "failed"
     g._cache = [''] * ui.CACHE_ROWS
     del t.calls[:]
     g.draw()
     joined = " ".join(c[1].strip() for c in body_lines(t))
-    check("LoRa cfg: the failure text is whole too", "apply FAILED -- radio unchanged" in joined, joined)
+    check("LoRa cfg: a failed apply shows on the Apply row", "[ Apply FAILED ]" in joined, joined)
     hd = [c for c in texts(t) + texts(t, "small") if c[1].startswith("<")]
     check("a page title that already starts with '<' gets one arrow, not two", len(hd) == 1 and hd[0][1].startswith("< LoRa"), repr(hd))
     g, t = mksetup()

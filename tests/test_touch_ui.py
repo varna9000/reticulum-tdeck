@@ -938,6 +938,24 @@ def test_click_hints_click_and_shell_quit_is_inert():
     check("a hint that names no key is not tappable", tap(g, 20, fy) is False and seen == [], repr(seen))
 
 
+def test_tcp_form_drag_and_swipe():
+    print("review: the TCP form (issue #20)")
+    # The form is cursor-driven like the LoRa editor: a drag moves the row
+    # cursor, a swipe steps the row under it (the IFAC size), the footer's
+    # (ENT) selects. Its text rows are not text pages: the form takes no letters.
+    g = mkui(ui.STATE_SETTINGS)
+    g._settings_page = ui._SET_TCP_HOST
+    g._tcp_edit = g._tcp_seed()
+    g._tcp_field = 0
+    check("TCP form: a drag is accepted", touch_ui.handle(g, (DRAG, 100, 100, 2, 200000), 0) is True)
+    settle(g)
+    check("...and moves the field", g._tcp_field == 2, str(g._tcp_field))
+    adj = []
+    g._settings_adjust = lambda d: adj.append(d)
+    check("TCP form: a swipe adjusts the field", touch_ui.handle(g, (SWIPE, 100, 100, 1, 200000), 0) is True and adj == [1], repr(adj))
+    check("TCP form: a tap in the body lands nowhere", touch_ui.handle(g, (TAP, 100, 120, 0, 200000), 0) is False)
+
+
 def test_lora_and_radio_pages_drag():
     print("review: setup pages")
     g = mkui(ui.STATE_SETTINGS)
@@ -1544,6 +1562,7 @@ if __name__ == "__main__":
     test_text_lines_clear_the_zones_when_painted()
     test_click_hints_click_and_shell_quit_is_inert()
     test_lora_and_radio_pages_drag()
+    test_tcp_form_drag_and_swipe()
     test_find_back_keeps_a_typed_query()
     test_untested_lists_follow_their_scroll()
     test_controller_guard_cannot_wedge()

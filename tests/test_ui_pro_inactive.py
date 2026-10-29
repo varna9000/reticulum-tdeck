@@ -146,7 +146,8 @@ def v1_lines(page, **kw):
 ls = v1_lines(ui._SET_WIFI_SCAN, _wifi_networks=[("home", -40)], _settings_idx=3)
 check("v1 WiFi scan rows are unchanged", "  {:<28}{}dBm".format("home", -40) in ls, repr(ls[:4]))
 ls = v1_lines(ui._SET_LORA, _lora_applying="")
-check("v1 LoRa cfg hint is still one row", "  must match every peer you talk to" in ls, repr(ls))
+check("v1 LoRa cfg page carries the access-code group and the Apply row",
+      "Access code (optional)" in ls and "   Net    none" in ls and "  [ Apply & Save ]" in ls, repr(ls))
 g.get_radio_stats = lambda: [("RF", "868000kHz SF8 17dBm and a very long tail")]
 ls = v1_lines(ui._SET_RADIO, _settings_scroll=0)
 check("v1 Radio stats rows are unchanged (14-column labels, cut at the edge)",

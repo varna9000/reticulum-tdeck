@@ -66,6 +66,7 @@ _SET_RADIO     = 5
 _SET_LORA      = 6   # editable radio params (freq/bw/sf/cr/tx)
 _SET_LORA_FREQ = 7   # numeric entry sub-page for the frequency
 _SET_QR        = 8   # our lxma:// contact URI as a QR code (from the Addr row)
+_SET_TEXT      = 9   # shared text entry for one form field (see _open_text)
 
 # LoRa radio config: allowed values for the editor. BW cycles through every
 # bandwidth the SX1262 has (the exact key set of the sx126x driver's
@@ -76,6 +77,19 @@ _SET_QR        = 8   # our lxma:// contact URI as a QR code (from the Addr row)
 # bounds; freq is stepped or typed in kHz. These are the ranges the driver
 # accepts (SF 6-12, CR 4/5-4/8), narrowed to sane mesh values.
 _LORA_FIELDS = ("freq_khz", "bw", "sf", "coding_rate", "tx_power")
+# The LoRa editor's rows: 0-4 the radio params above, 5-6 the access code
+# (issue #20), 7 the Apply & Save row.
+_LORA_TEXT_FIELDS = ("networkname", "passphrase")
+_LORA_APPLY = 7
+# The TCP form's rows: the host, the access code, then 4 = Connect.
+_TCP_FIELDS = ("host", "networkname", "passphrase", "ifac_size")
+_TCP_CONNECT = 4
+# IFAC sizes offered, in bytes (urns' unit); shown in bits, the reference
+# config's unit, so "ifac_size = 64" on a server reads as 64 here. 16 is the
+# reference TCP default. LoRa is always 8 and has no row for it.
+_IFAC_SIZES = (8, 16)
+_CODE_LEGEND = "Access code (optional)"
+_RAIL_X = 10         # the group bracket's rail, right of the selection marker (x 4-6)
 _LORA_BW_CHOICES = ("7.8", "10.4", "15.6", "20.8", "31.25", "41.7", "62.5",
                     "125", "250", "500")
 _LORA_SF_MIN = 7
@@ -228,6 +242,14 @@ def _ascii(s):
     return ' '.join(_ascii_keep_spacing(s).split())
 
 # Pad string to exact width (no clearing needed)
+def _tail(s, width):
+    """s, or its tail behind a '<' marker when it is too wide for width
+    cells -- the convention the input line uses for a long buffer."""
+    if len(s) <= width:
+        return s
+    return "<" + s[-(width - 1):]
+
+
 def _pad(s, width=COLS):
     if len(s) >= width:
         return s[:width]
@@ -814,6 +836,13 @@ class UI:
         self._wifi_ip = ""
         self._tcp_enabled = False
         self._tcp_target = ""  # "host:port" string, set from saved settings on boot
+        # The TCP link's access code as last saved (tdeck_node pushes it via
+        # set_tcp_ifac); _tcp_edit is the form's working copy while the page
+        # is open, _tcp_field its selected row (0-3 fields, 4 = Connect).
+        self._tcp_ifac = {"networkname": "", "passphrase": "", "ifac_size": 16}
+        self._tcp_edit = None
+        self._tcp_field = 0
+        self._text_entry = None   # (title, dict, key, back page, keep on empty Enter)
         self._tcp_default = ""  # "host:port" from TCP_CONFIG, set by tdeck_node.py
         self._settings_scroll = 0
         self._radio_rows = 0  # row count of the radio stats page (for scroll clamp)
@@ -835,9 +864,10 @@ class UI:
         # live interface params (pushed in by tdeck_node.py via set_lora_config);
         # _lora_edit is a working copy held only while the page is open, so
         # backing out without Apply discards. _lora_field is the selected row
-        # (0-4 = fields, 5 = the Apply & Save row).
+        # (0-4 = radio fields, 5-6 = the access code, 7 = the Apply & Save row).
         self._lora_cfg = {"freq_khz": 868000, "bw": "125", "sf": 7,
-                          "coding_rate": 5, "tx_power": 14}
+                          "coding_rate": 5, "tx_power": 14,
+                          "networkname": "", "passphrase": ""}
         self._lora_edit = None
         self._lora_field = 0
         self._lora_applying = ""   # "", "applied", or "failed" — transient status
@@ -2410,8 +2440,7 @@ class UI:
     # free -- the node list binds a, s, b, m, d and p, the browser r, n, p, b,
     # g and G, and neither takes e or x -- so they can move the selection
     # without the alt layer. See _bare_nav_key().
-    _TEXT_ENTRY_PAGES = (_SET_WIFI_PASS, _SET_TCP_HOST, _SET_NODE_NAME,
-                         _SET_LORA_FREQ)
+    _TEXT_ENTRY_PAGES = (_SET_WIFI_PASS, _SET_NODE_NAME, _SET_LORA_FREQ, _SET_TEXT)
 
     def _accepting_text(self):
         """True where a letter key has to mean the letter."""
@@ -3851,9 +3880,7 @@ class UI:
                                 self._tcp_enabled = False
                                 self._tcp_target = ""
                     else:
-                        # Go to host entry sub-page
-                        self._settings_page = _SET_TCP_HOST
-                        self.cmd_buf = bytearray(self._tcp_target.encode()) if self._tcp_target else bytearray(self._tcp_default.encode())
+                        self._open_tcp_form()
                     self._cache = [''] * CACHE_ROWS
                     self.dirty = True
                     return True
@@ -3968,8 +3995,13 @@ class UI:
                     self.cmd_buf = bytearray()     # type a fresh value; Enter empty keeps current
                     self._cache = [''] * CACHE_ROWS
                     self.dirty = True
-                elif self._lora_field == 5:        # Apply & Save
+                elif self._lora_field == _LORA_APPLY:
                     self._lora_apply()
+                elif self._lora_field >= 5:        # Net / Pass -> text entry
+                    key = _LORA_TEXT_FIELDS[self._lora_field - 5]
+                    self._lora_applying = ""
+                    self._open_text("Network name" if key == "networkname" else "Passphrase",
+                                    self._lora_edit, key, _SET_LORA)
                 else:                              # BW/SF/CR/TX -> cycle forward
                     self._lora_cycle(_LORA_FIELDS[self._lora_field], 1)
                     self._lora_applying = ""
@@ -4075,48 +4107,48 @@ class UI:
         elif self._settings_page == _SET_TCP_HOST:
             if self._tcp_connecting:
                 return True  # ignore input while the async connect runs
-            if ch == 0x1B:
+            if ch == 0x1B or ch == 0x08:   # back -- discard the edits
+                self._tcp_edit = None
                 self._settings_page = _SET_MAIN
                 self._settings_idx = 1
                 self._cache = [''] * CACHE_ROWS
                 self.dirty = True
                 return True
-            elif ch == 0x08:  # Backspace
+            elif ch == 0x0D:   # Enter / trackball click on the selected row
+                f = self._tcp_field
+                if f == _TCP_CONNECT:
+                    self._tcp_connect()
+                elif f == 3:                       # IFAC size cycles
+                    self._tcp_cycle_size(1)
+                else:                              # Host / Net / Pass -> text entry
+                    self._open_text(("Host", "Network name", "Passphrase")[f],
+                                    self._tcp_edit, _TCP_FIELDS[f], _SET_TCP_HOST,
+                                    keep_empty=(f == 0))
+                return True
+            return True
+        elif self._settings_page == _SET_TEXT:
+            title, d, fkey, back, keep = self._text_entry
+            if ch == 0x1B:   # cancel, keep the old value
+                self._close_text(back)
+                return True
+            elif ch == 0x08:   # Backspace (empty -> back)
                 if len(self.cmd_buf) > 0:
                     self.cmd_buf = self.cmd_buf[:-1]
                     self._input_dirty = True
                 else:
-                    self._settings_page = _SET_MAIN
-                    self._settings_idx = 1
-                    self._cache = [''] * CACHE_ROWS
-                    self.dirty = True
+                    self._close_text(back)
                 return True
-            elif ch == 0x0D:  # Enter — parse host:port and connect (async)
-                addr = self.cmd_buf.decode().strip()
-                self.cmd_buf = bytearray()
-                host, port = None, None
-                if ":" in addr:
-                    parts = addr.rsplit(":", 1)
-                    host = parts[0]
-                    try:
-                        port = int(parts[1])
-                    except:
-                        pass
-                if host and port and self.on_tcp_connect:
-                    self._tcp_connecting = True
-                    self._cache = [''] * CACHE_ROWS
-                    self.dirty = True
-                    self.on_tcp_connect(host, port)
-                    return True
-                self._settings_page = _SET_MAIN
-                self._settings_idx = 1
-                self._cache = [''] * CACHE_ROWS
-                self.dirty = True
+            elif ch == 0x0D:   # store; an empty line clears (or keeps, for the host)
+                value = self.cmd_buf.decode().strip()
+                if value or not keep:
+                    d[fkey] = value
+                self._close_text(back)
                 return True
             elif 0x20 <= ch < 0x7F:  # Printable
                 self.cmd_buf += key
                 self._input_dirty = True
                 return True
+            return True
         elif self._settings_page == _SET_NODE_NAME:
             if ch == 0x1B:
                 self._settings_page = _SET_MAIN
@@ -4164,7 +4196,9 @@ class UI:
         elif self._settings_page == _SET_WIFI_PASS:
             self._draw_wifi_pass()
         elif self._settings_page == _SET_TCP_HOST:
-            self._draw_tcp_host()
+            self._draw_settings_tcp()
+        elif self._settings_page == _SET_TEXT:
+            self._draw_text_entry()
         elif self._settings_page == _SET_NODE_NAME:
             self._draw_node_name()
         elif self._settings_page == _SET_RADIO:
@@ -4371,53 +4405,129 @@ class UI:
         ]
 
     def _draw_settings_lora(self):
+        """The five radio rows, the access-code group, Apply & Save. The
+        Apply row carries the result of the last apply itself: the LCD has
+        no row left for a status line once the group is on the page."""
+        e = self._lora_edit or self._lora_cfg
         modified = self._lora_edit is not None and self._lora_edit != self._lora_cfg
         hdr = "< LoRa Radio" + ("   *modified" if modified else "")
         self._draw_row_cached(1, hdr, BODY_Y,
                               self.NEON_MAG if modified else self.NEON_CYAN)
-
-        apply_line = "[ Apply & Save ]"
         if self._lora_applying == "applied":
-            status = "applied -- now live & saved"
+            apply_row = ("[ Applied & saved ]", "action", _LORA_APPLY)
         elif self._lora_applying == "failed":
-            status = "apply FAILED -- radio unchanged"
+            apply_row = ("[ Apply FAILED ]", "fail", _LORA_APPLY)
         else:
-            status = "must match every peer you talk to"
+            apply_row = ("[ Apply & Save ]", "action", _LORA_APPLY)
+        rows = [("", "gap")]
+        for fi, fl in enumerate(self._lora_field_lines()):
+            rows.append((fl, "text", fi))
+        rows.append(("", "gap"))
+        rows += self._code_rows(e, 5)
+        rows.append(("", "gap"))
+        rows.append(apply_row)
+        self._draw_form(rows, self._lora_field)
+        self._draw_settings_bottom_bar()
 
-        # (text, selectable field index or None)
-        body = [(fl, fi) for fi, fl in enumerate(self._lora_field_lines())]
-        body.append(("", None))
-        body.append((apply_line, 5))
-        if COLS < 40:
-            for s in self._wrap_text(status, COLS - 2):   # too long for a narrow screen
-                body.append((s, None))
-        else:
-            body.append((status, None))
+    # --- forms: the TCP page and the LoRa editor share this ---------------
 
-        for i in range(BODY_ROWS - 1):
-            y = BODY_Y + (i + 1) * CHAR_H
-            if i < len(body):
-                text, field = body[i]
-                line = "  " + text
-                if field is not None and field == self._lora_field:
+    def _code_rows(self, e, first):
+        """The bracketed access-code group: legend, Net, Pass (and, where
+        e has one, the IFAC size). Fields number from `first`. Blank values
+        read "none" in the dim colour, so an optional field looks optional."""
+        rows = [(_CODE_LEGEND, "legend")]
+        on = bool(e.get("networkname") or e.get("passphrase"))
+        for i, (label, key) in enumerate((("Net    ", "networkname"), ("Pass   ", "passphrase"))):
+            v = e.get(key) or ""
+            rows.append((label + (v or "none"), "text" if v else "dim", first + i, True))
+        if "ifac_size" in e:
+            rows.append(("IFAC   " + (str(e["ifac_size"] * 8) + " bit" if on else "off"),
+                         "text" if on else "dim", first + 2, True))
+        return rows
+
+    def _draw_form(self, rows, sel):
+        """Rows: (text, kind[, field[, in_group]]), kind one of gap, blank,
+        legend, text, dim, action, fail; `field` is the row's index for the
+        cursor, `in_group` puts it inside the bracket. Rows sit at an explicit
+        y, so a "gap" can be half a row on the LCD, where the LoRa editor has
+        no spare rows; "blank" is a full one. Gaps and the tail of the body
+        are painted on the first draw after an invalidation, so the page
+        before cannot show through; rows keep their own cache."""
+        first = self._cache[2] == ''
+        y = BODY_Y + CHAR_H
+        bottom = BODY_Y + BODY_ROWS * CHAR_H
+        idx = 2
+        n = len(rows)
+        for i in range(n):
+            r = rows[i]
+            kind = r[1]
+            if kind == "gap" or kind == "blank":
+                h = CHAR_H if (kind == "blank" or BODY_ROWS >= 14) else CHAR_H // 2
+                if first:
+                    self.tft.fill_rect(0, y, SCREEN_W, h, self.BG_DARK)
+                y += h
+                continue
+            text = r[0]
+            field = r[2] if len(r) > 2 else None
+            grouped = len(r) > 3 and r[3]
+            if kind == "legend":
+                self._draw_legend(idx, y, text)
+            else:
+                line = ("   " if grouped else "  ") + text
+                selected = field is not None and field == sel
+                drawn = False
+                if selected:
                     cache_key = '\x01' + line
-                    if self._cache[i + 2] != cache_key:
-                        self._cache[i + 2] = cache_key
+                    if self._cache[idx] != cache_key:
+                        self._cache[idx] = cache_key
                         self.tft.text(self.font, self._tb(_pad(line)), 0, y,
                                       self.YELLOW, self.SEL_BG)
                         self.tft.fill_rect(4, y, 3, CHAR_H, self.NEON_MAG)
+                        drawn = True
                 else:
-                    if text == apply_line:
+                    if kind == "action":
                         color = self.NEON_GREEN
-                    elif self._lora_applying == "failed" and text == status:
+                    elif kind == "dim":
+                        color = self.DIM_CYAN
+                    elif kind == "fail":
                         color = self.NEON_MAG
                     else:
                         color = self.NEON_CYAN
-                    self._draw_row_cached(i + 2, line, y, color)
-            else:
-                self._draw_row_cached(i + 2, "", y, self.NEON_CYAN)
+                    drawn = self._draw_row_cached(idx, line, y, color)
+                if grouped and drawn:
+                    nxt = rows[i + 1] if i + 1 < n else None
+                    last = not (nxt is not None and len(nxt) > 3 and nxt[3])
+                    self._draw_rail(y, last, selected)
+            idx += 1
+            y += CHAR_H
+        if first and y < bottom:
+            self.tft.fill_rect(0, y, SCREEN_W, bottom - y, self.BG_DARK)
 
-        self._draw_settings_bottom_bar()
+    def _draw_legend(self, idx, y, text):
+        """A group's caption row: a stub from the rail, the text in the dim
+        colour, a rule out to the right margin, the rail starting below.
+        Lines, not glyphs, like the body frame -- cheap on the LCD."""
+        cache_key = "L" + text
+        if self._cache[idx] == cache_key:
+            return
+        self._cache[idx] = cache_key
+        self.tft.fill_rect(0, y, SCREEN_W, CHAR_H, self.BG_DARK)
+        tx = 3 * CHAR_W
+        self.tft.text(self.font, text, tx, y, self.DIM_CYAN, self.BG_DARK)
+        mid = y + CHAR_H // 2
+        self.tft.fill_rect(_RAIL_X, mid, tx - 4 - _RAIL_X, 1, self.DIM_CYAN)
+        x1 = tx + len(text) * CHAR_W + 4
+        self.tft.fill_rect(x1, mid, SCREEN_W - CHAR_W - x1, 1, self.DIM_CYAN)
+        self.tft.fill_rect(_RAIL_X, mid, 2, CHAR_H - CHAR_H // 2, self.DIM_CYAN)
+
+    def _draw_rail(self, y, last, selected):
+        """The bracket's rail beside one grouped row, with a foot under the
+        last. Drawn after the row, so it rides on the selection band: there
+        the Pro's band is ink and only a dark fill comes out as paper."""
+        c = self.BG_DARK if (selected and self._mono) else self.DIM_CYAN
+        self.tft.fill_rect(_RAIL_X, y, 2, CHAR_H, c)
+        if last:
+            self.tft.fill_rect(_RAIL_X, y + CHAR_H - 2, 12, 2, c)
 
     def _draw_lora_freq(self):
         self._draw_row_cached(1, "LoRa Frequency (kHz)", BODY_Y, self.NEON_CYAN)
@@ -4539,6 +4649,9 @@ class UI:
         if ok:
             self._tcp_enabled = True
             self._tcp_target = addr
+            if self._tcp_edit is not None:
+                self._tcp_ifac = {k: self._tcp_edit[k] for k in _TCP_FIELDS[1:]}
+        self._tcp_edit = None
         self._settings_page = _SET_MAIN
         self._settings_idx = 1
         self._cache = [''] * CACHE_ROWS
@@ -4553,19 +4666,112 @@ class UI:
         # Name input line
         self._draw_input_line(self.cmd_buf.decode())
 
-    def _draw_tcp_host(self):
-        self._draw_row_cached(1, "TCP Server Address", BODY_Y, self.NEON_CYAN)
-
-        for i in range(1, BODY_ROWS):
-            self._draw_row_cached(i + 1, "", BODY_Y + i * CHAR_H, self.NEON_CYAN)
-
+    def _draw_settings_tcp(self):
+        """Settings > TCP while the link is off: the host, the optional
+        access code group, Connect."""
+        self._draw_row_cached(1, "< TCP Server", BODY_Y, self.NEON_CYAN)
         if self._tcp_connecting:
+            for i in range(1, BODY_ROWS):
+                self._draw_row_cached(i + 1, "", BODY_Y + i * CHAR_H, self.NEON_CYAN)
             self._draw_row_cached(5, "Connecting...".center(COLS),
                                   BODY_Y + 4 * CHAR_H, self.NEON_GREEN)
             self.tft.text(self.font, _pad(""), 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
-        else:
-            # Address input line
-            self._draw_input_line(self.cmd_buf.decode())
+            return
+        e = self._tcp_edit
+        if e is None:                 # the page set directly, not via the row
+            e = self._tcp_seed()
+        rows = [("", "blank"), ("Host   " + _tail(e["host"], COLS - 2 - 7), "text", 0),
+                ("", "blank")]
+        rows += self._code_rows(e, 1)
+        rows.append(("", "blank"))
+        rows.append(("[ Connect ]", "action", _TCP_CONNECT))
+        self._draw_form(rows, self._tcp_field)
+        self._draw_settings_bottom_bar()
+
+    def _draw_text_entry(self):
+        title, d, key, back, keep = self._text_entry
+        self._draw_row_cached(1, "< " + title, BODY_Y, self.NEON_CYAN)
+        cur = d.get(key) or ""
+        rows = [("", "blank"),
+                ("current: " + (_tail(cur, COLS - 2 - 9) if cur else "none"), "text"),
+                ("", "blank"),
+                ("Enter empty keeps it" if keep else "Enter empty clears it", "dim")]
+        self._draw_form(rows, -1)
+        self._draw_input_line(self.cmd_buf.decode())
+
+    def _tcp_seed(self):
+        e = dict(self._tcp_ifac)
+        e["host"] = self._tcp_target or self._tcp_default
+        return e
+
+    def _open_tcp_form(self):
+        """Settings > TCP (while off): the form, seeded from the saved link."""
+        self._tcp_edit = self._tcp_seed()
+        self._tcp_field = 0
+        self._settings_page = _SET_TCP_HOST
+        self._cache = [''] * CACHE_ROWS
+        self.dirty = True
+
+    def _tcp_cycle_size(self, delta):
+        e = self._tcp_edit
+        try:
+            i = _IFAC_SIZES.index(e["ifac_size"])
+        except ValueError:
+            i = len(_IFAC_SIZES) - 1
+        e["ifac_size"] = _IFAC_SIZES[(i + delta) % len(_IFAC_SIZES)]
+        self._cache = [''] * CACHE_ROWS
+        self.dirty = True
+
+    def _tcp_connect(self):
+        """The Connect row: parse host:port and hand the link, with the code
+        fields as typed, to the node (async; set_tcp_result reports back).
+        A host that does not parse drops back to Setup, as the old entry
+        page did."""
+        e = self._tcp_edit
+        host, port = None, None
+        addr = e["host"].strip()
+        if ":" in addr:
+            parts = addr.rsplit(":", 1)
+            host = parts[0]
+            try:
+                port = int(parts[1])
+            except:
+                pass
+        if host and port and self.on_tcp_connect:
+            self._tcp_connecting = True
+            self._cache = [''] * CACHE_ROWS
+            self.dirty = True
+            self.on_tcp_connect(host, port, {k: e[k] for k in _TCP_FIELDS[1:]})
+            return
+        self._tcp_edit = None
+        self._settings_page = _SET_MAIN
+        self._settings_idx = 1
+        self._cache = [''] * CACHE_ROWS
+        self.dirty = True
+
+    def set_tcp_ifac(self, networkname, passphrase, ifac_size):
+        """The saved access code of the TCP link (tdeck_node, at boot), what
+        the form opens with."""
+        self._tcp_ifac = {"networkname": networkname or "", "passphrase": passphrase or "",
+                          "ifac_size": ifac_size or 16}
+
+    def _open_text(self, title, d, key, back, keep_empty=False):
+        """The shared text entry page for one string field of a form. Enter
+        stores the line into d[key]; an empty line clears the field, or keeps
+        it where keep_empty (the host, which cannot be blank). Esc, and
+        Backspace on an empty line, go back with the field untouched."""
+        self._text_entry = (title, d, key, back, keep_empty)
+        self.cmd_buf = bytearray()
+        self._settings_page = _SET_TEXT
+        self._cache = [''] * CACHE_ROWS
+        self.dirty = True
+
+    def _close_text(self, back):
+        self._text_entry = None
+        self.cmd_buf = bytearray()
+        self._settings_page = back
+        self._cache = [''] * CACHE_ROWS
+        self.dirty = True
 
     def nav_event(self, name):
         """Feed a navigation event from something other than a trackball.
@@ -4927,6 +5133,10 @@ class UI:
             if self._lora_field > 0:
                 self._lora_field -= 1
                 self.dirty = True
+        elif self._settings_page == _SET_TCP_HOST:
+            if self._tcp_field > 0:
+                self._tcp_field -= 1
+                self.dirty = True
 
     def _settings_scroll_down(self):
         if self._settings_page == _SET_MAIN:
@@ -4946,8 +5156,12 @@ class UI:
             if self._settings_scroll < max(0, self._radio_rows - (BODY_ROWS - 1)):
                 self._settings_scroll += 1
         elif self._settings_page == _SET_LORA:
-            if self._lora_field < 5:   # 0-4 fields, 5 = Apply row
+            if self._lora_field < _LORA_APPLY:   # the Apply row is the last
                 self._lora_field += 1
+                self.dirty = True
+        elif self._settings_page == _SET_TCP_HOST:
+            if self._tcp_field < _TCP_CONNECT:
+                self._tcp_field += 1
                 self.dirty = True
 
     def _sleep_blocked(self):
@@ -5000,6 +5214,9 @@ class UI:
             if k in cfg and cfg[k] is not None:
                 self._lora_cfg[k] = cfg[k]
         self._lora_cfg["bw"] = str(self._lora_cfg["bw"])
+        for k in _LORA_TEXT_FIELDS:
+            if k in cfg:
+                self._lora_cfg[k] = cfg[k] or ""
 
     def _lora_cycle(self, field, delta):
         """Step one pending field by delta (trackball L/R or click). BW wraps
@@ -5046,6 +5263,10 @@ class UI:
 
     def _settings_adjust(self, delta):
         """Trackball left/right on an adjustable settings row."""
+        if self._settings_page == _SET_TCP_HOST:
+            if self._tcp_field == 3 and self._tcp_edit is not None:
+                self._tcp_cycle_size(delta)
+            return
         if self._settings_page == _SET_LORA:
             if 0 <= self._lora_field <= 4:
                 self._lora_cycle(_LORA_FIELDS[self._lora_field], delta)

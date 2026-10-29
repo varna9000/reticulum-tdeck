@@ -527,9 +527,11 @@ Press `s` from the node list to open setup. Navigate with trackball, select with
 
 **WiFi** — Scan for networks, select one, enter password. After connecting, the TCP host entry page opens automatically.
 
-**TCP** — Connect to a remote Reticulum node over WiFi. When TCP is OFF, click to enter a server address (pre-filled with the last used address or the default from `tdeck_config.py`). When TCP is ON, click to disconnect — this also disconnects WiFi and restarts LoRa. Only one interface (LoRa or TCP) is active at a time.
+**TCP** — Connect to a remote Reticulum node over WiFi. When TCP is OFF, click to open the TCP Server form: the **Host** row (pre-filled with the last used `host:port` or the default from `tdeck_config.py`), an optional **Access code** group for a server that requires one (see [Interface access codes](#interface-access-codes-ifac)), and **Connect**. Click a text row to type its value; Enter on an empty line clears a code field and keeps the host. When TCP is ON, click to disconnect — this also disconnects WiFi and restarts LoRa. Only one interface (LoRa or TCP) is active at a time.
 
 **Name** — Change the node's display name. Saved to flash and persisted across reboots.
+
+**LoRa cfg** — The radio parameters (frequency, bandwidth, spreading factor, coding rate, TX power), which must match every peer on the mesh, plus the mesh's optional **Access code** (network name and passphrase). *Apply & Save* retunes and re-keys the live radio without a restart; the row itself reports *Applied & saved* or *Apply FAILED*.
 
 **Volume** — Trackball left/right adjusts the level (with a confirmation blip); Enter cycles it.
 
@@ -545,7 +547,7 @@ Press `s` from the node list to open setup. Navigate with trackball, select with
 
 Connecting to WiFi or a TCP server no longer freezes the UI — the screen shows `Connecting...` while the work runs in the background, then reports the result.
 
-All settings (WiFi credentials, TCP host/port, node name, TCP enabled state, volume, keyboard backlight, auto-announce, sleep timeout) are saved to `/rns/settings.json` and restored on boot. If WiFi and TCP were enabled when the device was last used, they reconnect automatically on startup.
+All settings (WiFi credentials, TCP host/port and access code, LoRa radio parameters and access code, node name, TCP enabled state, volume, keyboard backlight, auto-announce, sleep timeout) are saved to `/rns/settings.json` and restored on boot. If WiFi and TCP were enabled when the device was last used, they reconnect automatically on startup.
 
 ### Power
 
@@ -591,6 +593,25 @@ The remote node needs a `TCPServerInterface` in its Reticulum config:
 ```
 
 When TCP is activated, LoRa is stopped (only one interface at a time). When TCP is deactivated, WiFi is disconnected and LoRa restarts.
+
+### Interface access codes (IFAC)
+
+A Reticulum interface can require an access code: with `network_name` and/or `passphrase` set on an interface, every packet on it carries a truncated signature derived from them and is masked, and the other end drops anything that does not verify. It is an access filter, not encryption — Reticulum's end-to-end encryption is unchanged.
+
+The T-Deck can join such a network on either interface (Setup → TCP form, or Setup → LoRa cfg). Both ends must use the same name, passphrase and code size:
+
+| | T-Deck | Reference config |
+|---|---|---|
+| Network name | `Net` row | `network_name = …` |
+| Passphrase | `Pass` row | `passphrase = …` |
+| Code size, TCP | `IFAC` row: 64 or 128 bit (default 128) | `ifac_size = 64` / `128` (default 128 for TCP) |
+| Code size, LoRa | always 64 bit, no row | `ifac_size = 64` (the RNode default) |
+
+Either the name or the passphrase alone is enough to turn the code on; with both empty the link is plain. A mismatch in any of the three looks like a link that is up but carries nothing — the deck logs the dropped packets at debug level only.
+
+LoRa has no size choice because a full 500 B packet plus a 16 B code does not fit the two-frame RNode split (508 B): short packets would still go through, every resource segment (photos, voice, long messages) would be lost. 8 B is the reference RNode default and the most the frame can carry, so the deck pins it and the urns LoRa interface clamps any larger value.
+
+Each packet in and out costs one Ed25519 signature plus an HKDF mask, roughly 15–20 ms on the ESP32-S3: fine for a private node, noticeable on a busy backbone. The passphrase is stored in `/rns/settings.json` in the clear, as the WiFi password is.
 
 **Why TCP instead of UDP?** The ESP32 cannot reliably receive UDP broadcast packets, even with power saving disabled. TCP provides reliable bidirectional communication.
 
@@ -725,7 +746,7 @@ Only one network interface is active at a time. Switching from LoRa to TCP stops
 
 ### Settings Persistence
 
-Settings are stored as JSON in `/rns/settings.json` on the device flash. Saved fields: `wifi_ssid`, `wifi_pass`, `tcp_enabled`, `tcp_host`, `tcp_port`, `node_name`. On boot, WiFi and TCP are automatically restored if they were active in the previous session.
+Settings are stored as JSON in `/rns/settings.json` on the device flash. Saved fields: `wifi_ssid`, `wifi_pass`, `tcp_enabled`, `tcp_host`, `tcp_port`, `tcp_netname`, `tcp_passphrase`, `tcp_ifac_size` (bytes), `node_name`, and `lora` (the radio parameters plus `networkname` / `passphrase` when a mesh access code is set). On boot, WiFi and TCP are automatically restored if they were active in the previous session.
 
 Additionally, the favorites are stored in similar way, just in separate and individual files(`/rns/peers.json`, `/rns/nodes.json`, `/rns/hubs.json` and `/rns/shells.json`). On boot, the favorites are automatically loaded from files.
 
@@ -969,6 +990,7 @@ path on stock MicroPython.
 | `tools/build_firmware.sh` | Builds custom MicroPython firmware with st7789 C driver + frozen modules |
 | `tools/flash_tdeck.sh` | Flashes firmware + uploads natmod files via mpremote |
 | `tools/tdeck_manifest.py` | MicroPython frozen module manifest |
+| `tools/render_v1.py`, `tools/render_pro.py` | Render the Setup pages on the host with the real `ui.py` and fonts (colour LCD / 1-bit e-ink), to look at a layout before flashing |
 | `tools/dtmf_send.py` | Plays a 32-hex address as DTMF for the T-Deck's Find → `0` — macOS and Linux, stdlib only; `--wav` writes a file, `--digits` prints the keys for another generator |
 | `tools/mac/make_shortcut.py` | Builds, signs and imports the macOS *Transfer via sound* Quick Action |
 | `tools/gen_cp866_font.py` | Regenerates the legacy VGA Cyrillic font from the CP437 base + a BDF source |

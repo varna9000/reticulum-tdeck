@@ -242,6 +242,11 @@ try:
         for _k in ("freq_khz", "sf", "bw", "coding_rate", "tx_power"):
             if _saved_lora.get(_k) is not None:
                 LORA_CONFIG[_k] = _saved_lora[_k]
+        # The mesh's access code, if one was set (issue #20); setup_interfaces()
+        # below runs setup_ifac on it. No size: LoRa is always 8 bytes.
+        for _k in ("networkname", "passphrase"):
+            if _saved_lora.get(_k):
+                LORA_CONFIG[_k] = _saved_lora[_k]
 except Exception:
     pass
 
@@ -1000,6 +1005,7 @@ def _start_lora():
                 # Manual path bypasses setup_interfaces(): resolve the
                 # board pinout preset here too
                 iface = LoRaInterface(rns._resolve_board(iface_config))
+                iface.setup_ifac(iface_config)   # setup_interfaces() would have
                 rns.interfaces.append(iface)
                 Transport.register_interface(iface)
                 _lora_task = asyncio.create_task(iface.poll_loop())
@@ -1026,9 +1032,10 @@ _LORA_PARAM_KEYS = ("freq_khz", "sf", "bw", "coding_rate", "tx_power")
 
 def on_lora_config(params):
     """Live-retune the mesh radio from Settings > LoRa cfg. Applies via the
-    interface's reconfigure() (no restart), then on success updates LORA_CONFIG
-    (so a later manual reset keeps the new params) and persists them under the
-    'lora' settings key. Returns True on success so the UI can show the result."""
+    interface's reconfigure() (no restart), re-keys the access code when the
+    form carried one, then on success updates LORA_CONFIG (so a later manual
+    reset keeps the new params) and persists them under the 'lora' settings
+    key. Returns True on success so the UI can show the result."""
     lora = None
     for iface in rns.interfaces:
         if iface.__class__.__name__ == 'LoRaInterface':
@@ -1046,8 +1053,19 @@ def on_lora_config(params):
         for k in _LORA_PARAM_KEYS:
             if k in params:
                 LORA_CONFIG[k] = params[k]
+        if "networkname" in params or "passphrase" in params:
+            _ifac_overlay(LORA_CONFIG, params)     # never a size: the class default, 8
+            try:
+                lora.setup_ifac(LORA_CONFIG)       # live; clears when both are blank
+            except Exception as e:
+                if DEBUG >= 1:
+                    print("[LoRa] IFAC setup error:", e)
+                return False
         settings = _load_settings()
         settings["lora"] = {k: LORA_CONFIG[k] for k in _LORA_PARAM_KEYS}
+        for k in ("networkname", "passphrase"):
+            if k in LORA_CONFIG:
+                settings["lora"][k] = LORA_CONFIG[k]
         _save_settings(settings)
         gui.set_lora_config(LORA_CONFIG)
     return ok
@@ -1069,13 +1087,49 @@ _wifi_last_try = None
 _tcp_starting = False
 
 
-def tcp_toggle(enabled, host=None, port=None):
+# Interface access codes (issue #20). urns derives the code from the
+# "networkname" / "passphrase" keys of an interface config, with "ifac_size"
+# in bytes; the UI hands us {"networkname", "passphrase", "ifac_size"} with
+# "" for an empty field. Blank fields are dropped from the config rather than
+# passed as "", so urns sees them as unset, and no size is passed without a
+# code. tcp_toggle / _start_lora build their interfaces by hand, outside
+# rns.setup_interfaces(), which is the only place urns calls setup_ifac --
+# so they call it themselves.
+_IFAC_KEYS = ("networkname", "passphrase", "ifac_size")
+
+
+def _ifac_overlay(cfg, ifac):
+    """Write an access code into an interface config dict, or strip one."""
+    for k in _IFAC_KEYS:
+        cfg.pop(k, None)
+    if not ifac:
+        return cfg
+    name = ifac.get("networkname") or ""
+    pw = ifac.get("passphrase") or ""
+    if name:
+        cfg["networkname"] = name
+    if pw:
+        cfg["passphrase"] = pw
+    if (name or pw) and ifac.get("ifac_size"):
+        cfg["ifac_size"] = ifac["ifac_size"]
+    return cfg
+
+
+def _ifac_from_settings(settings):
+    """The TCP link's saved code, in the shape the UI form works with."""
+    return {"networkname": settings.get("tcp_netname") or "",
+            "passphrase": settings.get("tcp_passphrase") or "",
+            "ifac_size": settings.get("tcp_ifac_size") or 16}
+
+
+def tcp_toggle(enabled, host=None, port=None, ifac=None):
     global _tcp_iface, _tcp_task
     import uasyncio as asyncio
     from urns.transport import Transport
     if enabled:
         TCP_CONFIG["target_host"] = host
         TCP_CONFIG["target_port"] = port
+        _ifac_overlay(TCP_CONFIG, ifac)
         # Cancel stale TCP poll_loop task
         if _tcp_task is not None:
             try:
@@ -1085,6 +1139,7 @@ def tcp_toggle(enabled, host=None, port=None):
             _tcp_task = None
         from urns.interfaces.tcp import TCPClientInterface
         iface = TCPClientInterface(TCP_CONFIG)
+        iface.setup_ifac(TCP_CONFIG)   # before any packet moves: poll_loop starts below
         if iface.online:
             # Stop LoRa — only one interface at a time
             _stop_lora()
@@ -1100,9 +1155,16 @@ def tcp_toggle(enabled, host=None, port=None):
             settings["tcp_enabled"] = True
             settings["tcp_host"] = host
             settings["tcp_port"] = port
+            if ifac is not None:
+                settings["tcp_netname"] = ifac.get("networkname") or ""
+                settings["tcp_passphrase"] = ifac.get("passphrase") or ""
+                settings["tcp_ifac_size"] = ifac.get("ifac_size") or 16
+                gui.set_tcp_ifac(settings["tcp_netname"], settings["tcp_passphrase"],
+                                 settings["tcp_ifac_size"])
             _save_settings(settings)
             if DEBUG >= 1:
-                print("[TCP] Interface started ->", host + ":" + str(port))
+                print("[TCP] Interface started ->", host + ":" + str(port),
+                      "IFAC" if iface.ifac_signing_key else "plain")
             asyncio.create_task(_ntp_sync())
             return True
         if DEBUG >= 1:
@@ -1162,21 +1224,22 @@ async def _ntp_sync():
         await asyncio.sleep(10)
 
 
-def tcp_connect_async(host, port):
+def tcp_connect_async(host, port, ifac=None):
     """GUI callback: connect TCP without blocking on the Enter keypress. The
     UI shows 'Connecting...' first; gui.set_tcp_result() reports the outcome.
     (The interface init itself is synchronous, but yielding first lets the
-    'Connecting...' row paint before the brief socket-setup pause.)"""
+    'Connecting...' row paint before the brief socket-setup pause.)
+    ifac: the form's {"networkname", "passphrase", "ifac_size"} or None."""
     import uasyncio as asyncio
-    asyncio.create_task(_tcp_connect_task(host, port))
+    asyncio.create_task(_tcp_connect_task(host, port, ifac))
 
 
-async def _tcp_connect_task(host, port):
+async def _tcp_connect_task(host, port, ifac):
     import uasyncio as asyncio
     await asyncio.sleep_ms(50)  # paint "Connecting..." before socket setup
     ok = False
     try:
-        ok = tcp_toggle(True, host, port)
+        ok = tcp_toggle(True, host, port, ifac)
     except Exception as e:
         if DEBUG >= 1:
             print("[TCP] async connect error:", e)
@@ -1955,6 +2018,8 @@ async def _auto_start_tcp():
     port = settings.get("tcp_port")
     if settings.get("wifi_enabled") == True and host and port:
         gui._tcp_target = host + ":" + str(port)
+    ifac = _ifac_from_settings(settings)
+    gui.set_tcp_ifac(ifac["networkname"], ifac["passphrase"], ifac["ifac_size"])
     gc.collect()
 
 
@@ -1978,7 +2043,7 @@ async def _start_saved_tcp():
         for attempt in range(6):
             if not gui._wifi_connected or gui._tcp_enabled or _tcp_iface is not None:
                 break
-            if tcp_toggle(True, host, port):
+            if tcp_toggle(True, host, port, _ifac_from_settings(settings)):
                 gui._tcp_enabled = True
                 break
             if DEBUG >= 1:
