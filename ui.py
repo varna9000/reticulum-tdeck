@@ -90,6 +90,19 @@ _TCP_CONNECT = 4
 _IFAC_SIZES = (8, 16)
 _CODE_LEGEND = "Access code (optional)"
 _RAIL_X = 10         # the group bracket's rail, right of the selection marker (x 4-6)
+_SPACE = ("", "space", None, True)   # air inside the group (see _draw_form)
+
+
+def _grouped_after(rows, i, spaces_count=True):
+    """Is row i followed by more of its group? A "space" row counts only
+    where it has height (spaces_count), else it is looked through."""
+    j = i + 1
+    while j < len(rows):
+        r = rows[j]
+        if r[1] != "space" or spaces_count:
+            return len(r) > 3 and r[3]
+        j += 1
+    return False
 _LORA_BW_CHOICES = ("7.8", "10.4", "15.6", "20.8", "31.25", "41.7", "62.5",
                     "125", "250", "500")
 _LORA_SF_MIN = 7
@@ -871,6 +884,10 @@ class UI:
         self._lora_edit = None
         self._lora_field = 0
         self._lora_applying = ""   # "", "applied", or "failed" — transient status
+        # The form rows on screen as (y, field), recorded by _draw_form for
+        # the touch screen: the forms place their rows at an explicit y, with
+        # gaps, so a tap cannot find its row by dividing y by CHAR_H.
+        self._form_hits = ()
 
         # Message ids. Every cache and callback below refers to a message by
         # id, never by list position: trimming history at MAX_HISTORY shifts
@@ -4436,29 +4453,37 @@ class UI:
         """The bracketed access-code group: legend, Net, Pass (and, where
         e has one, the IFAC size). Fields number from `first`. Blank values
         read "none" in the dim colour, so an optional field looks optional."""
-        rows = [(_CODE_LEGEND, "legend")]
+        rows = [(_CODE_LEGEND, "legend"), _SPACE]
         on = bool(e.get("networkname") or e.get("passphrase"))
         for i, (label, key) in enumerate((("Net    ", "networkname"), ("Pass   ", "passphrase"))):
             v = e.get(key) or ""
+            if i:
+                rows.append(_SPACE)
             rows.append((label + (v or "none"), "text" if v else "dim", first + i, True))
         if "ifac_size" in e:
+            rows.append(_SPACE)
             rows.append(("IFAC   " + (str(e["ifac_size"] * 8) + " bit" if on else "off"),
                          "text" if on else "dim", first + 2, True))
+        rows.append(_SPACE)           # the rows sit centred between legend and foot
         return rows
 
     def _draw_form(self, rows, sel):
         """Rows: (text, kind[, field[, in_group]]), kind one of gap, blank,
-        legend, text, dim, action, fail; `field` is the row's index for the
-        cursor, `in_group` puts it inside the bracket. Rows sit at an explicit
-        y, so a "gap" can be half a row on the LCD, where the LoRa editor has
-        no spare rows; "blank" is a full one. Gaps and the tail of the body
-        are painted on the first draw after an invalidation, so the page
-        before cannot show through; rows keep their own cache."""
+        space, legend, text, dim, action, fail; `field` is the row's index
+        for the cursor, `in_group` puts it inside the bracket. Rows sit at an
+        explicit y, so a "gap" can be half a row on the LCD, where the LoRa
+        editor has no spare rows; "blank" is a full one; "space" is the air
+        between a group's rows, half a row where there is room (the Pro) and
+        nothing on the LCD, with the rail running through it. Gaps and the
+        tail of the body are painted on the first draw after an
+        invalidation, so the page before cannot show through; rows keep
+        their own cache."""
         first = self._cache[2] == ''
         y = BODY_Y + CHAR_H
         bottom = BODY_Y + BODY_ROWS * CHAR_H
         idx = 2
         n = len(rows)
+        hits = []
         for i in range(n):
             r = rows[i]
             kind = r[1]
@@ -4468,9 +4493,21 @@ class UI:
                     self.tft.fill_rect(0, y, SCREEN_W, h, self.BG_DARK)
                 y += h
                 continue
+            if kind == "space":
+                if BODY_ROWS >= 14:
+                    h = CHAR_H // 2
+                    if first:
+                        self.tft.fill_rect(0, y, SCREEN_W, h, self.BG_DARK)
+                        self.tft.fill_rect(_RAIL_X, y, 2, h, self.DIM_CYAN)
+                        if not _grouped_after(rows, i):
+                            self.tft.fill_rect(_RAIL_X, y + h - 2, 12, 2, self.DIM_CYAN)   # the foot
+                    y += h
+                continue
             text = r[0]
             field = r[2] if len(r) > 2 else None
             grouped = len(r) > 3 and r[3]
+            if field is not None:
+                hits.append((y, field))
             if kind == "legend":
                 self._draw_legend(idx, y, text)
             else:
@@ -4496,13 +4533,15 @@ class UI:
                         color = self.NEON_CYAN
                     drawn = self._draw_row_cached(idx, line, y, color)
                 if grouped and drawn:
-                    nxt = rows[i + 1] if i + 1 < n else None
-                    last = not (nxt is not None and len(nxt) > 3 and nxt[3])
+                    # The foot goes under this row where the air after it is
+                    # nothing (the LCD); where it is half a row, that draws it.
+                    last = not _grouped_after(rows, i, BODY_ROWS >= 14)
                     self._draw_rail(y, last, selected)
             idx += 1
             y += CHAR_H
         if first and y < bottom:
             self.tft.fill_rect(0, y, SCREEN_W, bottom - y, self.BG_DARK)
+        self._form_hits = tuple(hits)
 
     def _draw_legend(self, idx, y, text):
         """A group's caption row: a stub from the rail, the text in the dim
@@ -4674,6 +4713,7 @@ class UI:
             self._draw_row_cached(5, "Connecting...".center(COLS),
                                   BODY_Y + 4 * CHAR_H, self.NEON_GREEN)
             self.tft.text(self.font, _pad(""), 0, INPUT_Y, self.DIM_CYAN, self.BG_DARK)
+            self._form_hits = ()      # no rows to tap while the connect runs
             return
         e = self._tcp_edit
         if e is None:                 # the page set directly, not via the row

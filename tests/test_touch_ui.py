@@ -953,7 +953,7 @@ def test_tcp_form_drag_and_swipe():
     adj = []
     g._settings_adjust = lambda d: adj.append(d)
     check("TCP form: a swipe adjusts the field", touch_ui.handle(g, (SWIPE, 100, 100, 1, 200000), 0) is True and adj == [1], repr(adj))
-    check("TCP form: a tap in the body lands nowhere", touch_ui.handle(g, (TAP, 100, 120, 0, 200000), 0) is False)
+    check("TCP form: a tap on an empty row lands nowhere", tap(g, 100, frow(0)) is False)
     k0 = touch_ui.layout_key(g)
     g._tcp_field = 4
     check("TCP form: moving the cursor changes the layout key", touch_ui.layout_key(g) != k0)
@@ -962,6 +962,161 @@ def test_tcp_form_drag_and_swipe():
     k1 = touch_ui.layout_key(g)
     g._text_entry = ("Passphrase", g._tcp_edit, "passphrase", ui._SET_TCP_HOST, False)
     check("text page: a different field changes the layout key", touch_ui.layout_key(g) != k1)
+
+
+def frow(i):
+    """y inside form row i: the forms put their rows at explicit y, a full
+    row per gap on the Pro (BODY_ROWS >= 14)."""
+    return ROW0 + i * ui.CHAR_H + ui.CHAR_H // 2
+
+
+def test_tcp_form_taps():
+    print("review: the TCP form takes taps (Pro)")
+    # TCP rows: blank, Host, blank, legend, Net, Pass, IFAC, blank, Connect.
+    g = mkui(ui.STATE_SETTINGS)
+    g._settings_page = ui._SET_TCP_HOST
+    g._tcp_edit = g._tcp_seed()
+    g._tcp_field = 0
+    g.draw()
+    drawn(g)
+    hy = lambda f: dict((fl, y) for y, fl in g._form_hits)[f] + ui.CHAR_H // 2
+    check("a tap on Pass is accepted", tap(g, 100, hy(2)) is True)
+    check("it selects the row", g._tcp_field == 2, str(g._tcp_field))
+    settle(g)
+    check("and only selects: the first tap moves the bar",
+          g._settings_page == ui._SET_TCP_HOST and g._text_entry is None, repr(g._settings_page))
+    g.draw()
+    drawn(g)
+    check("a tap on the selected row is accepted", tap(g, 100, hy(2)) is True)
+    settle(g)
+    check("and opens its text page",
+          g._settings_page == ui._SET_TEXT and g._text_entry[2] == "passphrase",
+          "%r %r" % (g._settings_page, g._text_entry))
+    g.handle_key(b"\x1b")
+    g.draw()
+    drawn(g)
+    size = g._tcp_edit["ifac_size"]
+    check("a tap on IFAC selects it", tap(g, 100, hy(3)) is True and g._tcp_field == 3)
+    settle(g)
+    check("without stepping it", g._tcp_edit["ifac_size"] == size, repr(g._tcp_edit))
+    g.draw()
+    drawn(g)
+    check("the second tap steps it", tap(g, 100, hy(3)) is True)
+    settle(g)
+    check("...the size changed", g._tcp_edit["ifac_size"] != size and g._settings_page == ui._SET_TCP_HOST,
+          repr(g._tcp_edit))
+    g.draw()
+    drawn(g)
+    check("the legend row is not a target", tap(g, 100, frow(3)) is False and g._tcp_field == 3)
+    check("a blank row is not a target", tap(g, 100, hy(3) + ui.CHAR_H) is False)
+    got = []
+    g.on_tcp_connect = lambda h, p, i: got.append((h, p, i))
+    g._tcp_edit["host"] = "rns.example.org:4242"
+    g.draw()
+    drawn(g)
+    check("a tap on Connect selects it", tap(g, 100, hy(4)) is True and g._tcp_field == 4)
+    settle(g)
+    check("the first tap does not connect", got == [], repr(got))
+    g.draw()
+    drawn(g)
+    check("the second tap is accepted", tap(g, 100, hy(4)) is True)
+    settle(g)
+    check("and connects", len(got) == 1 and g._tcp_connecting, repr(got))
+    check("while connecting a tap lands nowhere", tap(g, 100, hy(4)) is False)
+
+
+def test_lora_editor_taps():
+    print("review: the LoRa editor takes taps (Pro)")
+    # LoRa rows: gap, Freq, BW, SF, CR, TX, gap, legend, Net, Pass, gap, Apply.
+    g = mkui(ui.STATE_SETTINGS)
+    g.set_lora_config({"freq_khz": 868800, "bw": 125, "sf": 8, "coding_rate": 5, "tx_power": 22})
+    g._settings_idx = 10
+    g.handle_key(b"\r")                        # the LoRa cfg row opens the editor
+    g.draw()
+    drawn(g)
+    sf = g._lora_edit["sf"]
+    check("a tap on SF is accepted", tap(g, 100, frow(3)) is True)
+    check("it selects the row", g._lora_field == 2, str(g._lora_field))
+    settle(g)
+    check("without stepping it", g._lora_edit["sf"] == sf, repr(g._lora_edit))
+    g.draw()
+    drawn(g)
+    check("a second tap on SF is accepted", tap(g, 100, frow(3)) is True)
+    settle(g)
+    check("and steps it", g._lora_edit["sf"] != sf, repr(g._lora_edit))
+    g.draw()
+    drawn(g)
+    hy = lambda f: dict((fl, y) for y, fl in g._form_hits)[f] + ui.CHAR_H // 2
+    check("a tap on Net selects it", tap(g, 100, hy(5)) is True and g._lora_field == 5)
+    settle(g)
+    check("the first tap opens nothing", g._settings_page == ui._SET_LORA, repr(g._settings_page))
+    g.draw()
+    drawn(g)
+    check("the second tap is accepted", tap(g, 100, hy(5)) is True)
+    settle(g)
+    check("and opens its text page", g._settings_page == ui._SET_TEXT and g._text_entry[2] == "networkname",
+          "%r %r" % (g._settings_page, g._text_entry))
+    g.handle_key(b"\x1b")
+    g.draw()
+    drawn(g)
+    check("a gap is not a target", tap(g, 100, frow(6)) is False and g._lora_field == 5)
+    applied = []
+    g.on_lora_config = lambda p: applied.append(p) or True
+    check("a tap on Apply selects it", tap(g, 100, hy(ui._LORA_APPLY)) is True and g._lora_field == ui._LORA_APPLY)
+    settle(g)
+    check("the first tap does not apply", applied == [], repr(applied))
+    g.draw()
+    drawn(g)
+    check("the second tap is accepted", tap(g, 100, hy(ui._LORA_APPLY)) is True)
+    settle(g)
+    check("and applies", len(applied) == 1, repr(applied))
+
+
+class _RectTFT(FakeTFT):
+    """Records fill_rect so the rail can be checked."""
+    def __init__(self):
+        self.rects = []
+
+    def fill_rect(self, x, y, w, h, c):
+        self.rects.append((x, y, w, h, c))
+
+
+def test_form_group_has_air_on_the_pro():
+    print("review: air inside the access-code group (Pro)")
+    # The Pro has rows to spare: half a row between legend and Net, Net and
+    # Pass, Pass and IFAC. The rail runs through the air, and the foot
+    # still sits under the last row.
+    g = mkui(ui.STATE_SETTINGS)
+    g.tft = _RectTFT()
+    g._settings_page = ui._SET_TCP_HOST
+    g._tcp_edit = g._tcp_seed()
+    g._tcp_field = 0
+    g.draw()
+    ys = dict((f, y) for y, f in g._form_hits)
+    half = ui.CHAR_H // 2
+    check("Net..Pass..IFAC are a row and a half apart",
+          ys[2] - ys[1] == ui.CHAR_H + half and ys[3] - ys[2] == ui.CHAR_H + half, repr(ys))
+    legend_y = ys[1] - half - ui.CHAR_H
+    rail = [(y, h) for x, y, w, h, c in g.tft.rects if x == ui._RAIL_X and w == 2]
+    covered = set()
+    for y, h in rail:
+        covered.update(range(y, y + h))
+    want = range(legend_y + ui.CHAR_H // 2, ys[3] + ui.CHAR_H)
+    check("the rail is unbroken from the legend to the last row", all(y in covered for y in want),
+          repr(sorted(set(want) - covered)[:5]))
+    foot = [(x, y) for x, y, w, h, c in g.tft.rects if x == ui._RAIL_X and w > 2 and h == 2]
+    check("one foot, half a row under IFAC: the rows sit centred in the bracket",
+          foot == [(ui._RAIL_X, ys[3] + ui.CHAR_H + half - 2)], repr(foot))
+    want = range(legend_y + ui.CHAR_H // 2, ys[3] + ui.CHAR_H + half)
+    check("the rail reaches the foot", all(y in covered for y in want), repr(sorted(set(want) - covered)[:5]))
+    g = mkui(ui.STATE_SETTINGS)
+    g.set_lora_config({"freq_khz": 868800, "bw": 125, "sf": 8, "coding_rate": 5, "tx_power": 22})
+    g._settings_idx = 10
+    g.handle_key(b"\r")
+    g.draw()
+    ys = dict((f, y) for y, f in g._form_hits)
+    check("LoRa editor: Net..Pass a row and a half apart", ys[6] - ys[5] == ui.CHAR_H + half, repr(ys))
+    check("LoRa editor: Apply still on the page", ys[ui._LORA_APPLY] + ui.CHAR_H <= ui.BODY_Y + ui.BODY_ROWS * ui.CHAR_H, repr(ys))
 
 
 def test_lora_and_radio_pages_drag():
@@ -1571,6 +1726,9 @@ if __name__ == "__main__":
     test_click_hints_click_and_shell_quit_is_inert()
     test_lora_and_radio_pages_drag()
     test_tcp_form_drag_and_swipe()
+    test_tcp_form_taps()
+    test_lora_editor_taps()
+    test_form_group_has_air_on_the_pro()
     test_find_back_keeps_a_typed_query()
     test_untested_lists_follow_their_scroll()
     test_controller_guard_cannot_wedge()

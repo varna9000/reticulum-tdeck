@@ -384,6 +384,22 @@ def test_lora_page_erases_its_gaps_on_the_lcd():
         assert y in covered, y
 
 
+def test_lcd_group_rows_stay_one_row_apart():
+    # The LCD's LoRa page has no room for air inside the group: Net, Pass
+    # (and IFAC on the TCP form) sit one row apart there.
+    g = _open_lora()
+    g.draw()
+    ys = dict((f, y) for y, f in g._form_hits)
+    assert ys[6] - ys[5] == ui.CHAR_H, (ys[5], ys[6])
+    g = _open_tcp()
+    g.tft.rects = []
+    g.draw()
+    ys = dict((f, y) for y, f in g._form_hits)
+    assert ys[2] - ys[1] == ui.CHAR_H and ys[3] - ys[2] == ui.CHAR_H, ys
+    foot = [(x, y) for x, y, w, h, c in g.tft.rects if x == ui._RAIL_X and w > 2 and h == 2]
+    assert foot == [(ui._RAIL_X, ys[3] + ui.CHAR_H - 2)], foot    # under IFAC, no air below
+
+
 def _run():
     import traceback
     tests = [(n, f) for n, f in sorted(globals().items())

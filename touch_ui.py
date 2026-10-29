@@ -264,6 +264,28 @@ def _tap_row(ui, rows, y):
     return True
 
 
+def _tap_form(ui, y):
+    """The LoRa editor and the TCP form: rows at an explicit y, recorded by
+    ui._draw_form. A tap on another row moves the bar there; a tap on the
+    selected row is Enter: a text row opens its entry page, a value row
+    steps, the action row applies / connects. Two taps on every row alike,
+    so a value is never stepped and a link never opened by the tap that
+    was aiming the bar."""
+    page = ui._settings_page
+    if page == _u._SET_TCP_HOST and ui._tcp_connecting:
+        return False                  # "Connecting...": the rows are gone, keys are ignored too
+    attr = "_lora_field" if page == _u._SET_LORA else "_tcp_field"
+    for ry, field in ui._form_hits:
+        if ry <= y < ry + _u.CHAR_H:
+            if getattr(ui, attr) == field:
+                ui.nav_event("click")
+            else:
+                setattr(ui, attr, field)
+                ui.dirty = True
+            return True
+    return False
+
+
 def _footer_live(ui):
     """False while a text field owns the footer line. A hint painted there
     earlier must not fire under the text that replaced it: on those lines
@@ -521,6 +543,8 @@ def _tap(ui, x, y):
         return _tap_header(ui, x)
     if st == _u.STATE_CHAT and _u._pro is not None:
         return _tap_pro_chat(ui, y)
+    if st == _u.STATE_SETTINGS and ui._settings_page in (_u._SET_LORA, _u._SET_TCP_HOST):
+        return _tap_form(ui, y)
     rows = _rows(ui)
     if rows is not None and rows[0] <= x < rows[1]:
         if _tap_row(ui, rows, y):
