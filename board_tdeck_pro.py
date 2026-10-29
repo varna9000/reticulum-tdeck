@@ -247,10 +247,13 @@ else:
 
 
 # --- touch -------------------------------------------------------------------
-# The CST328 hands the gesture layer DOWN/MOVE/UP events; it is held in reset
-# whenever the screen is dark (see _service_touch below), so light sleep
-# finds it already off and the keyboard stays the only input that wakes the
-# deck. Everything about the chip itself is in lib/cst328.py.
+# The touch driver hands the gesture layer DOWN/MOVE/UP events; it is held in
+# reset whenever the screen is dark (see _service_touch below), so light
+# sleep finds it already off and the keyboard stays the only input that
+# wakes the deck. Everything about the chip itself is in lib/cst328.py,
+# including which chip it is: the CST328, or the CST3530 that later V1.1
+# boards carry at the same address (issue #19). The driver tells them apart
+# each time the chip leaves reset and reports the answer in touch.chip.
 #
 # No I2C scan decides whether the chip is there. Its reset pad is still
 # driven low after a soft reset (the last sleep() left it so), and on a V1.0
@@ -432,10 +435,20 @@ def _service_touch():
             _touch_handler(ev)
     for ev in touch.service(_gui._screen_on):
         _touch_handler(ev)
-    if touch.gave_up and not _touch_reported:
-        _touch_reported = True
-        print("[board] CST328 did not answer at 0x%02x; touch is off until the screen next wakes"
-              % config.TOUCH_ADDR)
+    if not _touch_reported:
+        if touch.ready:
+            # Once, so a log from a board in the field says which chip it
+            # found and, for the CST3530, what the panel claims to be.
+            _touch_reported = True
+            if touch.info is not None:
+                print("[board] touch: %s at 0x%02x, panel %dx%d, firmware 0x%08x"
+                      % (touch.chip, config.TOUCH_ADDR, touch.info[0], touch.info[1], touch.info[2]))
+            else:
+                print("[board] touch: %s at 0x%02x" % (touch.chip, config.TOUCH_ADDR))
+        elif touch.gave_up:
+            _touch_reported = True
+            print("[board] touch controller did not answer at 0x%02x; touch is off until the screen next wakes"
+                  % config.TOUCH_ADDR)
 
 
 def _get_key():

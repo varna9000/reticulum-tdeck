@@ -1,11 +1,20 @@
-# CST328 capacitive touch controller, as fitted to the LilyGO T-Deck Pro.
+# Capacitive touch for the LilyGO T-Deck Pro: the CST328, and the CST3530
+# that later V1.1 batches carry at the same address and pins (issue #19).
 #
 # Hands the board layer a stream of single-finger events -- DOWN, MOVE, UP
 # with framebuffer coordinates -- and nothing else. Gestures and hit testing
 # live above this, in the board module; the UI never sees this class.
 #
-# Everything here was checked on a V1.1 board with
-# tools/tdeck_pro_touch_probe.py (2026-10-10):
+# The two chips share nothing but the address. The CST328 is a register
+# chip (16-bit register addresses); the CST3530 speaks Hynitron's "CST66xx"
+# protocol, where every transaction is a 4-byte command word followed by a
+# plain read. Which one is fitted is decided every time the chip comes out
+# of reset, by the info probe below, and only the read and its decoding
+# differ after that: the INT latch, the reset-as-sleep model and the event
+# contract are the same for both.
+#
+# CST328, checked on a V1.1 board with tools/tdeck_pro_touch_probe.py
+# (2026-10-10):
 #
 #   - coordinates arrive in the panel's own portrait orientation, 0..239 by
 #     0..319, matching the framebuffer with no swap or flip; jitter is 1 px;
@@ -19,9 +28,37 @@
 #     UP, so event times are when things happened, not when they were read;
 #   - the chip's own sleep command takes it off the bus and silences INT, so
 #     "off" is simply the reset line held low.
+#   - the register map is the Waveshare / SensorLib one, except that the chip
+#     type 0xCACA sits at 0xD1FE on this board rather than 0xD204.
 #
-# The register map is the Waveshare / SensorLib one, except that the chip
-# type 0xCACA sits at 0xD1FE on this board rather than 0xD204.
+# CST3530, from LilyGO's touch_hyn_core example, Hynitron's hyn_driver,
+# SensorLib's TouchDrvCST3530 and Meshtastic, which agree byte for byte
+# (NOT yet checked on a CST3530 board; see tools/tdeck_pro_touch_probe.py):
+#
+#   - D0 03 00 00 then a plain read gives the info block: 0xCA 0xCA at
+#     [2..3] is the family mark, resolution at [28..31], firmware at [32..35].
+#     LilyGO's own driver probes for this chip FIRST on every board, and so
+#     does this one: a CST3530 ACKs CST328-style register reads, so the other
+#     order would take it for a CST328 and misparse everything -- which is
+#     exactly what the issue reports;
+#   - the report is D0 07 00 00 then 9 bytes: checksum (LE, 0x55 + the
+#     record bytes), type 0xFF, key count | finger count nibbles, then one
+#     5-byte record per key then finger; records past the first are fetched
+#     with a bare read. Every read ends with D0 00 02 AB. The record's event
+#     nibble is 1 press, 2 hold, 0 lifted: the lifted report has count 1 and
+#     event 0, the mirror of the CST328's status 0xB;
+#   - the chip drops its I2C after a while idle ("automatic sleep": LilyGO's
+#     reason for saying poll it on INT only). The first write only wakes it
+#     and may fail, so a failed read is followed by the vendor's wake
+#     preamble (D0 00 04 00 twice) and the mode words, then read again. A
+#     chip that still does not answer is put back in reset and found again
+#     on the next pass;
+#   - its sleep command is only left via the reset pin, so "off" is the
+#     reset line held low here too.
+#
+# Both chips boot for the first tens of ms after reset (the CST328's
+# bootloader even listens on 0x1A then), and every vendor sequence waits
+# 50 ms before the first command. Nothing goes on the bus before that.
 
 import time
 from micropython import const
@@ -29,14 +66,32 @@ from machine import Pin
 
 CST328_ADDR = const(0x1A)
 
+CHIP_CST328 = "cst328"
+CHIP_CST3530 = "cst3530"
+
+# CST328
 _REG_POINTS = const(0xD000)      # 27 bytes: point 0, count, point 1.., 5 bytes each
 _REG_COUNT = const(0xD005)       # low nibble = fingers
 _CLEAR = b"\xD0\x00\xAB"         # 0xD000 <- 0xAB: acknowledge the report
 _POINTS_LEN = const(27)
-
 _ST_CONTACT = const(6)
+
+# CST3530
+_PROBE = b"\xD0\x03\x00\x00"     # info block follows on a plain read
+_INFO_LEN = const(36)            # through the firmware version; the vendor reads 50
+_PREAMBLE = b"\xD0\x00\x04\x00"  # "disable LP scan": wakes a dozing chip; sent twice
+_MODE_WORDS = (b"\xD0\x00\x00\x00",   # normal mode (not factory)
+               b"\xD0\x00\x0C\x00",   # coordinate reports (not gestures)
+               b"\xD0\x00\x01\x00")   # normal reports (not debug)
+_REPORT = b"\xD0\x07\x00\x00"
+_REPORT_LEN = const(9)           # header + first record
+_END = b"\xD0\x00\x02\xAB"       # end of report: acknowledge, release INT
+_REC_LEN = const(5)
+_TYPE_POS = const(0xFF)
+
 _JITTER_PX = const(1)            # moves of this much or less are dropped
 _RESET_LOW_MS = const(20)
+_SETTLE_MS = const(50)           # after the pulse, before the first command
 _WAKE_RETRY_MS = const(50)       # between "does it answer yet" reads after a pulse
 _WAKE_TRIES = const(40)          # ~2 s, then give up until the screen next wakes
 
@@ -66,8 +121,11 @@ class CST328:
         self.asleep = False          # reset held low
         self.ready = False           # answered on I2C since the last wake()
         self.gave_up = False         # never answered after a pulse; retried at the next wake
+        self.chip = None             # CHIP_CST328 / CHIP_CST3530 once it has answered
+        self.info = None             # CST3530: (res_x, res_y, firmware) from the info block
         self._tries = 0
         self._tried_at = 0
+        self._pulsed_at = None       # tick the reset line last went high
         self._int.irq(trigger=Pin.IRQ_FALLING, handler=self._on_int)
 
     def _on_int(self, pin):
@@ -135,19 +193,25 @@ class CST328:
     def wake(self):
         """Release reset (once) and report whether the chip answers yet.
 
-        The chip needs ~200 ms after the pulse. This never waits for it:
-        the first call pulses, every call checks, and the caller keeps
-        calling on its own cadence until True. Returns True once ready."""
+        The chip needs ~200 ms after the pulse and must not be spoken to in
+        its first 50. This never waits for it: the first call pulses, every
+        call after the settle time probes, and the caller keeps calling on
+        its own cadence until True. The probe is also the detection: the
+        first answer says which chip this is. Returns True once ready."""
         if self.asleep:
             self._rst.value(0)
             time.sleep_ms(_RESET_LOW_MS)
             self._rst.value(1)
+            self._pulsed_at = time.ticks_ms()
             self.asleep = False
             self._latched = 0
         if self.ready:
             return True
+        if self._pulsed_at is not None and \
+                time.ticks_diff(time.ticks_ms(), self._pulsed_at) < _SETTLE_MS:
+            return False
         try:
-            self._i2c.readfrom_mem(self._addr, _REG_COUNT, 1, addrsize=16)
+            self._probe()
         except OSError:
             return False
         self.ready = True
@@ -155,14 +219,87 @@ class CST328:
         self._down = False
         return True
 
-    def _read(self):
-        """(count, report) or raises OSError when the chip is not answering."""
-        n = self._i2c.readfrom_mem(self._addr, _REG_COUNT, 1, addrsize=16)[0] & 0x0F
-        buf = None
+    def _probe(self):
+        """Ask for the CST3530 info block; what comes back says which chip
+        answered. Raises OSError while nothing does.
+
+        On a CST328 the probe is one harmless register write and a plain
+        read that never carries the 0xCA 0xCA mark, after which the count
+        register is read as before."""
+        i2c = self._i2c
+        i2c.writeto(self._addr, _PROBE)
+        info = i2c.readfrom(self._addr, _INFO_LEN)
+        if info[2] == 0xCA and info[3] == 0xCA:
+            self._enter_normal()
+            self.info = (info[28] | (info[29] << 8),
+                         info[30] | (info[31] << 8),
+                         info[32] | (info[33] << 8) | (info[34] << 16) | (info[35] << 24))
+            self.chip = CHIP_CST3530
+            return
+        i2c.readfrom_mem(self._addr, _REG_COUNT, 1, addrsize=16)
+        self.info = None
+        self.chip = CHIP_CST328
+
+    def _enter_normal(self):
+        """The vendor's CST3530 wake-and-configure sequence. The first write
+        to a dozing chip only wakes it and may be refused; the rest must
+        get through, so their OSError propagates."""
+        i2c = self._i2c
+        try:
+            i2c.writeto(self._addr, _PREAMBLE)
+        except OSError:
+            pass
+        time.sleep_ms(1)
+        i2c.writeto(self._addr, _PREAMBLE)
+        for w in _MODE_WORDS:
+            i2c.writeto(self._addr, w)
+
+    def _read_328(self):
+        """(count, first record) or raises OSError when the chip is not
+        answering. The record is None when the count is 0."""
+        i2c = self._i2c
+        n = i2c.readfrom_mem(self._addr, _REG_COUNT, 1, addrsize=16)[0] & 0x0F
+        rec = None
         if n:
-            buf = self._i2c.readfrom_mem(self._addr, _REG_POINTS, _POINTS_LEN, addrsize=16)
-        self._i2c.writeto(self._addr, _CLEAR)
-        return n, buf
+            rec = i2c.readfrom_mem(self._addr, _REG_POINTS, _POINTS_LEN, addrsize=16)
+        i2c.writeto(self._addr, _CLEAR)
+        return n, rec
+
+    def _read_3530(self):
+        """(fingers, first finger record), (0, None) for no finger, or
+        (-1, None) for a frame that failed its checks. The report is
+        acknowledged whatever it said; an unacknowledged one holds INT."""
+        i2c = self._i2c
+        i2c.writeto(self._addr, _REPORT)
+        buf = i2c.readfrom(self._addr, _REPORT_LEN)
+        keys = buf[3] >> 4
+        fingers = buf[3] & 0x0F
+        n = keys + fingers
+        if n > 1:
+            buf += i2c.readfrom(self._addr, (n - 1) * _REC_LEN)
+        i2c.writeto(self._addr, _END)
+        if buf[2] != _TYPE_POS:
+            return -1, None
+        cs = 0x55
+        for i in range(4, 4 + n * _REC_LEN):
+            cs += buf[i]
+        if (cs & 0xFFFF) != (buf[0] | (buf[1] << 8)):
+            return -1, None
+        if not fingers:
+            return 0, None
+        o = 4 + keys * _REC_LEN          # key records come first
+        return fingers, buf[o:o + _REC_LEN]
+
+    def _read(self):
+        """One report, with the CST3530's doze recovery: a refused read is
+        followed by the wake preamble and tried once more."""
+        if self.chip != CHIP_CST3530:
+            return self._read_328()
+        try:
+            return self._read_3530()
+        except OSError:
+            self._enter_normal()
+            return self._read_3530()
 
     def poll(self):
         """Events since the last call: [(kind, x, y, t_ms), ...].
@@ -172,33 +309,46 @@ class CST328:
         is cleared BEFORE the read: an edge that lands during the read sets
         it again and the next pass reads once more.
 
-        Status 6 is contact. Anything else (0xB after lift-off, 0 rarely) is
-        not, but the report still carries the last contact position, which
-        is how a tap shorter than one poll still gets a DOWN and an UP."""
+        In contact is CST328 status 6 or a CST3530 event nibble other than
+        0. Anything else (0xB after lift-off; event 0; 0 rarely) is not, but
+        the report still carries the last contact position, which is how a
+        tap shorter than one poll still gets a DOWN and an UP."""
         if not self.ready or not (self._latched or self._down):
             return []
         t_down = self._edge0         # only used when a stroke starts here,
         t_last = self._edge1         # which always means the latch was set
         self._latched = 0
         try:
-            n, buf = self._read()
+            n, rec = self._read()
         except OSError:
             # The chip stopped answering (the bus is shared and has no
             # lock). A stroke in progress is closed rather than abandoned:
-            # every DOWN gets its UP.
+            # every DOWN gets its UP. A CST3530 that refused even the wake
+            # preamble is dozing or wedged: back into reset, and the next
+            # service() pass pulses it and finds it again.
+            evs = []
             if self._down:
                 self._down = False
-                return [(UP, self._x, self._y, time.ticks_ms())]
+                evs.append((UP, self._x, self._y, time.ticks_ms()))
+            if self.chip == CHIP_CST3530:
+                self.sleep()
+            return evs
+        if n < 0:
             return []
         t = time.ticks_ms()
         contact = False
         have_point = False
         x = y = 0
-        if n and buf is not None:
+        if n and rec is not None:
             have_point = True
-            contact = (buf[0] & 0x0F) == _ST_CONTACT
-            x = (buf[1] << 4) | (buf[3] >> 4)
-            y = (buf[2] << 4) | (buf[3] & 0x0F)
+            if self.chip == CHIP_CST3530:
+                contact = (rec[4] >> 4) != 0
+                x = rec[0] | ((rec[3] & 0x0F) << 8)
+                y = rec[1] | ((rec[3] & 0xF0) << 4)
+            else:
+                contact = (rec[0] & 0x0F) == _ST_CONTACT
+                x = (rec[1] << 4) | (rec[3] >> 4)
+                y = (rec[2] << 4) | (rec[3] & 0x0F)
             if x > MAX_X:
                 x = MAX_X
             if y > MAX_Y:

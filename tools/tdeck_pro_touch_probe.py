@@ -1,6 +1,7 @@
-# T-Deck Pro touch panel probe (CST328 at I2C 0x1A). A bring-up aid, not a
-# driver: it answers the questions the driver design depends on, on hardware,
-# one phase per run so the person holding the deck knows what to do:
+# T-Deck Pro touch panel probe (CST328 or CST3530 at I2C 0x1A). A bring-up
+# aid, not a driver: it answers the questions the driver design depends on,
+# on hardware, one phase per run so the person holding the deck knows what
+# to do:
 #
 #   mpremote connect /dev/cu.usbmodem1101 exec "PHASE=1" run tools/tdeck_pro_touch_probe.py
 #
@@ -10,8 +11,17 @@
 #   PHASE 3  drag top to bottom along the left edge            -> Y axis direction/range
 #   PHASE 4  two fingers at once                               -> multi-touch layout
 #   PHASE 5  hands off                                         -> phantom reports
-#   PHASE 6  chip put to sleep (0xD105), then touch            -> does INT still fire
+#   PHASE 6  chip put to sleep by command, then touch          -> does INT still fire
 #   PHASE 7  reset held low, then touch                        -> does INT still fire
+#   PHASE 8  (CST3530) hands off for SECS, then one read        -> auto-sleep: does it
+#            still answer, and does the wake preamble bring it back
+#   PHASE 9  (CST3530) as 8, after "disable cycle sleep" (D0 00 07 AB)
+#
+# Which chip is fitted is decided at the top, the way lib/cst328.py does it:
+# the CST3530 info probe first (LilyGO's own order), else CST328. Issue #19:
+# later V1.1 boards carry the CST3530, which nobody here has yet. Someone
+# with one, please run phases 0, 1, 2, 3, 5, 8 (with SECS=5, 20, 60) and 9,
+# and paste the output into the issue.
 #
 # The keyboard backlight is the cue: it blinks the phase number, then stays
 # ON while the phase records. Touch while it is lit, stop when it goes out.
@@ -26,6 +36,18 @@
 #   0xD1F4  TX channels  0xD1F6 RX channels  0xD1F8 X res (le16)  0xD1FA Y res
 #   0xD1FE  chip type 0xCACA (the references say 0xD204; this board says 0xD1FE)
 #   0xD105  deep sleep: the chip stops answering I2C until the reset pin is pulsed
+#
+# CST3530 words (LilyGO touch_hyn_core / Hynitron hyn_driver / SensorLib):
+#   D0 03 00 00 + read 50   info block: [0..3] chip type LE (0xCACA220E), [27] keys,
+#                           [28..29] res x, [30..31] res y, [32..35] fw, [48] tx, [49] rx
+#   D0 00 04 00 (twice, 1 ms apart)  wake preamble; then D0 00 00 00, D0 00 0C 00,
+#                           D0 00 01 00 = normal mode, coordinate reports
+#   D0 07 00 00 + read 9    report: [0..1] checksum LE (0x55 + record bytes), [2] 0xFF,
+#                           [3] keys<<4 | fingers, then 5-byte records
+#                           x[7:0] y[7:0] z (y[11:8]<<4|x[11:8]) (event<<4|id); event 0 = lifted
+#   D0 00 02 AB             end of report, after EVERY read
+#   D0 00 22 AB             sleep; only the reset pin wakes it
+#   D0 00 07 AB             disable "cycle sleep" (datasheet; no driver uses it)
 
 import time
 from machine import Pin, I2C
@@ -60,6 +82,40 @@ def rd(reg, n):
     return i2c.readfrom_mem(TOUCH_ADDR, reg, n, addrsize=16)
 
 
+# CST3530: command words and plain reads
+PROBE = b"\xD0\x03\x00\x00"
+PREAMBLE = b"\xD0\x00\x04\x00"
+MODE_WORDS = (b"\xD0\x00\x00\x00", b"\xD0\x00\x0C\x00", b"\xD0\x00\x01\x00")
+REPORT = b"\xD0\x07\x00\x00"
+END = b"\xD0\x00\x02\xAB"
+SLEEP_3530 = b"\xD0\x00\x22\xAB"
+NO_CYCLE_SLEEP = b"\xD0\x00\x07\xAB"
+CHIP = "cst328"
+INFO = None
+_bad_frames = 0
+_wakes = 0
+
+
+def cmd(word):
+    i2c.writeto(TOUCH_ADDR, word)
+
+
+def rdraw(n):
+    return i2c.readfrom(TOUCH_ADDR, n)
+
+
+def normal_mode():
+    """The vendor's wake-and-configure sequence; the first word may be refused."""
+    try:
+        cmd(PREAMBLE)
+    except OSError:
+        pass
+    time.sleep_ms(1)
+    cmd(PREAMBLE)
+    for w in MODE_WORDS:
+        cmd(w)
+
+
 # --- bring-up: every phase starts from a known chip state -------------------
 addrs = i2c.scan()
 rev = "max" if XL9555_ADDR in addrs else ("1.1" if DRV2605_ADDR in addrs else "1.0")
@@ -75,6 +131,21 @@ rst.value(0)
 time.sleep_ms(20)
 rst.value(1)
 time.sleep_ms(200)
+
+# Which chip: the CST3530 info probe first, as LilyGO's driver does on every
+# board (a CST3530 ACKs CST328 register reads, so the other order lies).
+for _ in range(5):
+    try:
+        cmd(PROBE)
+        _info = rdraw(50)
+    except OSError:
+        time.sleep_ms(50)
+        continue
+    if _info[2] == 0xCA and _info[3] == 0xCA:
+        CHIP = "cst3530"
+        INFO = _info
+        normal_mode()
+    break
 
 _int_edges = 0
 
@@ -101,8 +172,35 @@ def cue(n):
     _bl.value(1)
 
 
+def read_points_3530():
+    """(fingers, [(id, event, x, y, pressure), ...]) and acknowledge the report."""
+    global _bad_frames
+    cmd(REPORT)
+    buf = rdraw(9)
+    keys = buf[3] >> 4
+    n = buf[3] & 0x0F
+    if keys + n > 1:
+        buf += rdraw((keys + n - 1) * 5)
+    cmd(END)
+    cs = 0x55
+    for i in range(4, 4 + (keys + n) * 5):
+        cs += buf[i]
+    if buf[2] != 0xFF or (cs & 0xFFFF) != (buf[0] | (buf[1] << 8)):
+        _bad_frames += 1
+    pts = []
+    for i in range(min(n, 5)):
+        o = 4 + (keys + i) * 5
+        x = buf[o] | ((buf[o + 3] & 0x0F) << 8)
+        y = buf[o + 1] | ((buf[o + 3] & 0xF0) << 4)
+        pts.append((buf[o + 4] & 0x0F, buf[o + 4] >> 4, x, y, buf[o + 2]))
+    return n, pts
+
+
 def read_points():
-    """(count, [(id, status, x, y, pressure), ...]) and clear the report."""
+    """(count, [(id, status, x, y, pressure), ...]) and clear the report.
+    On the CST3530 'status' is the event nibble: 1 press, 2 hold, 0 lifted."""
+    if CHIP == "cst3530":
+        return read_points_3530()
     n = rd(0xD005, 1)[0] & 0x0F
     pts = []
     if n:
@@ -138,6 +236,13 @@ def stream(secs, expect_reports=True):
             errs += 1
             if errs == 1:
                 print("  read error:", e)
+            if CHIP == "cst3530":
+                # A dozing chip refuses the first write; the preamble wakes it.
+                try:
+                    normal_mode()
+                    _wakes += 1
+                except Exception:
+                    pass
             time.sleep_ms(20)
             continue
         samples += 1
@@ -169,12 +274,56 @@ def stream(secs, expect_reports=True):
               % (minx, maxx, miny, maxy, first_x, first_y, last_x, last_y, statuses))
     print("     INT: %d falling edges (%.1f/s), level low on %d of %d polls (%d%%)"
           % (_int_edges, _int_edges * 1000 / el, low, samples, low * 100 // max(1, samples)))
+    if CHIP == "cst3530":
+        print("     CST3530: %d frames failed their checksum, %d preamble wakes after errors"
+              % (_bad_frames, _wakes))
 
 
-print("\n[phase %d] revision %s, touch reset GPIO %d, CST328 at 0x1a: %s, INT idle level %d"
-      % (PHASE, rev, rst_gpio, "YES" if TOUCH_ADDR in i2c.scan() else "NO", int_pin.value()))
+def doze_test(secs, label):
+    """Hands off for secs with nothing on the bus, then one read: does the
+    CST3530 still answer, and if not, does the wake preamble bring it back
+    without a reset?"""
+    print("  %s: waiting %d s with the bus idle (hands off)..." % (label, secs))
+    time.sleep_ms(secs * 1000)
+    try:
+        n, pts = read_points()
+        print("  after %d s idle the chip STILL answers (count=%d)" % (secs, n))
+        return
+    except Exception as e:
+        print("  after %d s idle the first read FAILED (%s): it dozed" % (secs, e))
+    try:
+        normal_mode()
+        n, pts = read_points()
+        print("  the wake preamble brought it back without a reset (count=%d)" % n)
+    except Exception as e:
+        print("  the preamble did NOT bring it back (%s); pulsing reset" % e)
+        rst.value(0)
+        time.sleep_ms(20)
+        rst.value(1)
+        time.sleep_ms(200)
+        try:
+            normal_mode()
+            n, pts = read_points()
+            print("  reset pulse: chip answers again, count=%d" % n)
+        except Exception as e:
+            print("  reset pulse: still no answer (%s)" % e)
 
-if PHASE == 0:
+
+print("\n[phase %d] revision %s, touch reset GPIO %d, 0x1a on the bus: %s, chip %s, INT idle level %d"
+      % (PHASE, rev, rst_gpio, "YES" if TOUCH_ADDR in i2c.scan() else "NO", CHIP, int_pin.value()))
+
+if PHASE == 0 and CHIP == "cst3530":
+    print("  info block:", hx(INFO))
+    print("  chip type 0x%08x (expect 0xcaca220e)   firmware 0x%08x   project 0x%08x" % (
+        INFO[0] | (INFO[1] << 8) | (INFO[2] << 16) | (INFO[3] << 24),
+        INFO[32] | (INFO[33] << 8) | (INFO[34] << 16) | (INFO[35] << 24),
+        INFO[36] | (INFO[37] << 8) | (INFO[38] << 16) | (INFO[39] << 24)))
+    print("  resolution %d x %d   keys %d   tx %d rx %d" % (
+        INFO[28] | (INFO[29] << 8), INFO[30] | (INFO[31] << 8), INFO[27], INFO[48], INFO[49]))
+    n, pts = read_points()
+    print("  normal mode read: count=%d (should be 0 with no finger), bad frames %d" % (n, _bad_frames))
+
+elif PHASE == 0:
     wr(0xD101)
     time.sleep_ms(20)
     d1f4 = rd(0xD1F4, 12)
@@ -194,21 +343,43 @@ elif PHASE in (1, 2, 3, 4, 5):
     stream(SECS)
 
 elif PHASE == 6:
-    wr(0xD105)
+    if CHIP == "cst3530":
+        normal_mode()
+        cmd(SLEEP_3530)
+        which = "D0 00 22 AB"
+    else:
+        wr(0xD105)
+        which = "0xD105"
     time.sleep_ms(50)
     try:
-        rd(0xD005, 1)
-        print("  after 0xD105 the chip STILL answers (sleep command did not take)")
+        read_points()
+        print("  after %s the chip STILL answers (sleep command did not take)" % which)
     except Exception as e:
-        print("  after 0xD105 the chip does not answer (%s): asleep" % e)
+        print("  after %s the chip does not answer (%s): asleep" % (which, e))
     cue(6)
     stream(SECS, expect_reports=False)
     rst.value(0)
     time.sleep_ms(20)
     rst.value(1)
     time.sleep_ms(200)
+    if CHIP == "cst3530":
+        normal_mode()
     n, pts = read_points()
     print("  reset pulse: chip answers again, count=%d" % n)
+
+elif PHASE == 8:
+    if CHIP != "cst3530":
+        print("  phase 8 is for the CST3530; this is a %s" % CHIP)
+    else:
+        doze_test(SECS, "auto-sleep")
+
+elif PHASE == 9:
+    if CHIP != "cst3530":
+        print("  phase 9 is for the CST3530; this is a %s" % CHIP)
+    else:
+        normal_mode()
+        cmd(NO_CYCLE_SLEEP)
+        doze_test(SECS, "auto-sleep with cycle sleep disabled")
 
 elif PHASE == 7:
     rst.value(0)

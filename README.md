@@ -179,7 +179,9 @@ Enter download mode by holding **BOOT** while pressing reset. Two quirks of the 
 loader: esptool syncs with it directly (no JTAG detour needed), but the chip tends to land back in
 the loader after esptool closes the port, so **press reset once** after flashing. The filesystem
 carries only `tdeck_pro_config.py`; the radio defaults there are US 915 MHz, so edit `freq_khz` to
-match your mesh. Voice messages work on the Pro through its PDM microphone; the touch panel is not used.
+match your mesh. Voice messages work on the Pro through its PDM microphone. The touch panel works with
+both controllers LilyGO has shipped at 0x1A, the CST328 and the CST3530 found on later V1.1 boards; the
+firmware tells them apart at boot.
 
 ### Option C: Manual Setup (Development)
 

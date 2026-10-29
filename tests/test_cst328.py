@@ -1,9 +1,16 @@
-# Host-side tests for the T-Deck Pro touch driver (CST328). Run:
+# Host-side tests for the T-Deck Pro touch driver (CST328 and CST3530). Run:
 #   /opt/homebrew/bin/python3 tests/test_cst328.py
 #
-# Register sequences come from tools/tdeck_pro_touch_probe.py on a V1.1
-# board (2026-10-10): status nibble 6 = contact, 0xB = lifted but still
+# CST328 register sequences come from tools/tdeck_pro_touch_probe.py on a
+# V1.1 board (2026-10-10): status nibble 6 = contact, 0xB = lifted but still
 # reported with the last position, INT = one falling edge per contact report.
+#
+# CST3530 sequences (issue #19: later V1.1 batches carry this chip at the
+# same address) come from LilyGO's touch_hyn_core example, Hynitron's
+# hyn_driver, SensorLib's TouchDrvCST3530 and Meshtastic, which agree byte
+# for byte: 4-byte command words, info block after D0 03 00 00 with 0xCA 0xCA
+# at [2..3], 9-byte report after D0 07 00 00, event nibble 0 = lifted,
+# D0 00 02 AB after every read. Not yet checked on a CST3530 board.
 
 import os
 import sys
@@ -114,9 +121,20 @@ class FakeI2C:
 
     def writeto(self, addr, data):
         assert addr == 0x1A
+        self.attempts += 1
         if self.dead:
             raise OSError(19)
         self.writes.append(bytes(data))
+
+    def readfrom(self, addr, n):
+        """A plain read on a CST328 answers from wherever its pointer is:
+        never 0xCA 0xCA at [2..3]. Modelled as zeros."""
+        assert addr == 0x1A
+        self.attempts += 1
+        if self.dead:
+            raise OSError(19)
+        self.reads.append(("raw", n))
+        return bytes(n)
 
     # helpers that script the chip the way the probe saw it
     def _point(self, offset, x, y, status, pressure, fid):
@@ -143,10 +161,103 @@ class FakeI2C:
         self.count = 0
 
 
-def new():
+PROBE = b"\xD0\x03\x00\x00"
+PREAMBLE = b"\xD0\x00\x04\x00"
+NORMAL = [b"\xD0\x00\x00\x00", b"\xD0\x00\x0C\x00", b"\xD0\x00\x01\x00"]
+READ = b"\xD0\x07\x00\x00"
+CLEAR = b"\xD0\x00\x02\xAB"
+
+
+class FakeCST3530:
+    """The command-word chip. A 4-byte write selects what the next plain
+    reads return; the report is header + 5-byte records with the vendor's
+    checksum. 'doze' models the auto-sleep: the first write fails and wakes
+    it. readfrom_mem is an assertion: the driver must not talk CST328 to it
+    once it knows better."""
+
+    def __init__(self):
+        self.records = b""
+        self.count = 0
+        self.dead = False
+        self.doze = False
+        self.bad_sum = False
+        self.reads = []            # n per plain read
+        self.writes = []
+        self.attempts = 0
+        self.res = (240, 320)
+        self._pending = b""
+        self.on_read = None
+
+    def info(self):
+        b = bytearray(50)
+        b[0:4] = b"\x0E\x22\xCA\xCA"
+        b[28] = self.res[0] & 0xFF
+        b[29] = self.res[0] >> 8
+        b[30] = self.res[1] & 0xFF
+        b[31] = self.res[1] >> 8
+        b[32:36] = b"\x01\x00\x02\x00"
+        return bytes(b)
+
+    def frame(self):
+        n = len(self.records) // 5
+        cs = (0x55 + sum(self.records)) & 0xFFFF
+        if self.bad_sum:
+            cs ^= 0x0100
+        return bytes([cs & 0xFF, cs >> 8, 0xFF, n]) + self.records
+
+    def writeto(self, addr, data):
+        assert addr == 0x1A
+        self.attempts += 1
+        if self.dead:
+            raise OSError(19)
+        if self.doze:
+            self.doze = False
+            raise OSError(19)
+        data = bytes(data)
+        self.writes.append(data)
+        if data == PROBE:
+            self._pending = self.info()
+        elif data == READ:
+            self._pending = self.frame()
+        else:
+            self._pending = b""
+
+    def readfrom(self, addr, n):
+        assert addr == 0x1A
+        self.attempts += 1
+        if self.dead:
+            raise OSError(19)
+        self.reads.append(n)
+        if self.on_read is not None:
+            hook, self.on_read = self.on_read, None
+            hook()
+        out, self._pending = self._pending[:n], self._pending[n:]
+        return out + bytes(n - len(out))
+
+    def readfrom_mem(self, addr, reg, n, addrsize=8):
+        raise AssertionError("CST328 register read 0x%04x sent to a CST3530" % reg)
+
+    def _rec(self, x, y, event, fid=0, pressure=60):
+        return bytes([x & 0xFF, y & 0xFF, pressure,
+                      ((y >> 8) << 4) | ((x >> 8) & 0x0F), (event << 4) | fid])
+
+    def contact(self, x, y, event=1):
+        self.records = self._rec(x, y, event)
+
+    def contact2(self, x, y, x2, y2):
+        self.records = self._rec(x, y, 2) + self._rec(x2, y2, 1, fid=1)
+
+    def lifted(self, x, y):
+        self.records = self._rec(x, y, 0)
+
+    def nothing(self):
+        self.records = b""
+
+
+def new(chip="cst328"):
     _clock[0] = 1000
     FakePin.created = []
-    i2c = FakeI2C()
+    i2c = FakeI2C() if chip == "cst328" else FakeCST3530()
     t = cst328.CST328(i2c, 12, 38)
     pins = {p.gpio: p for p in FakePin.created}
     return i2c, t, pins[12], pins[38]
@@ -369,9 +480,11 @@ def test_wake_pulses_once_then_retries():
     ok = t.wake()
     check("later calls do not pulse again", rst.history == [0, 1], repr(rst.history))
     i2c.dead = False
+    _clock[0] += 50                     # the vendor sequences all wait 50 ms after the pulse
     ok = t.wake()
     check("ready once the chip answers", ok is True and t.ready is True and t.asleep is False)
     check("wake read the count register", i2c.reads[-1] == (0xD005, 1), repr(i2c.reads))
+    check("and knows it is a CST328", t.chip == "cst328", repr(t.chip))
     reads = len(i2c.reads)
     evs = t.poll()
     check("no stale latch after wake", evs == [] and len(i2c.reads) == reads)
@@ -463,7 +576,10 @@ def test_service_wakes_with_the_screen_and_sleeps_without_it():
     evs = t.service(False)
     check("screen off, already asleep: nothing, no traffic", evs == [] and i2c.attempts == 0)
     evs = t.service(True)
-    check("screen on: woken and ready on the first pass", evs == [] and t.ready and rst.value() == 1)
+    check("screen on: reset released, settling", evs == [] and not t.ready and rst.value() == 1)
+    _clock[0] += 50
+    evs = t.service(True)
+    check("ready once the settle time is up", evs == [] and t.ready, repr(evs))
     i2c.contact(30, 30)
     int_pin.fire()
     evs = t.service(True)
@@ -510,7 +626,9 @@ def test_service_gives_up_on_an_absent_chip_until_the_screen_next_wakes():
     check("it tried for about two seconds, not forever", 20 <= n <= 60, str(n))
     t.service(False)                    # screen dark
     i2c.dead = False
-    t.service(True)                     # next wake: try again
+    t.service(True)                     # next wake: pulse, then try again
+    _clock[0] += 60
+    t.service(True)
     check("a chip that comes back is picked up on the next screen wake",
           t.ready is True and t.gave_up is False)
 
@@ -523,6 +641,217 @@ def test_edges_while_dark_leave_nothing_behind():
     evs = t.service(True)
     evs += t.service(True)
     check("no phantom tap after wake", evs == [], repr(evs))
+
+
+# --- CST3530 (issue #19) --------------------------------------------------------
+
+def test_reset_pulse_is_followed_by_silence():
+    print("cst3530")
+    # Both chips boot for the first tens of ms after reset (the CST328's
+    # bootloader even listens on 0x1A then), and the vendor drivers all wait
+    # 50 ms before the first command. Nothing goes on the bus before that.
+    i2c, t, int_pin, rst = new()
+    t.sleep()
+    t.wake()
+    check("no bus traffic within 50 ms of the pulse", i2c.attempts == 0, str(i2c.attempts))
+    _clock[0] += 49
+    t.wake()
+    check("still none at 49 ms", i2c.attempts == 0, str(i2c.attempts))
+    _clock[0] += 1
+    check("ready at 50 ms", t.wake() is True and i2c.attempts > 0)
+
+
+def test_cst328_sees_the_cst3530_probe_first_and_is_still_found():
+    # LilyGO's own driver tries the CST3530 first on every board, because a
+    # CST3530 ACKs CST328-style register reads (the reverse order would
+    # misdetect it). On a CST328 the probe is one harmless write and a read.
+    i2c, t, int_pin, rst = new()
+    ok = t.wake()
+    check("found", ok is True and t.chip == "cst328", repr(t.chip))
+    check("the CST3530 info probe went first", i2c.writes[0] == PROBE and i2c.reads[0][0] == "raw",
+          repr((i2c.writes, i2c.reads)))
+    check("then the CST328 count read", i2c.reads[-1] == (0xD005, 1), repr(i2c.reads))
+    check("no CST3530 mode commands were sent to it", PREAMBLE not in i2c.writes, repr(i2c.writes))
+    check("no panel info for a CST328", t.info is None)
+
+
+def test_cst3530_detected_by_info_block():
+    i2c, t, int_pin, rst = new("cst3530")
+    t.sleep()
+    t.wake()                            # the pulse
+    _clock[0] += 50
+    ok = t.wake()
+    check("found", ok is True and t.ready and t.chip == "cst3530", repr(t.chip))
+    check("probe then the info block read", i2c.writes[0] == PROBE and i2c.reads[0] >= 36,
+          repr((i2c.writes[:1], i2c.reads)))
+    tail = i2c.writes[1:]
+    check("then the vendor's normal-mode sequence: preamble twice, then the three mode words",
+          tail == [PREAMBLE, PREAMBLE] + NORMAL, repr(tail))
+    check("panel resolution and firmware version kept from the info block",
+          t.info == (240, 320, 0x00020001), repr(t.info))
+
+
+def test_cst3530_not_ready_until_it_answers():
+    i2c, t, int_pin, rst = new("cst3530")
+    t.sleep()
+    i2c.dead = True
+    t.wake()
+    _clock[0] += 50
+    check("silent chip: not ready, no chip", t.wake() is False and t.chip is None)
+    i2c.dead = False
+    check("answers later: ready", t.wake() is True and t.chip == "cst3530")
+
+
+def _ready3530():
+    i2c, t, int_pin, rst = new("cst3530")
+    t.sleep()
+    t.wake()
+    _clock[0] += 50
+    t.wake()
+    i2c.writes = []
+    i2c.reads = []
+    _clock[0] = 1000
+    return i2c, t, int_pin, rst
+
+
+def test_cst3530_contact_is_down():
+    i2c, t, int_pin, rst = _ready3530()
+    i2c.contact(126, 169)
+    int_pin.fire()
+    evs = t.poll()
+    check("one DOWN at the reported point", evs == [(cst328.DOWN, 126, 169, 1000)], repr(evs))
+    check("report command, 9-byte read, then the end-of-report word",
+          i2c.writes == [READ, CLEAR] and i2c.reads == [9], repr((i2c.writes, i2c.reads)))
+    check("touching", t.touching() is True)
+    i2c.contact(130, 169, event=2)      # hold
+    _clock[0] += 20
+    evs = t.poll()
+    check("a held finger that moved is a MOVE", evs == [(cst328.MOVE, 130, 169, 1020)], repr(evs))
+
+
+def test_cst3530_twelve_bit_coordinates_clamp():
+    i2c, t, int_pin, rst = _ready3530()
+    i2c.contact(0x1F0, 0x2F0)           # 496, 752: beyond the panel
+    int_pin.fire()
+    evs = t.poll()
+    check("x and y clamp to 239 x 319", evs == [(cst328.DOWN, 239, 319, 1000)], repr(evs))
+
+
+def test_cst3530_lifted_report_is_up_at_last_position():
+    i2c, t, int_pin, rst = _ready3530()
+    i2c.contact(21, 190)
+    int_pin.fire()
+    t.poll()
+    i2c.contact(21, 260, event=2)
+    _clock[0] += 20
+    t.poll()
+    i2c.lifted(21, 262)                 # count 1, event nibble 0
+    _clock[0] += 20
+    evs = t.poll()
+    check("UP at the last CONTACT position, not the lifted one",
+          evs == [(cst328.UP, 21, 260, 1040)], repr(evs))
+    check("finger forgotten", t.touching() is False)
+    check("every read was acknowledged", i2c.writes.count(CLEAR) == 3, repr(i2c.writes))
+
+
+def test_cst3530_count_zero_while_down_is_up():
+    i2c, t, int_pin, rst = _ready3530()
+    i2c.contact(60, 60)
+    int_pin.fire()
+    t.poll()
+    i2c.nothing()
+    _clock[0] += 20
+    evs = t.poll()
+    check("count 0 with a finger known is UP", evs == [(cst328.UP, 60, 60, 1020)], repr(evs))
+
+
+def test_cst3530_short_tap_seen_only_as_lifted_is_down_then_up():
+    i2c, t, int_pin, rst = _ready3530()
+    int_pin.fire()
+    _clock[0] = 1015
+    int_pin.fire()
+    i2c.lifted(100, 50)
+    evs = t.poll()
+    check("DOWN then UP with the edge times",
+          evs == [(cst328.DOWN, 100, 50, 1000), (cst328.UP, 100, 50, 1015)], repr(evs))
+
+
+def test_cst3530_second_finger_is_fetched_and_ignored():
+    i2c, t, int_pin, rst = _ready3530()
+    i2c.contact2(116, 32, 111, 288)
+    int_pin.fire()
+    evs = t.poll()
+    check("only the first finger is reported", evs == [(cst328.DOWN, 116, 32, 1000)], repr(evs))
+    check("the second record is fetched with a bare 5-byte read before the clear",
+          i2c.reads == [9, 5] and i2c.writes == [READ, CLEAR], repr((i2c.reads, i2c.writes)))
+
+
+def test_cst3530_bad_checksum_is_dropped_but_acknowledged():
+    i2c, t, int_pin, rst = _ready3530()
+    i2c.contact(50, 50)
+    int_pin.fire()
+    t.poll()
+    i2c.bad_sum = True
+    i2c.lifted(50, 50)
+    _clock[0] += 20
+    evs = t.poll()
+    check("a corrupt frame changes nothing", evs == [] and t.touching() is True, repr(evs))
+    check("but is still acknowledged", i2c.writes[-1] == CLEAR, repr(i2c.writes))
+    i2c.bad_sum = False
+    _clock[0] += 20
+    evs = t.poll()
+    check("the next good frame is used", evs == [(cst328.UP, 50, 50, 1040)], repr(evs))
+
+
+def test_cst3530_doze_is_woken_by_the_preamble():
+    # The chip drops its I2C after a while idle; the first write only wakes
+    # it and fails. The driver sends the preamble and reads again, so a tap
+    # after a quiet spell is not lost and the chip is not reset for it.
+    i2c, t, int_pin, rst = _ready3530()
+    rst.history = []
+    i2c.doze = True
+    i2c.contact(70, 80)
+    int_pin.fire()
+    evs = t.poll()
+    check("the tap is delivered", evs == [(cst328.DOWN, 70, 80, 1000)], repr(evs))
+    check("after the failed read the preamble and mode words were resent and the read retried",
+          i2c.writes == [PREAMBLE, PREAMBLE] + NORMAL + [READ, CLEAR], repr(i2c.writes))
+    check("no reset pulse", rst.history == [], repr(rst.history))
+    check("still ready", t.ready is True)
+
+
+def test_cst3530_dead_chip_is_reset_on_the_next_pass():
+    i2c, t, int_pin, rst = _ready3530()
+    i2c.contact(5, 5)
+    int_pin.fire()
+    t.poll()
+    i2c.dead = True
+    _clock[0] += 20
+    evs = t.poll()
+    check("the stroke is closed with UP (stamped after the 1 ms recovery attempt)",
+          len(evs) == 1 and evs[0][:3] == (cst328.UP, 5, 5) and 1020 <= evs[0][3] <= 1025, repr(evs))
+    check("the chip is put back in reset", t.asleep is True and rst.value() == 0)
+    i2c.dead = False
+    evs = t.service(True)
+    _clock[0] += 60
+    evs += t.service(True)
+    check("the next passes pulse reset and find it again",
+          evs == [] and t.ready is True and t.chip == "cst3530" and rst.history[-2:] == [0, 1],
+          repr((t.ready, t.chip, rst.history)))
+
+
+def test_cst328_errors_do_not_reset():
+    # The CST328 path is device-verified and unchanged: an error mid-finger
+    # closes the stroke and the chip is left alone.
+    i2c, t, int_pin, rst = new()
+    t.wake()
+    i2c.contact(5, 5)
+    int_pin.fire()
+    t.poll()
+    i2c.dead = True
+    _clock[0] += 20
+    t.poll()
+    check("CST328: still out of reset after an error", t.asleep is False and rst.value() == 1)
 
 
 # --- review fixes: the image and the board glue --------------------------------
@@ -553,6 +882,10 @@ def test_board_glue():
     check("the board makes one call per pass", "touch.service(_gui._screen_on)" in service)
     check("no boot-time scan decides whether touch exists",
           "TOUCH_ADDR in i2c.scan()" not in src)
+    check("the detected chip is reported once, by name, from the driver",
+          "touch.chip" in service and "touch.info" in service)
+    check("the no-answer message does not assume a CST328",
+          "CST328 did not answer" not in src)
 
 
 # --- board wiring ------------------------------------------------------------
@@ -590,6 +923,20 @@ if __name__ == "__main__":
     test_service_presence_needs_no_scan_and_survives_a_low_reset_line()
     test_service_gives_up_on_an_absent_chip_until_the_screen_next_wakes()
     test_edges_while_dark_leave_nothing_behind()
+    test_reset_pulse_is_followed_by_silence()
+    test_cst328_sees_the_cst3530_probe_first_and_is_still_found()
+    test_cst3530_detected_by_info_block()
+    test_cst3530_not_ready_until_it_answers()
+    test_cst3530_contact_is_down()
+    test_cst3530_twelve_bit_coordinates_clamp()
+    test_cst3530_lifted_report_is_up_at_last_position()
+    test_cst3530_count_zero_while_down_is_up()
+    test_cst3530_short_tap_seen_only_as_lifted_is_down_then_up()
+    test_cst3530_second_finger_is_fetched_and_ignored()
+    test_cst3530_bad_checksum_is_dropped_but_acknowledged()
+    test_cst3530_doze_is_woken_by_the_preamble()
+    test_cst3530_dead_chip_is_reset_on_the_next_pass()
+    test_cst328_errors_do_not_reset()
     test_driver_is_in_the_firmware_image_and_the_deploy_list()
     test_board_glue()
     print()

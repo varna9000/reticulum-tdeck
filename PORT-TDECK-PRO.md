@@ -228,7 +228,7 @@ Arduino core. Found by probing candidate pairs. Devices on the bus:
 
 | Address | Device |
 |---|---|
-| 0x1A | CST328 touch |
+| 0x1A | CST328 touch, or CST3530 on later V1.1 boards (issue #19) |
 | 0x28 | unidentified |
 | 0x34 | TCA8418 keyboard |
 | 0x55 | BQ27220 fuel gauge |
@@ -315,11 +315,26 @@ later boot reads it back in milliseconds. A config value other than `"auto"`
 overrides the saved one; deleting the file re-runs detection. A found modem
 is powered back down (GPIO 41 low), since nothing here drives it.
 
+## Touch controller: two chips at 0x1A
+
+The touch driver (`lib/cst328.py`) handles both parts LilyGO has fitted. The
+original CST328 is a register chip; later V1.1 batches carry the CST3530
+(the CST328 went out of production), which speaks Hynitron's 4-byte
+command-word protocol instead and auto-sleeps its I2C when idle. The two
+are not told apart by board revision -- a V1.1 with a DRV2605 can carry
+either -- but by the chip's own answer each time it leaves reset: the
+CST3530 info probe (`D0 03 00 00`, 0xCA 0xCA in the reply) goes first,
+LilyGO's own order, because a CST3530 ACKs CST328 register reads and the
+other order misdetects it. The boot log says which was found
+(`[board] touch: cst3530 at 0x1a, panel 240x320, firmware ...`). The
+CST3530 path is written from LilyGO's `touch_hyn_core`, Hynitron's
+`hyn_driver`, SensorLib and Meshtastic, which agree byte for byte, but has
+not run on a CST3530 board here; `tools/tdeck_pro_touch_probe.py` phases
+0, 1-3, 5, 8 and 9 are what to run on one.
+
 ## Still unresolved
 
-The CST328 touch controller answers at 0x1A but has no driver; navigation is on
-the keyboard, so nothing needs it. The device at 0x28 is unidentified. Neither
-blocks the messenger.
+The device at 0x28 is unidentified. It does not block the messenger.
 
 ## Firmware image (2026-10-09)
 
