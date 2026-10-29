@@ -239,6 +239,35 @@ def test_esc_on_form_discards_edits():
     assert g._tcp_ifac["networkname"] == "mymesh"
 
 
+def test_wifi_connect_auto_opens_a_working_form():
+    # Review finding: set_wifi_result jumped to the page without opening the
+    # form, so Enter on any row crashed on _tcp_edit = None.
+    g = _mkui()
+    g._tcp_default = "d.example:4242"
+    g._wifi_ssid = "home"
+    g._wifi_connecting = True
+    g.set_tcp_ifac("mymesh", "pw", 8)
+    g.set_wifi_result("192.168.1.9")
+    assert g._settings_page == ui._SET_TCP_HOST
+    assert g._tcp_edit == {"host": "d.example:4242", "networkname": "mymesh",
+                           "passphrase": "pw", "ifac_size": 8}
+    g.draw()
+    g.handle_key(ENTER)                        # Host -> text entry, no crash
+    assert g._settings_page == ui._SET_TEXT
+    _type(g, "h:1")
+    g.handle_key(ENTER)
+    assert g._tcp_edit["host"] == "h:1"
+
+
+def test_text_page_without_an_entry_falls_back_to_setup():
+    g = _mkui()
+    g._settings_page = ui._SET_TEXT
+    g._text_entry = None
+    g.draw()                                   # must not raise
+    g.handle_key(b"a")
+    assert g._settings_page == ui._SET_MAIN
+
+
 def test_form_page_is_not_a_text_page():
     g = _open_tcp()
     assert not g._accepting_text()             # e/x move the cursor here
@@ -265,8 +294,8 @@ def test_set_lora_config_takes_code_keys_and_blanks_none():
     g.set_lora_config(dict(_RADIO, networkname="m", passphrase=None))
     assert g._lora_cfg["networkname"] == "m"
     assert g._lora_cfg["passphrase"] == ""
-    g.set_lora_config(_RADIO)                  # radio-only update keeps the code
-    assert g._lora_cfg["networkname"] == "m"
+    g.set_lora_config(_RADIO)                  # absent code keys mean no code (as in LORA_CONFIG)
+    assert g._lora_cfg["networkname"] == ""
 
 
 def test_lora_editor_has_net_pass_then_apply():

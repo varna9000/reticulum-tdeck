@@ -12,8 +12,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def _load():
     with open(os.path.join(ROOT, "tdeck_node.py")) as f:
         tree = ast.parse(f.read())
-    funcs = {"_ifac_overlay", "_ifac_from_settings"}
-    consts = {"_IFAC_KEYS"}
+    funcs = {"_ifac_overlay", "_ifac_from_settings", "_lora_changes"}
+    consts = {"_IFAC_KEYS", "_LORA_PARAM_KEYS"}
     body = []
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name in funcs:
@@ -66,6 +66,27 @@ def test_from_settings_reads_the_tcp_keys_with_defaults():
     assert N["_ifac_from_settings"]({}) == {"networkname": "", "passphrase": "", "ifac_size": 16}
     s = {"tcp_netname": "mesh", "tcp_passphrase": "pw", "tcp_ifac_size": 8}
     assert N["_ifac_from_settings"](s) == {"networkname": "mesh", "passphrase": "pw", "ifac_size": 8}
+
+
+def test_from_settings_takes_the_config_file_code_until_one_was_saved():
+    defaults = {"networkname": "cfgmesh", "passphrase": "cfgpw", "ifac_size": 8}
+    assert N["_ifac_from_settings"]({}, defaults) == {"networkname": "cfgmesh", "passphrase": "cfgpw", "ifac_size": 8}
+    # once the form saved (even a cleared code), the saved state wins
+    assert N["_ifac_from_settings"]({"tcp_netname": "", "tcp_passphrase": ""}, defaults) == \
+        {"networkname": "", "passphrase": "", "ifac_size": 16}
+
+
+def test_lora_changes_tells_radio_from_code():
+    cfg = {"freq_khz": 868000, "sf": 7, "bw": "125", "coding_rate": 5, "tx_power": 14,
+           "networkname": "m"}
+    same = dict(cfg, passphrase="")
+    assert N["_lora_changes"](same, cfg) == (False, False)
+    assert N["_lora_changes"](dict(same, sf=8), cfg) == (True, False)
+    assert N["_lora_changes"](dict(same, bw=125), cfg) == (False, False)      # int vs str: same radio
+    assert N["_lora_changes"](dict(same, passphrase="pw"), cfg) == (False, True)
+    assert N["_lora_changes"](dict(same, networkname=""), cfg) == (False, True)
+    assert N["_lora_changes"]({"freq_khz": 868000, "sf": 7, "bw": "125", "coding_rate": 5,
+                               "tx_power": 14}, cfg) == (False, False)         # no code keys: not an edit of the code
 
 
 def _run():

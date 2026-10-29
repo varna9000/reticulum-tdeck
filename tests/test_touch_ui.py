@@ -954,6 +954,14 @@ def test_tcp_form_drag_and_swipe():
     g._settings_adjust = lambda d: adj.append(d)
     check("TCP form: a swipe adjusts the field", touch_ui.handle(g, (SWIPE, 100, 100, 1, 200000), 0) is True and adj == [1], repr(adj))
     check("TCP form: a tap in the body lands nowhere", touch_ui.handle(g, (TAP, 100, 120, 0, 200000), 0) is False)
+    k0 = touch_ui.layout_key(g)
+    g._tcp_field = 4
+    check("TCP form: moving the cursor changes the layout key", touch_ui.layout_key(g) != k0)
+    g._settings_page = ui._SET_TEXT
+    g._text_entry = ("Host", g._tcp_edit, "host", ui._SET_TCP_HOST, True)
+    k1 = touch_ui.layout_key(g)
+    g._text_entry = ("Passphrase", g._tcp_edit, "passphrase", ui._SET_TCP_HOST, False)
+    check("text page: a different field changes the layout key", touch_ui.layout_key(g) != k1)
 
 
 def test_lora_and_radio_pages_drag():

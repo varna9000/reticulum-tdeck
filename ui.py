@@ -1365,11 +1365,7 @@ class UI:
         width stays visible (the caret is always the last cell)."""
         self._hint_zones = []     # this line is text now, not hints
         avail = COLS - 3  # cols after "> ", minus 1 for the caret
-        if len(inp) > avail:
-            visible = "<" + inp[-(avail - 1):]
-        else:
-            visible = inp
-        text_padded = _pad(visible + "_", COLS - 2)
+        text_padded = _pad(_tail(inp, avail) + "_", COLS - 2)
         self.tft.text(self.font, "> ", 0, INPUT_Y, self.NEON_GREEN, self.BG_DARK)
         self.tft.text(self.font, self._tb(text_padded), 2 * CHAR_W, INPUT_Y,
                       self.NEON_CYAN, self.BG_DARK)
@@ -4107,6 +4103,8 @@ class UI:
         elif self._settings_page == _SET_TCP_HOST:
             if self._tcp_connecting:
                 return True  # ignore input while the async connect runs
+            if self._tcp_edit is None:        # the page set directly, not via the row
+                self._tcp_edit = self._tcp_seed()
             if ch == 0x1B or ch == 0x08:   # back -- discard the edits
                 self._tcp_edit = None
                 self._settings_page = _SET_MAIN
@@ -4127,6 +4125,9 @@ class UI:
                 return True
             return True
         elif self._settings_page == _SET_TEXT:
+            if self._text_entry is None:      # the page set without _open_text()
+                self._close_text(_SET_MAIN)
+                return True
             title, d, fkey, back, keep = self._text_entry
             if ch == 0x1B:   # cancel, keep the old value
                 self._close_text(back)
@@ -4632,10 +4633,7 @@ class UI:
             self._wifi_ssid_current = self._wifi_ssid
             self._wifi_ip = ip
             self._wifi_err = ""
-            # Auto-jump to TCP host entry
-            self._settings_page = _SET_TCP_HOST
-            self.cmd_buf = (bytearray(self._tcp_target.encode()) if self._tcp_target
-                            else bytearray(self._tcp_default.encode()))
+            self._open_tcp_form()         # straight on to the TCP link
         else:
             self._wifi_err = "connect failed"
             self._settings_page = _SET_WIFI_SCAN
@@ -4689,6 +4687,9 @@ class UI:
         self._draw_settings_bottom_bar()
 
     def _draw_text_entry(self):
+        if self._text_entry is None:
+            self._close_text(_SET_MAIN)
+            return
         title, d, key, back, keep = self._text_entry
         self._draw_row_cached(1, "< " + title, BODY_Y, self.NEON_CYAN)
         cur = d.get(key) or ""
@@ -5214,9 +5215,8 @@ class UI:
             if k in cfg and cfg[k] is not None:
                 self._lora_cfg[k] = cfg[k]
         self._lora_cfg["bw"] = str(self._lora_cfg["bw"])
-        for k in _LORA_TEXT_FIELDS:
-            if k in cfg:
-                self._lora_cfg[k] = cfg[k] or ""
+        for k in _LORA_TEXT_FIELDS:       # absent = no code, as tdeck_node keeps LORA_CONFIG
+            self._lora_cfg[k] = cfg.get(k) or ""
 
     def _lora_cycle(self, field, delta):
         """Step one pending field by delta (trackball L/R or click). BW wraps

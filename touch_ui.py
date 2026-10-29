@@ -181,8 +181,10 @@ def layout_key(ui):
     if st == _u.STATE_BROWSER:
         return (st, ui.browser_path, ui.browser_scroll, ui.browser_cursor)
     if st == _u.STATE_SETTINGS:
+        te = g(ui, "_text_entry", None)
         return (st, ui._settings_page, g(ui, "_settings_scroll", 0), g(ui, "_settings_idx", 0),
-                g(ui, "_lora_field", 0), g(ui, "_setup_gen", 0), len(ui._wifi_networks),
+                g(ui, "_lora_field", 0), g(ui, "_tcp_field", 0), (te[0], te[2]) if te else None,
+                g(ui, "_setup_gen", 0), len(ui._wifi_networks),
                 ui._wifi_connected, ui._tcp_enabled, ui.lora_online)
     if st == _u.STATE_SHELL:
         return (st, ui._shell_menu, g(ui, "_shell_view", 0), g(ui, "_shell_menu_idx", 0),

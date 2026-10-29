@@ -607,7 +607,7 @@ The T-Deck can join such a network on either interface (Setup → TCP form, or S
 | Code size, TCP | `IFAC` row: 64 or 128 bit (default 128) | `ifac_size = 64` / `128` (default 128 for TCP) |
 | Code size, LoRa | always 64 bit, no row | `ifac_size = 64` (the RNode default) |
 
-Either the name or the passphrase alone is enough to turn the code on; with both empty the link is plain. A mismatch in any of the three looks like a link that is up but carries nothing — the deck logs the dropped packets at debug level only.
+Either the name or the passphrase alone is enough to turn the code on; with both empty the link is plain. A code written into `tdeck_config.py` (`TCP_CONFIG` or `LORA_CONFIG`) is the starting value; once the Setup page has saved one, even a cleared one, the saved value is what the deck uses. A mismatch in any of the three looks like a link that is up but carries nothing — the deck logs the dropped packets at debug level only.
 
 LoRa has no size choice because a full 500 B packet plus a 16 B code does not fit the two-frame RNode split (508 B): short packets would still go through, every resource segment (photos, voice, long messages) would be lost. 8 B is the reference RNode default and the most the frame can carry, so the deck pins it and the urns LoRa interface clamps any larger value.
 

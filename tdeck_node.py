@@ -242,11 +242,16 @@ try:
         for _k in ("freq_khz", "sf", "bw", "coding_rate", "tx_power"):
             if _saved_lora.get(_k) is not None:
                 LORA_CONFIG[_k] = _saved_lora[_k]
-        # The mesh's access code, if one was set (issue #20); setup_interfaces()
-        # below runs setup_ifac on it. No size: LoRa is always 8 bytes.
-        for _k in ("networkname", "passphrase"):
-            if _saved_lora.get(_k):
-                LORA_CONFIG[_k] = _saved_lora[_k]
+        # The mesh's access code (issue #20); setup_interfaces() below runs
+        # setup_ifac on it. Once the editor has saved one -- a cleared code is
+        # saved as "" -- the saved state replaces whatever tdeck_config.py
+        # carries; a settings file from before this feature leaves it alone.
+        # No size: LoRa is always 8 bytes.
+        if "networkname" in _saved_lora or "passphrase" in _saved_lora:
+            for _k in ("networkname", "passphrase"):
+                LORA_CONFIG.pop(_k, None)
+                if _saved_lora.get(_k):
+                    LORA_CONFIG[_k] = _saved_lora[_k]
 except Exception:
     pass
 
@@ -1043,32 +1048,48 @@ def on_lora_config(params):
             break
     if not lora or not hasattr(lora, 'reconfigure'):
         return False
-    try:
-        ok = lora.reconfigure(params)
-    except Exception as e:
-        if DEBUG >= 1:
-            print("[LoRa] reconfigure error:", e)
-        return False
-    if ok:
+    radio_changed, code_changed = _lora_changes(params, LORA_CONFIG)
+    old_code = {k: LORA_CONFIG.get(k) for k in ("networkname", "passphrase")}
+
+    def _restore_code():
+        _ifac_overlay(LORA_CONFIG, old_code)
+        try:
+            lora.setup_ifac(LORA_CONFIG)
+        except Exception:
+            pass
+
+    # The code first: a failed key derivation (MemoryError is the realistic
+    # one) then leaves the modem untouched. Never a size: the class default, 8.
+    if code_changed:
+        _ifac_overlay(LORA_CONFIG, params)
+        try:
+            lora.setup_ifac(LORA_CONFIG)           # live; clears when both are blank
+        except Exception as e:
+            if DEBUG >= 1:
+                print("[LoRa] IFAC setup error:", e)
+            _restore_code()
+            return False
+    if radio_changed:
+        try:
+            ok = lora.reconfigure(params)
+        except Exception as e:
+            if DEBUG >= 1:
+                print("[LoRa] reconfigure error:", e)
+            ok = False
+        if not ok:
+            if code_changed:
+                _restore_code()
+            return False
         for k in _LORA_PARAM_KEYS:
             if k in params:
                 LORA_CONFIG[k] = params[k]
-        if "networkname" in params or "passphrase" in params:
-            _ifac_overlay(LORA_CONFIG, params)     # never a size: the class default, 8
-            try:
-                lora.setup_ifac(LORA_CONFIG)       # live; clears when both are blank
-            except Exception as e:
-                if DEBUG >= 1:
-                    print("[LoRa] IFAC setup error:", e)
-                return False
-        settings = _load_settings()
-        settings["lora"] = {k: LORA_CONFIG[k] for k in _LORA_PARAM_KEYS}
-        for k in ("networkname", "passphrase"):
-            if k in LORA_CONFIG:
-                settings["lora"][k] = LORA_CONFIG[k]
-        _save_settings(settings)
-        gui.set_lora_config(LORA_CONFIG)
-    return ok
+    settings = _load_settings()
+    settings["lora"] = {k: LORA_CONFIG[k] for k in _LORA_PARAM_KEYS}
+    for k in ("networkname", "passphrase"):
+        settings["lora"][k] = LORA_CONFIG.get(k) or ""   # "" = cleared, and saved as such
+    _save_settings(settings)
+    gui.set_lora_config(LORA_CONFIG)
+    return True
 
 
 _tcp_iface = None  # track separately so rns.run() doesn't double-start it
@@ -1115,11 +1136,39 @@ def _ifac_overlay(cfg, ifac):
     return cfg
 
 
-def _ifac_from_settings(settings):
-    """The TCP link's saved code, in the shape the UI form works with."""
+def _ifac_from_settings(settings, defaults=None):
+    """The TCP link's saved code, in the shape the UI form works with. Until
+    the form has saved one (a cleared code counts), `defaults` -- the code
+    tdeck_config.TCP_CONFIG carries, if any -- is what the link uses."""
+    if defaults and "tcp_netname" not in settings and "tcp_passphrase" not in settings:
+        return {"networkname": defaults.get("networkname") or "",
+                "passphrase": defaults.get("passphrase") or "",
+                "ifac_size": defaults.get("ifac_size") or 16}
     return {"networkname": settings.get("tcp_netname") or "",
             "passphrase": settings.get("tcp_passphrase") or "",
             "ifac_size": settings.get("tcp_ifac_size") or 16}
+
+
+def _lora_changes(params, cfg):
+    """(radio changed, code changed) between an editor's params and the
+    live LORA_CONFIG, so Apply touches only what the user changed: a retune
+    drops the radio out of RX for a moment, a re-key costs a key derivation.
+    Values compare as strings (bw arrives as "125" or 125). Code keys absent
+    from params are not an edit of the code."""
+    radio = False
+    for k in _LORA_PARAM_KEYS:
+        if k in params and str(params[k]) != str(cfg.get(k)):
+            radio = True
+    code = False
+    for k in ("networkname", "passphrase"):
+        if k in params and (params.get(k) or "") != (cfg.get(k) or ""):
+            code = True
+    return radio, code
+
+
+# The access code tdeck_config.TCP_CONFIG ships with, if any, kept before the
+# first connect overlays the saved one onto the same dict.
+_TCP_CFG_IFAC = {k: TCP_CONFIG.get(k) for k in _IFAC_KEYS}
 
 
 def tcp_toggle(enabled, host=None, port=None, ifac=None):
@@ -1139,8 +1188,8 @@ def tcp_toggle(enabled, host=None, port=None, ifac=None):
             _tcp_task = None
         from urns.interfaces.tcp import TCPClientInterface
         iface = TCPClientInterface(TCP_CONFIG)
-        iface.setup_ifac(TCP_CONFIG)   # before any packet moves: poll_loop starts below
         if iface.online:
+            iface.setup_ifac(TCP_CONFIG)   # before any packet moves: poll_loop starts below
             # Stop LoRa — only one interface at a time
             _stop_lora()
             gui.clear_peers()
@@ -1156,11 +1205,11 @@ def tcp_toggle(enabled, host=None, port=None, ifac=None):
             settings["tcp_host"] = host
             settings["tcp_port"] = port
             if ifac is not None:
+                # The UI's own copy is set by gui.set_tcp_result (form path)
+                # or _auto_start_tcp (boot) -- one writer each.
                 settings["tcp_netname"] = ifac.get("networkname") or ""
                 settings["tcp_passphrase"] = ifac.get("passphrase") or ""
                 settings["tcp_ifac_size"] = ifac.get("ifac_size") or 16
-                gui.set_tcp_ifac(settings["tcp_netname"], settings["tcp_passphrase"],
-                                 settings["tcp_ifac_size"])
             _save_settings(settings)
             if DEBUG >= 1:
                 print("[TCP] Interface started ->", host + ":" + str(port),
@@ -2018,7 +2067,7 @@ async def _auto_start_tcp():
     port = settings.get("tcp_port")
     if settings.get("wifi_enabled") == True and host and port:
         gui._tcp_target = host + ":" + str(port)
-    ifac = _ifac_from_settings(settings)
+    ifac = _ifac_from_settings(settings, _TCP_CFG_IFAC)
     gui.set_tcp_ifac(ifac["networkname"], ifac["passphrase"], ifac["ifac_size"])
     gc.collect()
 
@@ -2043,7 +2092,7 @@ async def _start_saved_tcp():
         for attempt in range(6):
             if not gui._wifi_connected or gui._tcp_enabled or _tcp_iface is not None:
                 break
-            if tcp_toggle(True, host, port, _ifac_from_settings(settings)):
+            if tcp_toggle(True, host, port, _ifac_from_settings(settings, _TCP_CFG_IFAC)):
                 gui._tcp_enabled = True
                 break
             if DEBUG >= 1:
