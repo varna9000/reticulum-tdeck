@@ -382,8 +382,11 @@ def test_controller_swallows_ui_errors():
         check("an exception in the UI does not escape", False, repr(e))
     check("it is reported", reports == [("touch", "ui blew up")], repr(reports))
     check("and the stroke is cancelled", c.rec._active is False)
+    g._find = True                                # a list whose row count the drag must ask for
+    g._find_res = [("n", b"x" * 16)]
+    g._find_rows = lambda: boom("drag")
     c.event((DOWN, 100, 100, 3000))               # now fail in the MIDDLE of a stroke
-    c.event((MOVE, 100, 140, 3100))               # a drag step -> nav_event -> boom
+    c.event((MOVE, 100, 140, 3100))               # a drag step -> the list's state -> boom
     check("an error mid-drag cancels the stroke while the finger is still down",
           c.rec._active is False and len(reports) == 2, "%r %r" % (c.rec._active, reports))
 
@@ -461,24 +464,35 @@ def test_sheet_taps():
     check("the sheet is part of the layout fingerprint", touch_ui.layout_key(g) != k0)
 
 
-def test_drag_and_flick_move_the_selection():
-    print("drag")
+def test_drag_and_flick_scroll_the_list():
+    print("drag (lists scroll like a page: finger up shows what is below)")
     g = with_peers(16)
-    check("two 16 px steps are one 32 px row", touch_ui.handle(g, (DRAG, 100, 100, 2, 200000), 0) is True)
+    check("finger down at the top: nothing earlier to show, nothing moves",
+          touch_ui.handle(g, (DRAG, 100, 100, 2, 200000), 0) is True and g.node_scroll == 0 and g.selected_idx == 0)
+    touch_ui.handle(g, (DRAG, 100, 100, -2, 200000), 0)
     settle(g)
-    check("selection moved one row", g.selected_idx == 1, str(g.selected_idx))
-    touch_ui.handle(g, (DRAG, 100, 100, 1, 200000), 0)
+    check("finger up two 16 px steps: the window moves one row, the highlight keeps its screen row",
+          g.node_scroll == 1 and g.selected_idx == 1, "%d %d" % (g.node_scroll, g.selected_idx))
+    touch_ui.handle(g, (DRAG, 100, 100, -1, 200000), 0)
     settle(g)
-    check("a single further step is not yet a row", g.selected_idx == 1, str(g.selected_idx))
-    touch_ui.handle(g, (DRAG, 100, 100, 1, 200000), 0)
+    check("a single further step is not yet a row", g.node_scroll == 1, str(g.node_scroll))
+    touch_ui.handle(g, (DRAG, 100, 100, -1, 200000), 0)
     settle(g)
-    check("the second one is", g.selected_idx == 2, str(g.selected_idx))
-    touch_ui.handle(g, (DRAG, 100, 100, -4, 200000), 0)
+    check("the second one is", g.node_scroll == 2 and g.selected_idx == 2, "%d %d" % (g.node_scroll, g.selected_idx))
+    touch_ui.handle(g, (DRAG, 100, 100, 4, 200000), 0)
     settle(g)
-    check("and back up two rows", g.selected_idx == 0, str(g.selected_idx))
+    check("finger down two rows: back to the top", g.node_scroll == 0 and g.selected_idx == 0)
+    touch_ui.handle(g, (FLICK, 100, 100, -1, 200000), 0)
+    settle(g)
+    check("a flick up moves a screen of rows less one", g.node_scroll == ui.LIST_ROWS - 1 and g.selected_idx == ui.LIST_ROWS - 1,
+          "%d %d" % (g.node_scroll, g.selected_idx))
     touch_ui.handle(g, (FLICK, 100, 100, 1, 200000), 0)
     settle(g)
-    check("a flick moves a screen of rows less one", g.selected_idx == ui.LIST_ROWS - 1, str(g.selected_idx))
+    check("a flick down brings it back", g.node_scroll == 0 and g.selected_idx == 0)
+    g.selected_idx = 3
+    touch_ui.handle(g, (DRAG, 100, 100, -2, 200000), 0)
+    settle(g)
+    check("a highlight mid-page keeps its screen row too", g.node_scroll == 1 and g.selected_idx == 4, "%d %d" % (g.node_scroll, g.selected_idx))
 
 
 # --- Task 5: chat, recording, browser, viewer --------------------------------
@@ -654,15 +668,22 @@ def test_setup():
     check("a swipe on another row does nothing",
           touch_ui.handle(g, (SWIPE, 60, srow(6), 1, 200000), 0) is False and adj == [1])
     g = mksetup(idx=2)
-    touch_ui.handle(g, (DRAG, 100, 100, 1, 300000), 0)
+    touch_ui.handle(g, (DRAG, 100, 100, 2, 300000), 0)
+    settle(g)
+    check("finger down at the top of Setup: nothing moves", g._settings_idx == 2 and g._settings_scroll == 0)
+    touch_ui.handle(g, (DRAG, 100, 100, -1, 300000), 0)
     settle(g)
     check("a drag of one 16 px step is half a row: nothing yet", g._settings_idx == 2, str(g._settings_idx))
-    touch_ui.handle(g, (DRAG, 100, 100, 1, 300000), 0)
+    touch_ui.handle(g, (DRAG, 100, 100, -1, 300000), 0)
     settle(g)
-    check("the second step moves one row", g._settings_idx == 3, str(g._settings_idx))
-    touch_ui.handle(g, (FLICK, 100, 100, 1, 400000), 0)
+    check("the second step scrolls one row, the highlight keeps its screen row",
+          g._settings_scroll == 1 and g._settings_idx == ui._pro.SETUP_IDX[3], "%d %d" % (g._settings_scroll, g._settings_idx))
+    touch_ui.handle(g, (FLICK, 100, 100, -1, 400000), 0)
     settle(g)
-    check("a flick pages seven rows", g._settings_idx == ui._pro.SETUP_IDX[3 + 7], str(g._settings_idx))
+    _max = len(ui._pro.SETUP_IDX) - ui._pro.SETUP_ROWS
+    check("a flick up pages seven rows (clamped to the end)",
+          g._settings_scroll == min(_max, 1 + 7) and g._settings_idx == ui._pro.SETUP_IDX[3 + g._settings_scroll - 1],
+          "%d %d" % (g._settings_scroll, g._settings_idx))
     seen = keys_pressed(g)
     check("header tap goes back", tap(g, 30, 30) is True and seen == [b'\x1b'], repr(seen))
     del seen[:]
@@ -694,13 +715,17 @@ def test_find():
     tap(g, 100, f0 + 1 * 32 + 16, t=400000)
     settle(g)
     check("rows follow the list's scroll", g._find_sel == 3 and picked[-1] == 3, "%d %r" % (g._find_sel, picked))
+    g._find_res = [("n%d" % i, bytes([i]) * 16) for i in range(10)]
     g._find_scroll = 0
     g._find_sel = 0
-    touch_ui.handle(g, (DRAG, 100, 150, 1, 500000), 0)
+    touch_ui.handle(g, (DRAG, 100, 150, 2, 500000), 0)
     settle(g)
-    touch_ui.handle(g, (DRAG, 100, 150, 1, 500000), 0)
+    check("finger down at the top of Find: nothing moves", g._find_scroll == 0 and g._find_sel == 0)
+    touch_ui.handle(g, (DRAG, 100, 150, -1, 500000), 0)
     settle(g)
-    check("a drag moves one row per 32 px", g._find_sel == 1, str(g._find_sel))
+    touch_ui.handle(g, (DRAG, 100, 150, -1, 500000), 0)
+    settle(g)
+    check("finger up 32 px scrolls one row", g._find_scroll == 1 and g._find_sel == 1, "%d %d" % (g._find_scroll, g._find_sel))
     check("the tab bar is inert while Find is open", tap(g, 200, ui.BODY_Y + 4) is False and g.node_tab == ui.TAB_MSG)
     check("edge swipe closes Find", touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is True and g._find is False)
 
@@ -739,11 +764,19 @@ def test_shell():
     tap(g, 100, m0 + (quit_i - ui._pro.shell_menu_top(g)) * 32 + 16, t=500000)
     check("menu: the second tap on it quits", sent[-1] == quit_i and len(sent) == n + 1, repr(sent))
     g._shell_menu_idx = 0
-    touch_ui.handle(g, (DRAG, 100, 150, 1, 600000), 0)
+    g._menu_top = 0
+    touch_ui.handle(g, (DRAG, 100, 150, 2, 600000), 0)
     settle(g)
-    touch_ui.handle(g, (DRAG, 100, 150, 1, 600000), 0)
+    check("menu: finger down at the top: nothing moves", g._menu_top == 0 and g._shell_menu_idx == 0)
+    touch_ui.handle(g, (DRAG, 100, 150, -1, 600000), 0)
     settle(g)
-    check("menu: a drag moves one row per 32 px", g._shell_menu_idx == 1, str(g._shell_menu_idx))
+    touch_ui.handle(g, (DRAG, 100, 150, -1, 600000), 0)
+    settle(g)
+    check("menu: finger up 32 px scrolls one row", g._menu_top == 1 and g._shell_menu_idx == 1, "%d %d" % (g._menu_top, g._shell_menu_idx))
+    touch_ui.handle(g, (FLICK, 100, 150, -1, 600000), 0)
+    settle(g)
+    _max = len(ui._SHELL_CTRL_ITEMS) - ui._pro.MENU_ROWS
+    check("menu: a flick up stops at the end, no wrap", g._menu_top == _max and g._shell_menu_idx == _max, "%d %d" % (g._menu_top, g._shell_menu_idx))
     check("menu: a tap on its '< Control keys' band closes it", tap(g, 60, 30, t=700000) is True and g._shell_menu is False)
     g._shell_menu = True
     check("menu: back closes it", touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is True and g._shell_menu is False)
@@ -802,18 +835,25 @@ def test_rrc():
               and len(clicked) == n)
     finally:
         rrc_ui.panel_click = orig_click
-    g._rrc_panel_idx = 0
-    touch_ui.handle(g, (DRAG, px, 150, 1, 700000), 0)
-    settle(g)
-    check("panel: a 16 px drag is half a row", g._rrc_panel_idx == 0, str(g._rrc_panel_idx))
-    touch_ui.handle(g, (DRAG, px, 150, 1, 700000), 0)
-    settle(g)
-    check("panel: the second step moves one row", g._rrc_panel_idx == 1, str(g._rrc_panel_idx))
     g._rrc_rooms = [("r%d" % k, "") for k in range(12)]
     g._rrc_panel_idx = 0
-    touch_ui.handle(g, (FLICK, px, 150, 1, 800000), 0)
+    g._rrc_panel_scroll = 0
+    touch_ui.handle(g, (DRAG, px, 150, 2, 700000), 0)
     settle(g)
-    check("panel: a flick pages four rows", g._rrc_panel_idx == 4, str(g._rrc_panel_idx))
+    check("panel: finger down at the top: nothing moves", g._rrc_panel_scroll == 0 and g._rrc_panel_idx == 0)
+    touch_ui.handle(g, (DRAG, px, 150, -1, 700000), 0)
+    settle(g)
+    check("panel: a 16 px drag is half a row", g._rrc_panel_scroll == 0, str(g._rrc_panel_scroll))
+    touch_ui.handle(g, (DRAG, px, 150, -1, 700000), 0)
+    settle(g)
+    check("panel: the second step scrolls one row", g._rrc_panel_scroll == 1 and g._rrc_panel_idx == 1, "%d %d" % (g._rrc_panel_scroll, g._rrc_panel_idx))
+    g._rrc_panel_idx = 0
+    g._rrc_panel_scroll = 0
+    touch_ui.handle(g, (FLICK, px, 150, -1, 800000), 0)
+    settle(g)
+    _pg = rrc_ui.PANEL_ROWS - 1
+    check("panel: a flick up pages a screen less one", g._rrc_panel_scroll == _pg and g._rrc_panel_idx == _pg,
+          "%d %d" % (g._rrc_panel_scroll, g._rrc_panel_idx))
     k0 = touch_ui.layout_key(g)
     g._rrc_rooms = [("x%d" % k, "") for k in range(12)]
     check("panel: the list changing under the same cursor is a new layout", touch_ui.layout_key(g) != k0)
@@ -1579,14 +1619,18 @@ def test_shell_menu_review():
     check("the footer's (ENT)send is dead in touch: it would act on the cursor row, not the one under the finger",
           tap(g, 20, 310) is False and g.sent == [] and g._shell_menu is True, repr(g.sent))
     g = menu(0)
-    touch_ui.handle(g, (DRAG, 100, 150, -2, 600000), 0)
+    g._menu_top = 0
+    touch_ui.handle(g, (DRAG, 100, 150, 2, 600000), 0)
     settle(g)
-    check("a drag past the top stops there (the keys wrap; a finger must not jump to the end)", g._shell_menu_idx == 0, str(g._shell_menu_idx))
-    touch_ui.handle(g, (FLICK, 100, 150, 1, 700000), 0)
+    check("a drag down at the top stops there (the keys wrap; a finger must not jump to the end)",
+          g._shell_menu_idx == 0 and g._menu_top == 0, "%d %d" % (g._shell_menu_idx, g._menu_top))
+    touch_ui.handle(g, (FLICK, 100, 150, -1, 700000), 0)
     settle(g)
-    touch_ui.handle(g, (FLICK, 100, 150, 1, 800000), 0)
+    touch_ui.handle(g, (FLICK, 100, 150, -1, 800000), 0)
     settle(g)
-    check("flicks stop at the last item", g._shell_menu_idx == n - 1, str(g._shell_menu_idx))
+    _end = n - ui._pro.MENU_ROWS
+    check("flicks up stop with the last item in view, the highlight on its screen row",
+          g._menu_top == _end and g._shell_menu_idx == _end, "%d %d" % (g._menu_top, g._shell_menu_idx))
     g = mkui(ui.STATE_NODES)
     for i in range(3):
         g.add_peer(bytes([i + 1]) * 16, "p%d" % i)
@@ -1702,7 +1746,7 @@ if __name__ == "__main__":
     test_footer_taps_press_the_hinted_key()
     test_footer_zones_from_another_state_are_ignored()
     test_navbar_clock_opens_setup()
-    test_drag_and_flick_move_the_selection()
+    test_drag_and_flick_scroll_the_list()
     test_stale_layout_guard()
     test_stale_long_press_is_dropped()
     test_locked_and_dark()

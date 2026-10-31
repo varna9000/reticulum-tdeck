@@ -51,11 +51,61 @@ def _pro_menu(ui):
     return _u._pro is not None and ui.state == _u.STATE_SHELL and ui._shell_menu
 
 
-def _menu_clamp(ui, steps):
-    """The shell menu's keys wrap around; a finger dragging past an end must
-    stop there, not jump to the other one."""
-    idx = ui._shell_menu_idx
-    return max(-idx, min(len(_u._SHELL_CTRL_ITEMS) - 1 - idx, steps))
+def _list_state(ui):
+    """(get_scroll, set_scroll, get_sel, set_sel, visible, total) for the Pro
+    list that is up, or None. Every list keeps a window offset and a
+    selection; the draws pull the window back only when the selection
+    leaves it, so a window moved together with its selection stays put."""
+    p = _u._pro
+    if _pro_find(ui):
+        return (lambda: ui._find_scroll, lambda v: setattr(ui, "_find_scroll", v),
+                lambda: ui._find_sel, lambda v: setattr(ui, "_find_sel", v),
+                ui._find_rows(), len(ui._find_res))
+    if _pro_list(ui):
+        ia, sa, keys = _lists(ui)
+        return (lambda: getattr(ui, sa), lambda v: setattr(ui, sa, v),
+                lambda: getattr(ui, ia), lambda v: setattr(ui, ia, v),
+                p.LIST_ROWS, len(keys))
+    if _pro_setup(ui):
+        return (lambda: ui._settings_scroll, lambda v: setattr(ui, "_settings_scroll", v),
+                lambda: p.setup_row(ui), lambda v: setattr(ui, "_settings_idx", p.SETUP_IDX[v]),
+                p.SETUP_ROWS, len(p.SETUP_IDX))
+    if _pro_wifi(ui):
+        return (lambda: ui._settings_scroll, lambda v: setattr(ui, "_settings_scroll", v),
+                lambda: ui._settings_idx, lambda v: setattr(ui, "_settings_idx", v),
+                p.MENU_ROWS, len(ui._wifi_networks))
+    if _pro_menu(ui):
+        return (lambda: getattr(ui, "_menu_top", 0), lambda v: setattr(ui, "_menu_top", v),
+                lambda: ui._shell_menu_idx, lambda v: setattr(ui, "_shell_menu_idx", v),
+                p.MENU_ROWS, len(_u._SHELL_CTRL_ITEMS))
+    if _pro_panel(ui):
+        import rrc_ui
+        return (lambda: ui._rrc_panel_scroll, lambda v: setattr(ui, "_rrc_panel_scroll", v),
+                lambda: ui._rrc_panel_idx, lambda v: setattr(ui, "_rrc_panel_idx", v),
+                rrc_ui.PANEL_ROWS, rrc_ui._panel_len(ui))
+    return None
+
+
+def _scroll_list(ui, k):
+    """A list scrolls like a page: k rows of finger travel (+ = finger
+    moved down) bring earlier rows into view, and the highlight keeps its
+    screen row by moving with the window. At an end nothing moves -- the
+    highlight never walks against the finger (taps select on the Pro).
+    True when this screen is such a list."""
+    st = _list_state(ui)
+    if st is None:
+        return False
+    get_scroll, set_scroll, get_sel, set_sel, visible, total = st
+    if total <= 0:
+        return True
+    scroll = get_scroll()
+    new = max(0, min(max(0, total - visible), scroll - k))
+    moved = new - scroll
+    if moved:
+        set_scroll(new)
+        set_sel(max(0, min(total - 1, get_sel() + moved)))
+        ui.dirty = True
+    return True
 
 
 def _tap_pro_rows(ui, y):
@@ -658,34 +708,26 @@ def handle(ui, g, changed_ms):
     if kind == LONG:
         return _long(ui, x, y)
     if kind == DRAG:
-        if (_pro_list(ui) or _pro_setup(ui) or _pro_panel(ui) or _pro_find(ui)
-                or _pro_wifi(ui) or _pro_menu(ui)):
+        lst = _list_state(ui)
+        if lst is not None:
             if _drag_acc[0] != t_down:
                 _drag_acc[0] = t_down
                 _drag_acc[1] = 0
             acc = _drag_acc[1] + n
             rows = int(acc / 2)             # toward zero: two steps per 32 px row
             _drag_acc[1] = acc - rows * 2
-            if _pro_menu(ui):
-                rows = _menu_clamp(ui, rows)
             if ui._sheet is not None:
                 return False
             if rows:
-                _steps(ui, rows)
+                _scroll_list(ui, rows)
             return True
         return _drag(ui, n)
     if kind == FLICK:
-        if _pro_panel(ui):
-            import rrc_ui
-            _steps(ui, n * (rrc_ui.PANEL_ROWS - 1))
-            return True
-        if _pro_menu(ui):
-            _steps(ui, _menu_clamp(ui, n * (_u.LIST_ROWS - 1)))
-            return True
-        if _pro_list(ui) or _pro_setup(ui) or _pro_find(ui) or _pro_wifi(ui):
-            if ui._sheet is not None:
+        lst = _list_state(ui)
+        if lst is not None:
+            if ui._sheet is not None and not _pro_panel(ui) and not _pro_menu(ui):
                 return False
-            _steps(ui, n * (_u.LIST_ROWS - 1))
+            _scroll_list(ui, n * (lst[4] - 1))   # a screen of rows less one
             return True
         return _drag(ui, n * _PAGE)
     if kind == SWIPE:

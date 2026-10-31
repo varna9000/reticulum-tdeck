@@ -160,6 +160,8 @@ The Pro has no trackball; its **alt** key (sticky, tap it then the letter within
 | Up / down (cursor, scroll) | alt+E / alt+X (bare e / x also work on list screens) |
 | Left / right (tabs, paging) | alt+S / alt+F (bare b cycles tabs) |
 | Click (open, select) | alt+W, or Enter where the screen has no text field |
+
+The touch panel carries the same navigation by finger. A tap on a row selects it and acts (rows that drop a link or quit a shell take a second tap to confirm). A drag or flick moves lists and pages the way a phone does: finger up shows what is below, finger down what is above, and the highlight keeps its place on the screen while the rows move under it; at the top or bottom nothing moves. A swipe to the right is back on any screen with no other use for it; a sideways swipe on the selected Setup row steps its value, and on the node list it changes tab. A long press opens a row's menu.
 | Back | Backspace on an empty field |
 | Keyboard backlight | alt+B |
 
@@ -179,7 +181,7 @@ Enter download mode by holding **BOOT** while pressing reset. Two quirks of the 
 loader: esptool syncs with it directly (no JTAG detour needed), but the chip tends to land back in
 the loader after esptool closes the port, so **press reset once** after flashing. The filesystem
 carries only `tdeck_pro_config.py`; the radio defaults there are US 915 MHz, so edit `freq_khz` to
-match your mesh. Voice messages work on the Pro through its PDM microphone; the touch panel is not used.
+match your mesh. Voice messages work on the Pro through its PDM microphone, and the touch panel is live (see the gestures above).
 
 ### Option C: Manual Setup (Development)
 
