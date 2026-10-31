@@ -67,15 +67,16 @@ def regulator(dcdc):
     un-boosted ones: 8.8 mA LDO against 4.6 mA DC-DC, plus the TCXO."""
     board.spi_acquire_lora()
     try:
-        modem.standby()
-        modem._cmd("BB", 0x80, 0)                    # STDBY_RC
-        modem._cmd("BB", 0x96, 0x01 if dcdc else 0x00)
-        time.sleep_ms(5)
-        modem.calibrate()
-        modem.calibrate_image()
-        time.sleep_ms(10)
-        modem.configure(lora_cfg)
-        modem.start_recv(continuous=True)
+        for name, fn in (("standby", modem.standby),
+                         ("stdby_rc", lambda: modem._cmd("BB", 0x80, 0)),
+                         ("regulator", lambda: modem._cmd("BB", 0x96, 0x01 if dcdc else 0x00)),
+                         ("calibrate", modem.calibrate),
+                         ("calibrate_image", modem.calibrate_image),
+                         ("configure", lambda: modem.configure(lora_cfg)),
+                         ("start_recv", lambda: modem.start_recv(continuous=True))):
+            fn()
+            time.sleep_ms(10)
+            log("   %s %s ok" % ("dcdc" if dcdc else "ldo", name))
     finally:
         board.spi_release_lora()
 
@@ -118,18 +119,27 @@ def awake(tag, n=8):
     log("%-40s %s" % (tag, s))
 
 
-regulator(False)
-time.sleep(2)
-block("L  LDO, radio listening, asleep")
-awake("   LDO, awake")
-regulator(True)
-time.sleep(2)
-block("D  DC-DC, radio listening, asleep")
-awake("   DC-DC, awake")
-regulator(False)
-time.sleep(2)
-block("L  LDO again")
-log("done")
+try:
+    regulator(False)
+    time.sleep(2)
+    block("L  LDO, radio listening, asleep")
+    awake("   LDO, awake")
+    regulator(True)
+    time.sleep(2)
+    block("D  DC-DC, radio listening, asleep")
+    awake("   DC-DC, awake")
+    regulator(False)
+    time.sleep(2)
+    block("L  LDO again")
+    log("done")
+except Exception as e:
+    # The first battery run (2026-10-31) stopped after the LDO rows with
+    # nothing written: whatever fails here must say so in the file.
+    import io
+    import sys
+    buf = io.StringIO()
+    sys.print_exception(e, buf)
+    log("FAILED %r\n%s" % (e, buf.getvalue()))
 board.set_kbd_backlight(True)
 while True:
     time.sleep(1)

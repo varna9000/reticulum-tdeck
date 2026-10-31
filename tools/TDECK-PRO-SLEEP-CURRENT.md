@@ -202,14 +202,35 @@ through 12 x 5 s of the app's sleep per block, and switches the regulator
 live between blocks (LDO, DC-DC, LDO again). Expected from the datasheet:
 about 5 mA less in every row where the radio listens.
 
+Run 2 (the one that completed; 4.18 V at the start):
+
 ```
-(readings to be filled in from /measure.txt after the bench run)
+L  LDO, radio listening, asleep          [-16, -15, -15, -15, -16, -15, -16, -15, -15, -15, -16, -15]
+   LDO, awake                            [-67, -67, -68, -67, -68, -68, -68, -68]
+D  DC-DC, radio listening, asleep        [-11, -11, -11, -11, -11, -11, -11, -11, -11, -11, -11, -11]
+   DC-DC, awake                          [-34, -63, -63, -63, -64, -63, -63, -63]
+L  LDO again                             [-15, -16, -15, -16, -15, -16, -15, -15, -15, -15, -15, -15]
 ```
+
+So the app's sleep with the radio listening is **15-16 mA in LDO mode and
+11 mA in DC-DC mode**: the 4-5 mA the datasheet gives for the regulator
+(8.8 against 4.6 mA at the reset gain), on top of the 5 mA board floor and
+the TCXO. Awake with the radio listening read 67 mA (LDO) and 63 mA
+(DC-DC) here.
+
+Run 1 (3.99 V at the start) wrote its LDO rows -- asleep 16 mA, awake
+**30 mA** -- and then stopped without a trace at the switch to DC-DC; the
+instrumented run 2 passed every step. Neither the stop nor the 30 against
+67 mA awake is explained: the awake rows are taken right after a sleep
+block, and something about the deck's state between the two runs (the
+charge level, a packet in flight, what the first run's crash left behind)
+differs. The asleep figures, which are what the deck spends its hours in,
+agree between the runs.
 
 ## Not done
 
-- The app's sleep current with the radio listening, after the fix
-  (the DC-DC probe above measures exactly that; run pending).
+- Why run 1 of the DC-DC probe stopped at the regulator switch, and why its
+  awake row read 30 mA against run 2's 67 mA.
 - LRCK still drives the DAC while the deck is awake (13 mA); only the sleep
   releases it.
 - The T-Deck v1 is unchanged. It has no fuel gauge, was not on the bench, and
