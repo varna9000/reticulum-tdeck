@@ -16,12 +16,16 @@ BACKOFF_MS = 60000     # after a failed sleep call
 POLL_MS = 100          # how often the loop re-evaluates (awake gap between sleeps)
 USB_GRACE_MS = 3000    # VBUS seen but no host frames yet: give enumeration this long
 
-# WiFi away from its access point. The saved "wifi_enabled" used to gate
-# sleep on its own, and MicroPython's station reconnects to a missing AP
-# forever: a deck carried out of range never slept and ran at WiFi-scan
-# current until the pack was flat (Pro, 2026-10-13: 1400 mAh gone in a day,
-# cell at 2 V). The station is switched off once the deck has been dark and
-# unconnected this long, and tried again while someone is looking at it.
+# WiFi with nothing to do. A manual light sleep drops a WiFi association,
+# so a station that is up keeps the ESP32 awake (may_sleep: "wifi"). Two
+# drains came from leaving one up with no job: carried out of range, the
+# station hunted its AP forever (Pro, 2026-10-13: 1400 mAh gone in a day,
+# cell at 2 V); at home with TCP off, it sat connected and idle with power
+# save disabled (2026-10-31: full to the 3.2 V cut in ~14 h, ~100 mA). The
+# station has a job only while TCP is on or someone is looking at the
+# screen. With TCP off it is switched off once the deck has been dark this
+# long; with TCP on it stays (the link is real-time) unless it has lost its
+# AP for this long. Either way it is tried again while the screen is lit.
 WIFI_GIVEUP_MS = 30000
 WIFI_RETRY_MS = 60000
 
@@ -87,14 +91,21 @@ def may_sleep(s):
     return None
 
 
-def wifi_action(wanted, connected, sta_on, screen_on, unconnected_ms, since_try_ms):
-    """What to do about the WiFi station this pass: "off" (stop a station
-    that has been hunting for its AP while the deck was dark), "on" (try
-    again, the screen is lit and the last try is old enough) or None."""
-    if not wanted or connected:
+def wifi_action(wanted, tcp_wanted, connected, sta_on, screen_on, dark_ms,
+                unconnected_ms, since_try_ms):
+    """What to do about the WiFi station this pass: "off" (a dark deck's
+    station has no job: TCP is off, or it has lost its AP), "on" (try
+    again, the screen is lit and the last try is old enough) or None.
+    dark_ms: how long the screen has been off; unconnected_ms: how long
+    the station has been without its AP; both 0 when not applicable."""
+    if not wanted:
         return None
     if sta_on:
-        if not screen_on and unconnected_ms >= WIFI_GIVEUP_MS:
+        if screen_on:
+            return None
+        if not tcp_wanted:
+            return "off" if dark_ms >= WIFI_GIVEUP_MS else None
+        if not connected and unconnected_ms >= WIFI_GIVEUP_MS:
             return "off"
         return None
     if screen_on and since_try_ms >= WIFI_RETRY_MS:

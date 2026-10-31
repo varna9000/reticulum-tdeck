@@ -467,9 +467,12 @@ check("the Pro parks the GPS serial line at power-up", "Pin(config.GPS_TX, Pin.I
 check("...after switching the GPS off", pu.index("config.GPS_EN") < pu.index("config.GPS_TX"))
 
 
-print("wifi_action (an unreachable AP must not hold the deck awake)")
-_W = dict(wanted=True, connected=False, sta_on=True, screen_on=False,
-          unconnected_ms=power.WIFI_GIVEUP_MS, since_try_ms=power.WIFI_RETRY_MS)
+print("wifi_action (a station with no job must not hold the deck awake)")
+# Two drains, same gate: 2026-10-13 the station hunted an absent AP all
+# night; 2026-10-31 it sat connected at home with TCP off. A station has a
+# job only while TCP is on or someone is looking at the screen.
+_W = dict(wanted=True, tcp_wanted=False, connected=True, sta_on=True, screen_on=False,
+          dark_ms=power.WIFI_GIVEUP_MS, unconnected_ms=0, since_try_ms=power.WIFI_RETRY_MS)
 
 
 def _wa(**over):
@@ -479,14 +482,28 @@ def _wa(**over):
 
 
 check("not wanted: nothing", _wa(wanted=False) is None)
-check("connected: nothing", _wa(connected=True) is None)
-check("dark, unconnected past give-up: off", _wa() == "off")
-check("dark, unconnected before give-up: wait", _wa(unconnected_ms=power.WIFI_GIVEUP_MS - 1) is None)
-check("lit, unconnected: never off", _wa(screen_on=True, unconnected_ms=10 ** 7) is None)
+check("tcp off, connected, dark past give-up: off", _wa() == "off")
+check("tcp off, connected, dark before give-up: wait", _wa(dark_ms=power.WIFI_GIVEUP_MS - 1) is None)
+check("tcp off, hunting, dark past give-up: off", _wa(connected=False) == "off")
+check("tcp off, connected, lit: stay", _wa(screen_on=True, dark_ms=10 ** 7) is None)
+check("tcp on, connected, dark: stay", _wa(tcp_wanted=True, dark_ms=10 ** 7) is None)
+check("tcp on, hunting, dark past give-up: off",
+      _wa(tcp_wanted=True, connected=False, unconnected_ms=power.WIFI_GIVEUP_MS) == "off")
+check("tcp on, hunting, dark before give-up: wait",
+      _wa(tcp_wanted=True, connected=False, unconnected_ms=power.WIFI_GIVEUP_MS - 1) is None)
+check("tcp on, hunting, lit: never off",
+      _wa(tcp_wanted=True, connected=False, screen_on=True, unconnected_ms=10 ** 7) is None)
 check("lit, radio off, retry due: on", _wa(screen_on=True, sta_on=False) == "on")
 check("lit, radio off, retry not due: wait",
       _wa(screen_on=True, sta_on=False, since_try_ms=power.WIFI_RETRY_MS - 1) is None)
 check("dark, radio off: never on", _wa(sta_on=False, since_try_ms=10 ** 7) is None)
+_node_src = open(os.path.join(ROOT, "tdeck_node.py")).read()
+check("node never disables WiFi power save (pm=0 kept the receiver on all night)",
+      "pm=0" not in _node_src and "PM_NONE" not in _node_src)
+_off_branch = _node_src.split("def _wifi_policy_loop", 1)[1].split('if act == "off"', 1)[1].split('elif act == "on"', 1)[0]
+check("give-up is guarded against a connect in flight", "_wifi_connecting" in _off_branch)
+check("give-up without TCP writes no settings",
+      "_save_settings" not in _node_src.split("def _wifi_give_up", 1)[1].split("_wifi_radio_off()", 1)[1][:400])
 
 print("LowBattery (cut the pack before the chip browns out)")
 check("threshold above the brownout, below the empty mark", 2.9 < power.LOW_BATTERY_V <= 3.3)

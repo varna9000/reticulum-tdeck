@@ -803,11 +803,9 @@ def wifi_connect(ssid, password):
     wlan.connect(ssid, password)
     for _ in range(40):  # ~8s timeout
         if wlan.isconnected():
-            # Disable power saving — ESP32 drops broadcast packets in PS mode
-            try:
-                wlan.config(pm=0)  # WIFI_PS_NONE
-            except Exception:
-                pass
+            # Left at ESP-IDF's default modem sleep: nothing here needs
+            # broadcast (which that mode delivers after DTIM anyway), and
+            # a receiver kept on all night costs ~50 mA.
             ip = wlan.ifconfig()[0]
             settings = _load_settings()
             settings["wifi_ssid"] = ssid
@@ -857,10 +855,7 @@ async def _wifi_connect_task(ssid, password, auto=False):
         wlan.connect(ssid, password)
         for _ in range(40):  # ~8s, yielding so the UI/LoRa keep running
             if wlan.isconnected():
-                try:
-                    wlan.config(pm=0)  # WIFI_PS_NONE — ESP32 drops bcast in PS
-                except Exception:
-                    pass
+                # Modem sleep stays on (see wifi_connect).
                 ip = wlan.ifconfig()[0]
                 settings = _load_settings()
                 settings["wifi_ssid"] = ssid
@@ -887,20 +882,21 @@ async def _wifi_connect_task(ssid, password, auto=False):
 
 
 def _wifi_give_up():
-    """The deck has been dark with its station hunting for an AP that is
-    not there: station off, and the TCP link (if any) with it, which puts
-    LoRa back. The saved wishes stay so the next lit screen tries again."""
+    """The deck is dark and its station has no job: TCP is off, or it has
+    been hunting for an AP that is not there. Station off, and the TCP
+    link (if any) with it, which puts LoRa back. The saved wishes stay so
+    the next lit screen tries again."""
     global _wifi_enabled
-    settings = _load_settings()
-    want_tcp = bool(settings.get("tcp_enabled")) or _tcp_iface is not None
-    if _tcp_iface is not None:
-        tcp_toggle(False)            # also stops WiFi and restarts LoRa; clears both flags
-        gui._tcp_enabled = False     # the Setup page clears this itself; here nobody else does
-    else:
-        _wifi_radio_off()
+    if _tcp_iface is None:
+        _wifi_radio_off()            # LoRa untouched, nothing saved
+        if DEBUG >= 1:
+            print("[WiFi] idle while dark; station off until the screen wakes")
+        return
+    tcp_toggle(False)                # also stops WiFi and restarts LoRa; clears both flags
+    gui._tcp_enabled = False         # the Setup page clears this itself; here nobody else does
     settings = _load_settings()
     settings["wifi_enabled"] = True
-    settings["tcp_enabled"] = want_tcp
+    settings["tcp_enabled"] = True   # the link was up: that is the wish
     _save_settings(settings)
     _wifi_enabled = True
     if DEBUG >= 1:
@@ -909,15 +905,21 @@ def _wifi_give_up():
 
 async def _wifi_policy_loop():
     """Every few seconds: is the station still worth running (power.wifi_action)."""
-    global _wifi_unconnected_since, _wifi_last_try
+    global _wifi_unconnected_since, _wifi_last_try, _wifi_dark_since
     import uasyncio as asyncio
     import power
     while True:
         await asyncio.sleep(5)
         if not _wifi_enabled:
             _wifi_unconnected_since = None
+            _wifi_dark_since = None
             continue
         now = time.ticks_ms()
+        screen_on = bool(gui._screen_on)
+        if screen_on:
+            _wifi_dark_since = None
+        elif _wifi_dark_since is None:
+            _wifi_dark_since = now
         connected = False
         if _wifi_sta_on and _wlan is not None:
             try:
@@ -930,13 +932,22 @@ async def _wifi_policy_loop():
             _wifi_unconnected_since = now
             if gui._wifi_connected and _wifi_sta_on:
                 gui._wifi_connected = False      # the AP went away under us
+        # The station's job: a TCP link that is up or wished for. Read only
+        # on the pass that decides (station up, screen dark).
+        tcp_wanted = True
+        if _wifi_sta_on and not screen_on:
+            tcp_wanted = _tcp_iface is not None or bool(_load_settings().get("tcp_enabled"))
+        dark_ms = 0 if _wifi_dark_since is None else time.ticks_diff(now, _wifi_dark_since)
         unconnected_ms = 0 if _wifi_unconnected_since is None else time.ticks_diff(now, _wifi_unconnected_since)
         since_try_ms = power.WIFI_RETRY_MS if _wifi_last_try is None else time.ticks_diff(now, _wifi_last_try)
-        act = power.wifi_action(True, connected, _wifi_sta_on, bool(gui._screen_on),
-                                unconnected_ms, since_try_ms)
+        act = power.wifi_action(True, tcp_wanted, connected, _wifi_sta_on, screen_on,
+                                dark_ms, unconnected_ms, since_try_ms)
         if act == "off":
+            if gui._wifi_connecting:
+                continue                         # a connect is in flight; decide next pass
             _wifi_give_up()
             _wifi_unconnected_since = None
+            _wifi_dark_since = None
         elif act == "on":
             settings = _load_settings()
             ssid = settings.get("wifi_ssid")
@@ -1105,6 +1116,7 @@ _wifi_sta_on = False
 _wlan = None
 _wifi_unconnected_since = None
 _wifi_last_try = None
+_wifi_dark_since = None
 _tcp_starting = False
 
 
