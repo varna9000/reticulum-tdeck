@@ -501,6 +501,12 @@ p.step()
 check("set_freq failure logged once, not fatal", sum("clock" in m for m in logs) == 1, repr(logs))
 src = open(os.path.join(ROOT, "board_tdeck_pro.py")).read()
 check("the Pro idles at 80 MHz", "IDLE_CPU_MHZ = 80" in src and "AWAKE_CPU_MHZ = 240" in src)
+
+# The radio's own regulator: LDO RX is ~10 mA, DC-DC ~5 (SX1262 datasheet),
+# and the Pro listens through every sleep. The urns preset carries it.
+_presets = open(os.path.join(ROOT, "vendor", "uP-reticulum", "firmware", "lora_boards.py")).read()
+_pro_preset = _presets.split('"tdeck_pro_sx1262": {', 1)[1].split("},", 1)[0]
+check("the Pro's radio preset runs the SX1262 in DC-DC mode", '"use_dcdc": True' in _pro_preset)
 # The v1 has no fuel gauge to measure with and was not on the bench: it keeps
 # the sleep it shipped with until someone can check a change on the device.
 src = open(os.path.join(ROOT, "board_tdeck_v1.py")).read()
