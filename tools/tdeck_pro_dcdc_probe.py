@@ -8,8 +8,8 @@
 # 12 x 5 s light sleeps per block, exactly as tdeck_pro_sleep_fix_probe.py,
 # with the app's pad configuration applied (LRCK let go, flash pads standby)
 # and the radio in continuous RX the whole time. An awake row follows each
-# block. Expect D about 5 mA under L (datasheet: 10.1 -> 5.3 mA RX, boosted
-# gain, 125 kHz). Keyboard light ON = unplug USB now; OFF = measuring (~4
+# block. Expect D about 4 mA under L (datasheet: 8.8 -> 4.6 mA RX at the
+# reset gain, 125 kHz; the 1.5 mA TCXO stays). Keyboard light ON = unplug USB now; OFF = measuring (~4
 # min, hands off); ON again = done. Results in /measure.txt.
 #
 # The radio is built the way urns does it (LoRaInterface on the board's
@@ -58,10 +58,16 @@ lora_cfg = {
 
 
 def regulator(dcdc):
-    """lora.py's init sequence, applied live: standby, 0x96, recalibrate,
-    reconfigure (which also re-writes the RX gain register), listen."""
+    """lora.py's init sequence, applied live. standby() first: it clears
+    the driver's receiving state (configure() refuses while a continuous
+    RX is up), then the raw STDBY_RC so 0x96 lands in the mode the
+    datasheet asks for; recalibrate, reconfigure, listen. The RX gain
+    register is left at its reset value both times, as the app leaves it
+    (neither passes rx_boost), so the datasheet figures to expect are the
+    un-boosted ones: 8.8 mA LDO against 4.6 mA DC-DC, plus the TCXO."""
     board.spi_acquire_lora()
     try:
+        modem.standby()
         modem._cmd("BB", 0x80, 0)                    # STDBY_RC
         modem._cmd("BB", 0x96, 0x01 if dcdc else 0x00)
         time.sleep_ms(5)

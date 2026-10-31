@@ -94,10 +94,14 @@ def may_sleep(s):
 def wifi_action(wanted, tcp_wanted, connected, sta_on, screen_on, dark_ms,
                 unconnected_ms, since_try_ms):
     """What to do about the WiFi station this pass: "off" (a dark deck's
-    station has no job: TCP is off, or it has lost its AP), "on" (try
-    again, the screen is lit and the last try is old enough) or None.
-    dark_ms: how long the screen has been off; unconnected_ms: how long
-    the station has been without its AP; both 0 when not applicable."""
+    station has no job: no TCP link, or it has lost its AP), "on" (TCP is
+    wished, the screen is lit and the last try is old enough) or None.
+    tcp_wanted: the live TCP link while the station is up (a saved wish
+    whose server is down must not hold the deck awake), the saved wish
+    while it is down (nothing else uses the station, so a glance at the
+    screen must not re-associate). dark_ms: how long the screen has been
+    off; unconnected_ms: how long the station has been without its AP;
+    both 0 when not applicable."""
     if not wanted:
         return None
     if sta_on:
@@ -108,7 +112,7 @@ def wifi_action(wanted, tcp_wanted, connected, sta_on, screen_on, dark_ms,
         if not connected and unconnected_ms >= WIFI_GIVEUP_MS:
             return "off"
         return None
-    if screen_on and since_try_ms >= WIFI_RETRY_MS:
+    if screen_on and tcp_wanted and since_try_ms >= WIFI_RETRY_MS:
         return "on"
     return None
 

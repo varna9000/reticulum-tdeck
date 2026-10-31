@@ -858,11 +858,14 @@ async def _wifi_connect_task(ssid, password, auto=False):
                 # Modem sleep stays on (see wifi_connect).
                 ip = wlan.ifconfig()[0]
                 settings = _load_settings()
+                changed = (settings.get("wifi_ssid") != ssid or settings.get("wifi_pass") != password
+                           or settings.get("wifi_enabled") is not True)
                 settings["wifi_ssid"] = ssid
                 settings["wifi_pass"] = password
                 settings["wifi_enabled"] = True
                 _wifi_enabled = True
-                _save_settings(settings)
+                if changed:                      # a flash write per association otherwise
+                    _save_settings(settings)
                 break
             await asyncio.sleep_ms(200)
     except Exception as e:
@@ -872,8 +875,9 @@ async def _wifi_connect_task(ssid, password, auto=False):
         print("[WiFi]", "connected " + ip if ip else "connect failed", ssid)
     if not auto:
         gui.set_wifi_result(ip)
-    elif ip:
-        gui._wifi_connecting = False
+    else:
+        gui._wifi_connecting = False     # whatever happened, the policy loop may act again
+    if auto and ip:
         gui._wifi_connected = True
         gui._wifi_ssid_current = ssid
         gui._wifi_ip = ip
@@ -932,14 +936,17 @@ async def _wifi_policy_loop():
             _wifi_unconnected_since = now
             if gui._wifi_connected and _wifi_sta_on:
                 gui._wifi_connected = False      # the AP went away under us
-        # The station's job: a TCP link that is up or wished for. Read only
-        # on the pass that decides (station up, screen dark).
-        tcp_wanted = True
-        if _wifi_sta_on and not screen_on:
-            tcp_wanted = _tcp_iface is not None or bool(_load_settings().get("tcp_enabled"))
+        # The station's job. Up: the live TCP link only -- a saved wish whose
+        # server is unreachable must not hold the deck awake all night.
+        # Down: the saved wish, read only when a retry is actually due.
+        since_try_ms = power.WIFI_RETRY_MS if _wifi_last_try is None else time.ticks_diff(now, _wifi_last_try)
+        if _wifi_sta_on:
+            tcp_wanted = _tcp_iface is not None
+        else:
+            tcp_wanted = bool(screen_on and since_try_ms >= power.WIFI_RETRY_MS
+                              and _load_settings().get("tcp_enabled"))
         dark_ms = 0 if _wifi_dark_since is None else time.ticks_diff(now, _wifi_dark_since)
         unconnected_ms = 0 if _wifi_unconnected_since is None else time.ticks_diff(now, _wifi_unconnected_since)
-        since_try_ms = power.WIFI_RETRY_MS if _wifi_last_try is None else time.ticks_diff(now, _wifi_last_try)
         act = power.wifi_action(True, tcp_wanted, connected, _wifi_sta_on, screen_on,
                                 dark_ms, unconnected_ms, since_try_ms)
         if act == "off":
@@ -956,6 +963,7 @@ async def _wifi_policy_loop():
             if ssid and password and not gui._wifi_connecting:
                 if DEBUG >= 1:
                     print("[WiFi] screen lit, trying", ssid, "again")
+                gui._wifi_connecting = True      # the give-up above waits for this to clear
                 wifi_connect_async(ssid, password, auto=True)
 
 

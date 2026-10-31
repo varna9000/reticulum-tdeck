@@ -547,11 +547,26 @@ check("tcp on, hunting, dark before give-up: wait",
       _wa(tcp_wanted=True, connected=False, unconnected_ms=power.WIFI_GIVEUP_MS - 1) is None)
 check("tcp on, hunting, lit: never off",
       _wa(tcp_wanted=True, connected=False, screen_on=True, unconnected_ms=10 ** 7) is None)
-check("lit, radio off, retry due: on", _wa(screen_on=True, sta_on=False) == "on")
+check("lit, radio off, retry due, tcp wished: on", _wa(screen_on=True, sta_on=False, tcp_wanted=True) == "on")
+check("lit, radio off, retry due, tcp off: stays off (a glance must not re-associate)",
+      _wa(screen_on=True, sta_on=False) is None)
 check("lit, radio off, retry not due: wait",
-      _wa(screen_on=True, sta_on=False, since_try_ms=power.WIFI_RETRY_MS - 1) is None)
+      _wa(screen_on=True, sta_on=False, tcp_wanted=True, since_try_ms=power.WIFI_RETRY_MS - 1) is None)
 check("dark, radio off: never on", _wa(sta_on=False, since_try_ms=10 ** 7) is None)
 _node_src = open(os.path.join(ROOT, "tdeck_node.py")).read()
+_loop_src = _node_src.split("def _wifi_policy_loop", 1)[1].split("async def _low_battery_loop", 1)[0]
+check("station up: its job is the live TCP link, never the saved wish (a server that is down must not hold it)",
+      "_tcp_iface is not None" in _loop_src.split("if _wifi_sta_on:\n", 1)[1][:200]
+      and "_load_settings" not in _loop_src.split("if _wifi_sta_on:\n", 1)[1].split("else", 1)[0])
+check("on-branch marks the connect in flight", "_wifi_connecting = True" in _loop_src.split('elif act == "on"', 1)[1])
+_task_src = _node_src.split("async def _wifi_connect_task", 1)[1].split("def _wifi_give_up", 1)[0]
+check("auto connect clears the in-flight flag on both outcomes",
+      "gui._wifi_connecting = False" in _task_src.split("if not auto:", 1)[1].split("elif ip:", 1)[0]
+      or "gui._wifi_connecting = False\n    if not auto" in _task_src)
+check("auto connect does not rewrite unchanged settings", "changed" in _task_src.split("if wlan.isconnected():", 1)[1][:900])
+_probe_src = open(os.path.join(ROOT, "tools", "tdeck_pro_dcdc_probe.py")).read()
+check("dcdc probe leaves continuous RX through the driver before the raw regulator write",
+      "modem.standby()" in _probe_src.split("def regulator", 1)[1].split('_cmd("BB", 0x96', 1)[0])
 check("node never disables WiFi power save (pm=0 kept the receiver on all night)",
       "pm=0" not in _node_src and "PM_NONE" not in _node_src)
 _off_branch = _node_src.split("def _wifi_policy_loop", 1)[1].split('if act == "off"', 1)[1].split('elif act == "on"', 1)[0]
