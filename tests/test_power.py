@@ -573,7 +573,7 @@ _task_src = _node_src.split("async def _wifi_connect_task", 1)[1].split("def wif
 check("auto connect does not rewrite unchanged settings", "changed" in _task_src.split("if wlan.isconnected():", 1)[1][:900])
 _probe_src = open(os.path.join(ROOT, "tools", "tdeck_pro_dcdc_probe.py")).read()
 check("dcdc probe leaves continuous RX through the driver before the raw regulator write",
-      "modem.standby()" in _probe_src.split("def regulator", 1)[1].split('_cmd("BB", 0x96', 1)[0])
+      "modem.standby" in _probe_src.split("def regulator", 1)[1].split('_cmd("BB", 0x96', 1)[0])
 
 print("tcp_job (a TCP link that lost its server is not a job for the station)")
 check("no link: no job", power.tcp_job(False, False, 10 ** 7) is False)
