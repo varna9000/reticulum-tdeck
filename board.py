@@ -105,3 +105,16 @@ power_off = _impl.power_off
 sleep_wake_pins = _impl.sleep_wake_pins
 before_sleep = _impl.before_sleep
 after_wake = _impl.after_wake
+# Optional sleep tuning a board may publish (power.py reads them off this
+# module with getattr): SLEEP_POLL_MS caps each sleep so a keyboard that
+# cannot wake the chip gets polled (the v1); sleep_isolate_pins() names pads
+# to let go for the sleep and SLEEP_MSPI_STANDBY opts into ESP-IDF's
+# flash/PSRAM standby pull-ups (the Pro); IDLE_CPU_MHZ / AWAKE_CPU_MHZ set
+# the CPU clock while the screen is dark and idle / otherwise. The boards
+# defined the first three on 2026-10-11 but nothing forwarded them, so the
+# app's sleep ran without them until 2026-10-31.
+SLEEP_POLL_MS = getattr(_impl, "SLEEP_POLL_MS", None)
+sleep_isolate_pins = getattr(_impl, "sleep_isolate_pins", None)
+SLEEP_MSPI_STANDBY = getattr(_impl, "SLEEP_MSPI_STANDBY", False)
+IDLE_CPU_MHZ = getattr(_impl, "IDLE_CPU_MHZ", None)
+AWAKE_CPU_MHZ = getattr(_impl, "AWAKE_CPU_MHZ", 240)

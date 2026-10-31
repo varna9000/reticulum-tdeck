@@ -520,6 +520,12 @@ check("pro: power_off is the charger's ship mode (REG09 BATFET_DIS)",
 check("v1: power_off exists and says it cannot", "def power_off" in _v1_src
       and "return False" in _v1_src.split("def power_off", 1)[1][:600])
 
+# The boards have published these since 2026-10-11, but the app hands power.py
+# the facade, so until board.py forwards them the Pro slept without its LRCK
+# isolation / flash-pad standby and the v1 without its 300 ms keyboard poll.
+for _name in ("SLEEP_POLL_MS", "sleep_isolate_pins", "SLEEP_MSPI_STANDBY", "IDLE_CPU_MHZ"):
+    check("board.py forwards %s" % _name, ('%s = getattr(_impl, "%s"' % (_name, _name)) in _board_src)
+
 if _failures:
     print("\n%d FAILED: %s" % (len(_failures), ", ".join(_failures)))
     sys.exit(1)
