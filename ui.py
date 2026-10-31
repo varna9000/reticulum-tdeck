@@ -935,6 +935,7 @@ class UI:
         self.on_add_contact = None       # (dest_hash) -> None — added by Find; seek a path
         self.on_wifi_scan = None      # () -> [(ssid, rssi), ...]
         self.on_wifi_connect = None   # (ssid, password) -> None — async; calls set_wifi_result
+        self.on_wifi_reconnect = None # () -> bool: re-associate with the saved network (TCP row, station down)
         self.on_tcp_toggle = None     # (enabled, host, port) -> bool — sync OFF path
         self.on_tcp_connect = None    # (host, port) -> None — async; calls set_tcp_result
         self.on_node_name = None      # (name) -> None
@@ -3885,7 +3886,15 @@ class UI:
                     return True
                 elif self._settings_idx == 1:  # TCP toggle
                     if not self._wifi_connected:
-                        return True  # requires WiFi
+                        # Needs WiFi. The station is switched off while the
+                        # deck is dark with TCP off, so bring it back with
+                        # the saved network; set_wifi_result opens the form.
+                        if (self.on_wifi_reconnect and not self._wifi_connecting
+                                and self.on_wifi_reconnect()):
+                            self._wifi_connecting = True
+                            self._cache = [''] * CACHE_ROWS
+                            self.dirty = True
+                        return True
                     if self._tcp_enabled:
                         # Toggle OFF
                         if self.on_tcp_toggle:
@@ -4266,7 +4275,7 @@ class UI:
             if self._wifi_ip:
                 wifi_status += " [" + self._wifi_ip + "]"
         else:
-            wifi_status = "not connected"
+            wifi_status = "connecting..." if self._wifi_connecting else "not connected"
         wifi_line = "WiFi: " + wifi_status
         tcp_line = "TCP:  " + (self._tcp_target if self._tcp_enabled else "OFF")
         name_line = "Name: " + self.node_name

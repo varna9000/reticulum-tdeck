@@ -117,6 +117,17 @@ def wifi_action(wanted, tcp_wanted, connected, sta_on, screen_on, dark_ms,
     return None
 
 
+def tcp_job(link_exists, online, offline_ms):
+    """Is the TCP link a job for the WiFi station? urns' TCP client keeps
+    its interface object and reconnects forever once the server is gone,
+    so "the link exists" is not enough: a link offline for the give-up
+    time is no job, and the station goes with it (the saved wish brings
+    both back on the next lit screen)."""
+    if not link_exists:
+        return False
+    return bool(online or offline_ms < WIFI_GIVEUP_MS)
+
+
 class LowBattery:
     """Counts consecutive low readings on battery; sample() is True on the
     reading that should power the deck off."""
@@ -281,11 +292,16 @@ class Power:
         quiet_ms = self._quiet_ms(iface)
         screen_on = bool(self.gui._screen_on)
         sleep_blocked = bool(self.gui._sleep_blocked())
-        self._clock(not screen_on and not sleep_blocked)
+        wifi_on = bool(self.wifi_on())
+        # Idle means idle on LoRa: a dark deck kept awake by a live TCP link
+        # is serving backbone traffic (verify, decrypt, resource windows
+        # tuned at full clock) and gets no clock drop for a 6-11 mA saving
+        # against the ~55 mA the station already costs.
+        self._clock(not screen_on and not sleep_blocked and not wifi_on)
         s = State(
             screen_on=screen_on,
             sleep_blocked=sleep_blocked,
-            wifi_on=bool(self.wifi_on()),
+            wifi_on=wifi_on,
             lora_online=bool(iface is not None and iface.online),
             usb=False,                    # probed below, once the UI-side gates pass
             sleep_on_usb=bool(self.sleep_on_usb),

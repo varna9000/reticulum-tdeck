@@ -784,43 +784,6 @@ def wifi_scan():
             iface.online = True
 
 
-def wifi_connect(ssid, password):
-    global _wifi_enabled, _wifi_sta_on, _wlan, _wifi_last_try
-    import network
-    wlan = network.WLAN(network.STA_IF)
-    # Reset radio state — ESP32 throws "Wifi Internal State Error"
-    # if connect() is called while radio is scanning or already connecting
-    try:
-        wlan.disconnect()
-    except:
-        pass
-    wlan.active(False)
-    time.sleep_ms(100)
-    wlan.active(True)
-    _wlan = wlan
-    _wifi_sta_on = True
-    _wifi_last_try = time.ticks_ms()
-    wlan.connect(ssid, password)
-    for _ in range(40):  # ~8s timeout
-        if wlan.isconnected():
-            # Left at ESP-IDF's default modem sleep: nothing here needs
-            # broadcast (which that mode delivers after DTIM anyway), and
-            # a receiver kept on all night costs ~50 mA.
-            ip = wlan.ifconfig()[0]
-            settings = _load_settings()
-            settings["wifi_ssid"] = ssid
-            settings["wifi_pass"] = password
-            settings["wifi_enabled"] = True
-            _wifi_enabled = True
-            _save_settings(settings)
-            if DEBUG >= 1:
-                print("[WiFi] Connected to", ssid, "IP:", ip)
-            return ip
-        time.sleep_ms(200)
-    if DEBUG >= 1:
-        print("[WiFi] Connection failed:", ssid)
-    return False
-
 
 def wifi_connect_async(ssid, password, auto=False):
     """GUI callback: connect without blocking the event loop. The UI shows
@@ -833,9 +796,11 @@ def wifi_connect_async(ssid, password, auto=False):
 
 
 async def _wifi_connect_task(ssid, password, auto=False):
-    global _wifi_enabled, _wifi_sta_on, _wlan, _wifi_last_try
+    global _wifi_enabled, _wifi_sta_on, _wlan, _wifi_last_try, _wifi_auto_connecting
     import uasyncio as asyncio
     import network
+    if auto:
+        _wifi_auto_connecting = True
     await asyncio.sleep_ms(50)  # let the UI paint "Connecting..." first
     ip = None
     _wifi_last_try = time.ticks_ms()
@@ -875,41 +840,51 @@ async def _wifi_connect_task(ssid, password, auto=False):
         print("[WiFi]", "connected " + ip if ip else "connect failed", ssid)
     if not auto:
         gui.set_wifi_result(ip)
-    else:
-        gui._wifi_connecting = False     # whatever happened, the policy loop may act again
-    if auto and ip:
+    elif ip:
         gui._wifi_connected = True
         gui._wifi_ssid_current = ssid
         gui._wifi_ip = ip
         asyncio.create_task(_start_saved_tcp())
+    _wifi_auto_connecting = False
     gc.collect()
 
 
+def wifi_reconnect_saved():
+    """Setup's TCP row with the station down: re-associate with the saved
+    network so the TCP form can open (gui.set_wifi_result does that).
+    True when a connect was started."""
+    if gui._wifi_connecting or _wifi_auto_connecting:
+        return False
+    settings = _load_settings()
+    ssid = settings.get("wifi_ssid")
+    password = settings.get("wifi_pass")
+    if not (ssid and password):
+        return False
+    gui._wifi_ssid = ssid            # what set_wifi_result reports as current
+    wifi_connect_async(ssid, password, auto=False)
+    return True
+
+
 def _wifi_give_up():
-    """The deck is dark and its station has no job: TCP is off, or it has
-    been hunting for an AP that is not there. Station off, and the TCP
-    link (if any) with it, which puts LoRa back. The saved wishes stay so
-    the next lit screen tries again."""
-    global _wifi_enabled
+    """The deck is dark and its station has no job: no TCP link (or one
+    that lost its server), or it has been hunting for an AP that is not
+    there. Station off, and the TCP link (if any) with it, which puts
+    LoRa back. The saved wishes are not touched: the next lit screen
+    tries again (TCP wished) or the TCP row reconnects (TCP off)."""
     if _tcp_iface is None:
         _wifi_radio_off()            # LoRa untouched, nothing saved
         if DEBUG >= 1:
             print("[WiFi] idle while dark; station off until the screen wakes")
         return
-    tcp_toggle(False)                # also stops WiFi and restarts LoRa; clears both flags
+    _tcp_down(save=False)            # link, station and LoRa restart; wishes kept
     gui._tcp_enabled = False         # the Setup page clears this itself; here nobody else does
-    settings = _load_settings()
-    settings["wifi_enabled"] = True
-    settings["tcp_enabled"] = True   # the link was up: that is the wish
-    _save_settings(settings)
-    _wifi_enabled = True
     if DEBUG >= 1:
-        print("[WiFi] no AP while dark; station off until the screen wakes")
+        print("[WiFi] no AP or server while dark; station off until the screen wakes")
 
 
 async def _wifi_policy_loop():
     """Every few seconds: is the station still worth running (power.wifi_action)."""
-    global _wifi_unconnected_since, _wifi_last_try, _wifi_dark_since
+    global _wifi_unconnected_since, _wifi_last_try, _wifi_dark_since, _tcp_offline_since
     import uasyncio as asyncio
     import power
     while True:
@@ -936,36 +911,48 @@ async def _wifi_policy_loop():
             _wifi_unconnected_since = now
             if gui._wifi_connected and _wifi_sta_on:
                 gui._wifi_connected = False      # the AP went away under us
-        # The station's job. Up: the live TCP link only -- a saved wish whose
-        # server is unreachable must not hold the deck awake all night.
-        # Down: the saved wish, read only when a retry is actually due.
+        # The TCP link's state: urns keeps the interface and reconnects
+        # forever once the server is gone, so note when it went offline.
+        link = _tcp_iface is not None
+        if not link or getattr(_tcp_iface, "online", False):
+            _tcp_offline_since = None
+        elif _tcp_offline_since is None:
+            _tcp_offline_since = now
+        offline_ms = 0 if _tcp_offline_since is None else time.ticks_diff(now, _tcp_offline_since)
         since_try_ms = power.WIFI_RETRY_MS if _wifi_last_try is None else time.ticks_diff(now, _wifi_last_try)
+        # The station's job. Up: the live TCP link (a saved wish whose
+        # server is unreachable must not hold the deck awake all night).
+        # Down: the saved wish, read only when a retry is actually due,
+        # and a "no" is not re-read for another retry period.
+        settings = None
         if _wifi_sta_on:
-            tcp_wanted = _tcp_iface is not None
+            tcp_wanted = power.tcp_job(link, link and _tcp_offline_since is None, offline_ms)
         else:
-            tcp_wanted = bool(screen_on and since_try_ms >= power.WIFI_RETRY_MS
-                              and _load_settings().get("tcp_enabled"))
+            tcp_wanted = False
+            if screen_on and since_try_ms >= power.WIFI_RETRY_MS:
+                settings = _load_settings()
+                tcp_wanted = bool(settings.get("tcp_enabled"))
+                if not tcp_wanted:
+                    _wifi_last_try = now
         dark_ms = 0 if _wifi_dark_since is None else time.ticks_diff(now, _wifi_dark_since)
         unconnected_ms = 0 if _wifi_unconnected_since is None else time.ticks_diff(now, _wifi_unconnected_since)
         act = power.wifi_action(True, tcp_wanted, connected, _wifi_sta_on, screen_on,
                                 dark_ms, unconnected_ms, since_try_ms)
         if act == "off":
-            if gui._wifi_connecting:
-                continue                         # a connect is in flight; decide next pass
+            if _wifi_auto_connecting or _tcp_starting or gui._wifi_connecting:
+                continue                         # an association or the saved TCP link is still coming up
             _wifi_give_up()
             _wifi_unconnected_since = None
             _wifi_dark_since = None
+            _tcp_offline_since = None
         elif act == "on":
-            settings = _load_settings()
             ssid = settings.get("wifi_ssid")
             password = settings.get("wifi_pass")
             _wifi_last_try = now
-            if ssid and password and not gui._wifi_connecting:
+            if ssid and password and not gui._wifi_connecting and not _wifi_auto_connecting:
                 if DEBUG >= 1:
                     print("[WiFi] screen lit, trying", ssid, "again")
-                gui._wifi_connecting = True      # the give-up above waits for this to clear
                 wifi_connect_async(ssid, password, auto=True)
-
 
 async def _low_battery_loop():
     """Cut the pack before the chip browns out (power.LowBattery). Reads the
@@ -1125,6 +1112,8 @@ _wlan = None
 _wifi_unconnected_since = None
 _wifi_last_try = None
 _wifi_dark_since = None
+_wifi_auto_connecting = False   # a boot/retry association in flight (policy loop waits)
+_tcp_offline_since = None       # when the TCP link last went offline (reconnecting)
 _tcp_starting = False
 
 
@@ -1240,31 +1229,43 @@ def tcp_toggle(enabled, host=None, port=None, ifac=None):
             print("[TCP] Interface failed to start")
         return False
     else:
-        if _tcp_iface is not None:
-            _tcp_iface.online = False
-            _tcp_iface.enabled = False
-            if hasattr(_tcp_iface, 'close'):
-                _tcp_iface.close()
-            Transport.deregister_interface(_tcp_iface)
-            _tcp_iface = None
+        _tcp_down(save=True)
+        return True
+
+
+def _tcp_down(save=True):
+    """Close the TCP link, drop the station and bring LoRa back. save=True
+    (the user switched TCP off) records both wishes as off; save=False (the
+    policy loop gave up while dark) writes nothing, so a reset in between
+    cannot lose what the user asked for."""
+    global _tcp_iface
+    from urns.transport import Transport
+    if _tcp_iface is not None:
+        _tcp_iface.online = False
+        _tcp_iface.enabled = False
+        if hasattr(_tcp_iface, 'close'):
+            _tcp_iface.close()
+        Transport.deregister_interface(_tcp_iface)
+        _tcp_iface = None
+    if save:
         settings = _load_settings()
         settings["tcp_enabled"] = False
         _save_settings(settings)
-        gui.clear_peers()
-        _lxmf_to_peer.clear()
-        nomad_browser.clear_nodes()
-        rnsh_client.clear_nodes()
-        rrc_client.clear_hubs()
-        if DEBUG >= 1:
-            print("[TCP] Interface stopped")
-        # Disconnect WiFi
-        _stop_wifi()
-        gui._wifi_connected = False
-        gui._wifi_ssid_current = ""
-        gui._wifi_ip = ""
-        # Restart LoRa
-        _start_lora()
-        return True
+    gui.clear_peers()
+    _lxmf_to_peer.clear()
+    nomad_browser.clear_nodes()
+    rnsh_client.clear_nodes()
+    rrc_client.clear_hubs()
+    if DEBUG >= 1:
+        print("[TCP] Interface stopped")
+    if save:
+        _stop_wifi()                 # station off, wifi_enabled saved off
+    else:
+        _wifi_radio_off()            # station off, wishes untouched
+    gui._wifi_connected = False
+    gui._wifi_ssid_current = ""
+    gui._wifi_ip = ""
+    _start_lora()
 
 
 async def _ntp_sync():
@@ -1556,6 +1557,7 @@ gui.on_send = gui_send
 gui.on_announce = gui_announce
 gui.on_wifi_scan = wifi_scan
 gui.on_wifi_connect = wifi_connect_async
+gui.on_wifi_reconnect = wifi_reconnect_saved
 gui.on_tcp_toggle = tcp_toggle
 gui.on_tcp_connect = tcp_connect_async
 gui.on_node_name = set_node_name

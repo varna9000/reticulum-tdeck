@@ -91,6 +91,37 @@ def _open_tcp(target="h:1", saved=("mymesh", "pw", 8)):
     return g
 
 
+def test_tcp_row_without_wifi_reconnects_with_saved_credentials():
+    # With TCP off the station is switched off while the deck is dark, so
+    # the TCP row is the natural place to bring it back: it asks the node to
+    # re-associate with the saved credentials and the form opens on success
+    # (set_wifi_result) instead of refusing with nothing to click.
+    g = _mkui()
+    g._wifi_connected = False
+    g._tcp_enabled = False
+    calls = []
+    g.on_wifi_reconnect = lambda: calls.append(1) or True
+    g._settings_idx = 1
+    g.handle_key(ENTER)
+    assert calls == [1]
+    assert g._wifi_connecting is True
+    assert g._settings_page == ui._SET_MAIN
+    g.set_wifi_result("10.0.0.2")
+    assert g._settings_page == ui._SET_TCP_HOST
+    assert g._wifi_connecting is False
+
+
+def test_tcp_row_without_wifi_and_nothing_saved_does_nothing():
+    g = _mkui()
+    g._wifi_connected = False
+    g._tcp_enabled = False
+    g.on_wifi_reconnect = lambda: False
+    g._settings_idx = 1
+    g.handle_key(ENTER)
+    assert g._wifi_connecting is False
+    assert g._settings_page == ui._SET_MAIN
+
+
 def test_tcp_row_opens_form_with_saved_values():
     g = _open_tcp()
     assert g._tcp_edit == {"host": "h:1", "networkname": "mymesh",

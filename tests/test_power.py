@@ -465,8 +465,10 @@ def _mk_clk(**attrs):
     logs = []
     for k, v in attrs.items():
         setattr(bd, k, v)
-    p = power.Power(gui, bd, lp, lambda: FakeIface(), lambda: True, False, lambda: 10000,
+    wifi = [False]
+    p = power.Power(gui, bd, lp, lambda: FakeIface(), lambda: wifi[0], False, lambda: 10000,
                     logs.append, read_pin=bd.read_pin, set_freq=calls.append)
+    p._wifi_flag = wifi
     return p, gui, calls, logs
 
 
@@ -500,6 +502,13 @@ p.step()
 p.step()
 check("set_freq failure logged once, not fatal", sum("clock" in m for m in logs) == 1, repr(logs))
 src = open(os.path.join(ROOT, "board_tdeck_pro.py")).read()
+p, gui, calls, logs = _mk_clk(IDLE_CPU_MHZ=80, AWAKE_CPU_MHZ=240)
+p._wifi_flag[0] = True
+p.step()
+check("dark but a station/TCP link up: full clock (backbone traffic is not idle)", calls == [240_000_000], repr(calls))
+p._wifi_flag[0] = False
+p.step()
+check("station down again: 80 MHz", calls == [240_000_000, 80_000_000], repr(calls))
 check("the Pro idles at 80 MHz", "IDLE_CPU_MHZ = 80" in src and "AWAKE_CPU_MHZ = 240" in src)
 check("the v1 idles at 80 MHz too",
       "IDLE_CPU_MHZ = 80" in open(os.path.join(ROOT, "board_tdeck_v1.py")).read())
@@ -557,18 +566,35 @@ check("lit, radio off, retry not due: wait",
 check("dark, radio off: never on", _wa(sta_on=False, since_try_ms=10 ** 7) is None)
 _node_src = open(os.path.join(ROOT, "tdeck_node.py")).read()
 _loop_src = _node_src.split("def _wifi_policy_loop", 1)[1].split("async def _low_battery_loop", 1)[0]
+_sta_branch = _loop_src.split("if _wifi_sta_on:\n", 1)[1]
 check("station up: its job is the live TCP link, never the saved wish (a server that is down must not hold it)",
-      "_tcp_iface is not None" in _loop_src.split("if _wifi_sta_on:\n", 1)[1][:200]
-      and "_load_settings" not in _loop_src.split("if _wifi_sta_on:\n", 1)[1].split("else", 1)[0])
-check("on-branch marks the connect in flight", "_wifi_connecting = True" in _loop_src.split('elif act == "on"', 1)[1])
-_task_src = _node_src.split("async def _wifi_connect_task", 1)[1].split("def _wifi_give_up", 1)[0]
-check("auto connect clears the in-flight flag on both outcomes",
-      "gui._wifi_connecting = False" in _task_src.split("if not auto:", 1)[1].split("elif ip:", 1)[0]
-      or "gui._wifi_connecting = False\n    if not auto" in _task_src)
+      "power.tcp_job(" in _sta_branch[:200] and "_load_settings" not in _sta_branch.split("else", 1)[0])
+_task_src = _node_src.split("async def _wifi_connect_task", 1)[1].split("def wifi_reconnect_saved", 1)[0]
 check("auto connect does not rewrite unchanged settings", "changed" in _task_src.split("if wlan.isconnected():", 1)[1][:900])
 _probe_src = open(os.path.join(ROOT, "tools", "tdeck_pro_dcdc_probe.py")).read()
 check("dcdc probe leaves continuous RX through the driver before the raw regulator write",
       "modem.standby()" in _probe_src.split("def regulator", 1)[1].split('_cmd("BB", 0x96', 1)[0])
+
+print("tcp_job (a TCP link that lost its server is not a job for the station)")
+check("no link: no job", power.tcp_job(False, False, 10 ** 7) is False)
+check("link online: job", power.tcp_job(True, True, 0) is True)
+check("link reconnecting briefly: still a job", power.tcp_job(True, False, power.WIFI_GIVEUP_MS - 1) is True)
+check("link offline past give-up: no job", power.tcp_job(True, False, power.WIFI_GIVEUP_MS) is False)
+check("loop tracks how long the TCP link has been offline", "_tcp_offline_since" in _loop_src)
+check("loop feeds tcp_job", "power.tcp_job(" in _loop_src)
+_off_branch = _loop_src.split('if act == "off"', 1)[1].split('elif act == "on"', 1)[0]
+check("give-up waits for the policy loop's own connect and for the saved-TCP bring-up",
+      "_wifi_auto_connecting" in _off_branch and "_tcp_starting" in _off_branch)
+check("the policy loop does not borrow the Setup page's connecting flag",
+      "gui._wifi_connecting = " not in _loop_src)
+check("the connect task marks its own auto runs in flight", _task_src.count("_wifi_auto_connecting = ") >= 2)
+check("auto connect leaves the Setup page's flag alone", "gui._wifi_connecting = " not in _task_src)
+check("a read that says 'no TCP wish' is not repeated every 5 s", _loop_src.count("_wifi_last_try = now") >= 2)
+check("the synchronous wifi_connect (no callers) is gone", "\ndef wifi_connect(" not in _node_src)
+_giveup_src = _node_src.split("def _wifi_give_up", 1)[1].split("\nasync def ", 1)[0]
+check("give-up never writes settings, with or without TCP", "_save_settings" not in _giveup_src and "_load_settings" not in _giveup_src)
+check("TCP teardown is one function with a save switch", "def _tcp_down(save" in _node_src
+      and "_tcp_down(save=False)" in _giveup_src)
 check("node never disables WiFi power save (pm=0 kept the receiver on all night)",
       "pm=0" not in _node_src and "PM_NONE" not in _node_src)
 _off_branch = _node_src.split("def _wifi_policy_loop", 1)[1].split('if act == "off"', 1)[1].split('elif act == "on"', 1)[0]
