@@ -453,6 +453,54 @@ check("a refused configuration is logged, not fatal", p is not None and any("pad
 src = open(os.path.join(ROOT, "board_tdeck_pro.py")).read()
 check("the Pro asks for the flash/PSRAM standby pads", "SLEEP_MSPI_STANDBY = True" in src)
 check("the Pro lets the I2S LRCK pad go in sleep", "def sleep_isolate_pins" in src)
+
+print("idle CPU clock (80 MHz while dark and idle, 240 when lit or busy)")
+
+
+def _mk_clk(**attrs):
+    lp = FakeLowpower()
+    bd = FakeBoard(lp)
+    gui = FakeGui()
+    calls = []
+    logs = []
+    for k, v in attrs.items():
+        setattr(bd, k, v)
+    p = power.Power(gui, bd, lp, lambda: FakeIface(), lambda: True, False, lambda: 10000,
+                    logs.append, read_pin=bd.read_pin, set_freq=calls.append)
+    return p, gui, calls, logs
+
+
+p, gui, calls, logs = _mk_clk(IDLE_CPU_MHZ=80, AWAKE_CPU_MHZ=240)
+p.step()
+check("dark + idle: 80 MHz once", calls == [80_000_000], repr(calls))
+p.step()
+check("no repeat while unchanged", calls == [80_000_000], repr(calls))
+gui._screen_on = True
+p.step()
+check("lit: 240 MHz", calls[-1:] == [240_000_000], repr(calls))
+gui._screen_on = False
+gui.blocked = True
+p.step()
+check("dark but blocked: awake clock", calls[-1:] == [240_000_000] and len(calls) == 2, repr(calls))
+gui.blocked = False
+p.step()
+check("unblocked dark: back to 80", calls[-1:] == [80_000_000], repr(calls))
+p, gui, calls, logs = _mk_clk()
+p.step()
+check("board without IDLE_CPU_MHZ: never called", calls == [], repr(calls))
+p, gui, calls, logs = _mk_clk(IDLE_CPU_MHZ=80, AWAKE_CPU_MHZ=240)
+
+
+def _boom(mhz):
+    raise OSError("no")
+
+
+p.set_freq = _boom
+p.step()
+p.step()
+check("set_freq failure logged once, not fatal", sum("clock" in m for m in logs) == 1, repr(logs))
+src = open(os.path.join(ROOT, "board_tdeck_pro.py")).read()
+check("the Pro idles at 80 MHz", "IDLE_CPU_MHZ = 80" in src and "AWAKE_CPU_MHZ = 240" in src)
 # The v1 has no fuel gauge to measure with and was not on the bench: it keeps
 # the sleep it shipped with until someone can check a change on the device.
 src = open(os.path.join(ROOT, "board_tdeck_v1.py")).read()

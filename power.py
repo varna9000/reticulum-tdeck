@@ -158,7 +158,8 @@ class Power:
     constructor so the host tests can drive it with fakes."""
 
     def __init__(self, gui, board, lowpower, lora_iface, wifi_on, sleep_on_usb,
-                 ticks_ms, log, read_pin=_pin_level, ticks_diff=_default_ticks_diff):
+                 ticks_ms, log, read_pin=_pin_level, ticks_diff=_default_ticks_diff,
+                 set_freq=None):
         self.gui = gui
         self.board = board
         self.lp = lowpower
@@ -177,6 +178,13 @@ class Power:
         self._last_change = ticks_ms()
         self._backoff_start = None
         self._vbus_since = None           # when usb_power() last turned true
+        # CPU clock while the screen is dark and nothing is transferring: a
+        # board that publishes IDLE_CPU_MHZ (the Pro: 80) idles there and
+        # runs AWAKE_CPU_MHZ (240) otherwise; 6-11 mA by the ESP32-S3
+        # datasheet. set_freq is machine.freq unless the tests inject one.
+        self.set_freq = set_freq
+        self._clock_idle = None           # None = never set this boot
+        self._clock_dead = False          # set_freq raised: leave the clock alone
         # Which pads sleep. The lowpower module keeps every pad in its awake
         # state through light sleep (the board's rails and pull-ups depend on
         # it), and that has two costs measured on the Pro (2026-10-11): a pad
@@ -246,12 +254,33 @@ class Power:
             self.log("power: no sleep: " + reason)
         return reason
 
+    def _clock(self, idle):
+        """Move the CPU clock between the board's idle and awake rates when
+        the idle state changes. Never raises: a board that cannot (or a
+        firmware without machine.freq) just keeps its clock."""
+        idle_mhz = getattr(self.board, "IDLE_CPU_MHZ", None)
+        if not idle_mhz or self._clock_dead or idle == self._clock_idle:
+            return
+        mhz = idle_mhz if idle else getattr(self.board, "AWAKE_CPU_MHZ", 240)
+        try:
+            fn = self.set_freq
+            if fn is None:
+                from machine import freq as fn
+            fn(int(mhz) * 1000000)
+            self._clock_idle = idle
+        except Exception as e:
+            self._clock_dead = True
+            self.log("power: CPU clock change failed, leaving it: " + str(e))
+
     def step(self):
         iface = self.lora_iface()
         quiet_ms = self._quiet_ms(iface)
+        screen_on = bool(self.gui._screen_on)
+        sleep_blocked = bool(self.gui._sleep_blocked())
+        self._clock(not screen_on and not sleep_blocked)
         s = State(
-            screen_on=bool(self.gui._screen_on),
-            sleep_blocked=bool(self.gui._sleep_blocked()),
+            screen_on=screen_on,
+            sleep_blocked=sleep_blocked,
             wifi_on=bool(self.wifi_on()),
             lora_online=bool(iface is not None and iface.online),
             usb=False,                    # probed below, once the UI-side gates pass

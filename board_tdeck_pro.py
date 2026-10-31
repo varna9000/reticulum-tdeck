@@ -499,6 +499,12 @@ _kbd_int = Pin(config.KBD_INT, Pin.IN, Pin.PULL_UP)
 #     20 mA. That one is parked in power_up(), awake or asleep.
 # The flash/PSRAM pads get ESP-IDF's sleep pull-ups as well (0.5 mA here).
 SLEEP_MSPI_STANDBY = True
+# CPU clock while the screen is dark and nothing is transferring (power.py).
+# 80 MHz is the lowest rate this board tolerates: the Meck firmware notes
+# that 40 MHz breaks its I2C. The ESP32-S3 datasheet puts the 240 -> 80 MHz
+# idle saving at 6-11 mA; a lit screen or a transfer gets the full clock.
+IDLE_CPU_MHZ = 80
+AWAKE_CPU_MHZ = 240
 
 
 def sleep_isolate_pins():
