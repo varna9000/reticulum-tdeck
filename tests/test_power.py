@@ -501,6 +501,8 @@ p.step()
 check("set_freq failure logged once, not fatal", sum("clock" in m for m in logs) == 1, repr(logs))
 src = open(os.path.join(ROOT, "board_tdeck_pro.py")).read()
 check("the Pro idles at 80 MHz", "IDLE_CPU_MHZ = 80" in src and "AWAKE_CPU_MHZ = 240" in src)
+check("the v1 idles at 80 MHz too",
+      "IDLE_CPU_MHZ = 80" in open(os.path.join(ROOT, "board_tdeck_v1.py")).read())
 
 # The radio's own regulator: LDO RX is ~10 mA, DC-DC ~5 (SX1262 datasheet),
 # and the Pro listens through every sleep. The urns preset carries it.

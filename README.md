@@ -560,7 +560,7 @@ Everything the firmware does to make a charge last:
 - **WiFi only with a job.** A WiFi association cannot survive the chip's sleep, so the station is kept up only while it has something to do: TCP is on (the link is real-time, and the deck stays awake at roughly 55 mA on the Pro, about a day), or the screen is lit. With TCP off, the station is switched off 30 s after the screen goes dark and tried again when it lights; a station that has lost its access point is treated the same way. The saved WiFi and TCP settings are left as they were.
 - **What keeps it awake.** TCP on, a USB host on the cable (so the console keeps working; a plain charger only pauses sleep for a few seconds), and anything the screen timeout also waits for. Sleep never interrupts a transfer, playback, recording or DTMF listen.
 - **Sleep diagnostics.** Setup → Radio shows a `sleep` row: `l12 k2 t5` counts wakes by cause (LoRa packet, key, timer); `off usb`, `off wifi` and so on name what is currently preventing sleep. `SLEEP_ON_USB = True` in the config file allows sleeping with a cable in, for bench work only, since the USB console drops during every sleep.
-- **Idle clock.** The Pro drops its CPU to 80 MHz while the screen is dark and nothing is transferring, and back to 240 MHz the moment it lights or a transfer starts.
+- **Idle clock.** Both decks drop the CPU to 80 MHz while the screen is dark and nothing is transferring, and back to 240 MHz the moment it lights or a transfer starts.
 - **Unused hardware off.** The Pro's GPS receiver, which the firmware does not read, is held powered down from boot; its enable line idles on by itself on V1.1 boards.
 - **Display bus.** All SPI display writes are skipped while the screen is off, freeing the shared bus for the radio.
 

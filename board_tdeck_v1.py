@@ -186,6 +186,13 @@ def set_kbd_backlight(on):
 # the keyboard loop runs in between (still ~75 % of the time asleep with the
 # 100 ms awake gap).
 SLEEP_POLL_MS = 300
+# CPU clock while the screen is dark and nothing is transferring (power.py):
+# the same 80 MHz idle as the Pro. At 80 MHz the chip stays on the PLL, so
+# the APB clock that feeds SPI, I2S, the mic's MCLK PWM and the UARTs is
+# unchanged; only 40 MHz and below would alter those. Not bench-measured on
+# a v1 (no fuel gauge); the datasheet puts it at 6-11 mA.
+IDLE_CPU_MHZ = 80
+AWAKE_CPU_MHZ = 240
 
 
 def sleep_wake_pins():
