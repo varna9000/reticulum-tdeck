@@ -194,9 +194,22 @@ E app config, GPS line driven high (old)     [-25, -26, -25, -26, -25, -25, -25,
 D again                                      [-5, -5, -5, -5, -5, -5, -5, -5, -5, -5, -5, -5]
 ```
 
+## DC-DC against LDO, radio listening (`tdeck_pro_dcdc_probe.py`)
+
+Since 2026-10-31 the Pro's urns preset runs the SX1262 regulator in DC-DC
+mode (`use_dcdc`). The probe builds the radio as the app does, listens
+through 12 x 5 s of the app's sleep per block, and switches the regulator
+live between blocks (LDO, DC-DC, LDO again). Expected from the datasheet:
+about 5 mA less in every row where the radio listens.
+
+```
+(readings to be filled in from /measure.txt after the bench run)
+```
+
 ## Not done
 
-- The app's sleep current with the radio listening, after the fix.
+- The app's sleep current with the radio listening, after the fix
+  (the DC-DC probe above measures exactly that; run pending).
 - LRCK still drives the DAC while the deck is awake (13 mA); only the sleep
   releases it.
 - The T-Deck v1 is unchanged. It has no fuel gauge, was not on the bench, and
