@@ -611,6 +611,29 @@ check("a connect in flight reports itself", power.wifi_shown(True, True, True, F
 check("loop shows the station through wifi_shown", "power.wifi_shown(" in _loop_src)
 check("loop has one writer of the shown flag", _loop_src.count("gui._wifi_connected = ") == 1, str(_loop_src.count("gui._wifi_connected = ")))
 
+print("review 2026-11-01: the station is supervised whenever it is up, one association at a time")
+check("policy loop supervises a station that is up even with the wish off (a failed manual connect left it hunting, awake)",
+      "if not _wifi_enabled and not _wifi_sta_on:" in _loop_src)
+check("the loop repaints Setup when the shown state changes", "gui.dirty = True" in _loop_src)
+check("the loop fills the name and address, and starts the saved link, when the chip associates by itself",
+      "_start_saved_tcp" in _loop_src and "_wifi_ssid_current" in _loop_src)
+_sst_src = _node_src.split("async def _start_saved_tcp", 1)[1].split("\nasync def ", 1)[0]
+check("saved-TCP retries re-read the wish (a TCP-off in between must stick)",
+      '.get("tcp_enabled")' in _sst_src.split("for attempt", 1)[1])
+_scan_src = _node_src.split("def wifi_scan", 1)[1].split("\ndef ", 1)[0]
+check("a scan on a deck whose station was off leaves the radio off afterwards",
+      "wlan.active(False)" in _scan_src.split("finally:", 1)[1].split("for iface in paused", 1)[0])
+_wca_src = _node_src.split("def wifi_connect_async", 1)[1].split("\nasync def ", 1)[0]
+check("one association at a time: a new request cancels the loop's retry or is dropped",
+      "_wifi_task" in _wca_src and ".cancel()" in _wca_src)
+check("the connect task clears its in-flight flag in a finally",
+      "finally:" in _task_src and "_wifi_auto_connecting = False" in _task_src.split("finally:", 1)[1])
+_td_src = _node_src.split("def _tcp_down", 1)[1].split("\nasync def ", 1)[0]
+check("_tcp_down leaves the shown WiFi state to _wifi_radio_off", "gui._wifi_connected" not in _td_src)
+_tt_src = _node_src.split("def tcp_toggle", 1)[1].split("\ndef ", 1)[0]
+check("tcp_toggle(True) over a live link deregisters it first",
+      "deregister_interface" in _tt_src.split("if enabled:", 1)[1].split("TCPClientInterface(TCP_CONFIG)", 1)[0])
+
 print("LowBattery (cut the pack before the chip browns out)")
 check("threshold above the brownout, below the empty mark", 2.9 < power.LOW_BATTERY_V <= 3.3)
 lb = power.LowBattery()

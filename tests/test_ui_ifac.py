@@ -448,5 +448,51 @@ def _run():
     return failed
 
 
+def test_tcp_row_with_tcp_on_switches_it_off_even_when_wifi_looks_down():
+    # Review 2026-11-01: the row branched on the WiFi flag first, so a link
+    # that was up while the chip reported no AP (or a 5 s old snapshot of
+    # it) reconnected WiFi under the live link instead of switching TCP off.
+    g = _mkui()
+    g._wifi_connected = False
+    g._tcp_enabled = True
+    g._tcp_target = "h:1"
+    calls = []
+    g.on_tcp_toggle = lambda en, h, p: calls.append((en, h, p)) or True
+    g.on_wifi_reconnect = lambda: calls.append("reconnect") or True
+    g._settings_idx = 1
+    g.handle_key(ENTER)
+    assert calls == [(False, None, None)], calls
+    assert g._tcp_enabled is False
+    assert g._wifi_connecting is False
+
+
+def test_wifi_result_with_tcp_on_does_not_open_the_form_over_the_link():
+    g = _mkui()
+    g._tcp_enabled = True
+    g._tcp_target = "h:1"
+    g._wifi_connecting = True
+    g.set_wifi_result("10.0.0.2")
+    assert g._settings_page == ui._SET_MAIN
+    assert g._wifi_connected is True
+
+
+def test_failed_reconnect_from_the_tcp_row_returns_to_setup_not_the_scan_page():
+    g = _mkui()
+    g._wifi_connected = False
+    g._tcp_enabled = False
+    g.on_wifi_reconnect = lambda: True
+    g._settings_idx = 1
+    g.handle_key(ENTER)
+    g.set_wifi_result(None)
+    assert g._settings_page == ui._SET_MAIN
+    assert g._settings_idx == 1
+    assert g._wifi_err == "connect failed"
+    # ...while a connect from the password page still lands on the scan list
+    g = _mkui()
+    g._wifi_connecting = True
+    g.set_wifi_result(None)
+    assert g._settings_page == ui._SET_WIFI_SCAN
+
+
 if __name__ == "__main__":
     sys.exit(1 if _run() else 0)

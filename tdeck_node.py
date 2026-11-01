@@ -760,6 +760,8 @@ def wifi_scan():
     spi_release_lora()
     time.sleep_ms(100)
 
+    was_on = _wifi_sta_on
+    wlan = None
     try:
         wlan = network.WLAN(network.STA_IF)
         try:
@@ -780,6 +782,13 @@ def wifi_scan():
         return sorted([(r[0].decode(), r[3]) for r in results if r[0]],
                       key=lambda x: x[1], reverse=True)
     finally:
+        if wlan is not None and not was_on:
+            # The radio was off before the scan: not left up, unsupervised
+            # (the policy loop and power's wifi_on both think it is off).
+            try:
+                wlan.active(False)
+            except Exception:
+                pass
         for iface in paused:
             iface.online = True
 
@@ -791,16 +800,30 @@ def wifi_connect_async(ssid, password, auto=False):
     auto=True is the boot restore and the policy loop's retry: no Setup
     page changes either way, and the saved TCP link is brought up on
     success."""
+    global _wifi_task
     import uasyncio as asyncio
-    asyncio.create_task(_wifi_connect_task(ssid, password, auto))
+    t = _wifi_task
+    if t is not None and not t.done():
+        if auto or not _wifi_auto_connecting:
+            return                   # one association at a time; the user's own request keeps running
+        t.cancel()                   # the user's request replaces the loop's retry
+    _wifi_task = asyncio.create_task(_wifi_connect_task(ssid, password, auto))
 
 
 async def _wifi_connect_task(ssid, password, auto=False):
-    global _wifi_enabled, _wifi_sta_on, _wlan, _wifi_last_try, _wifi_auto_connecting
-    import uasyncio as asyncio
-    import network
+    global _wifi_auto_connecting
     if auto:
         _wifi_auto_connecting = True
+    try:
+        await _wifi_connect_body(ssid, password, auto)
+    finally:
+        _wifi_auto_connecting = False    # also when cancelled by the user's own request
+
+
+async def _wifi_connect_body(ssid, password, auto):
+    global _wifi_enabled, _wifi_sta_on, _wlan, _wifi_last_try
+    import uasyncio as asyncio
+    import network
     await asyncio.sleep_ms(50)  # let the UI paint "Connecting..." first
     ip = None
     _wifi_last_try = time.ticks_ms()
@@ -845,7 +868,6 @@ async def _wifi_connect_task(ssid, password, auto=False):
         gui._wifi_ssid_current = ssid
         gui._wifi_ip = ip
         asyncio.create_task(_start_saved_tcp())
-    _wifi_auto_connecting = False
     gc.collect()
 
 
@@ -889,7 +911,10 @@ async def _wifi_policy_loop():
     import power
     while True:
         await asyncio.sleep(5)
-        if not _wifi_enabled:
+        if not _wifi_enabled and not _wifi_sta_on:
+            # A station that is up is supervised whatever the saved wish says:
+            # a manual connect that failed leaves one hunting, and unwatched
+            # it would keep the deck awake for good.
             _wifi_unconnected_since = None
             _wifi_dark_since = None
             continue
@@ -910,9 +935,26 @@ async def _wifi_policy_loop():
         elif _wifi_unconnected_since is None:
             _wifi_unconnected_since = now
         # What Setup shows: the AP going away under us, and coming back.
-        gui._wifi_connected = power.wifi_shown(connected, _wifi_sta_on,
-                                               _wifi_auto_connecting or gui._wifi_connecting,
-                                               gui._wifi_connected)
+        shown = power.wifi_shown(connected, _wifi_sta_on,
+                                 _wifi_auto_connecting or gui._wifi_connecting,
+                                 gui._wifi_connected)
+        if shown != gui._wifi_connected:
+            gui._wifi_connected = shown
+            if shown:
+                # The chip associated by itself (after a beacon loss, or
+                # after a connect task gave up on a slow AP): the name and
+                # address, and the saved TCP link, as the connect task's
+                # success path does.
+                try:
+                    gui._wifi_ssid_current = _wlan.config("ssid") or gui._wifi_ssid_current
+                    gui._wifi_ip = _wlan.ifconfig()[0]
+                except Exception:
+                    pass
+                asyncio.create_task(_start_saved_tcp())
+            import ui as _ui
+            if gui.state == _ui.STATE_SETTINGS:
+                gui._cache = [''] * _ui.CACHE_ROWS
+                gui.dirty = True
         # The TCP link's state: urns keeps the interface and reconnects
         # forever once the server is gone, so note when it went offline.
         link = _tcp_iface is not None
@@ -1115,6 +1157,7 @@ _wifi_unconnected_since = None
 _wifi_last_try = None
 _wifi_dark_since = None
 _wifi_auto_connecting = False   # a boot/retry association in flight (policy loop waits)
+_wifi_task = None               # the connect task in flight, if any (one at a time)
 _tcp_offline_since = None       # when the TCP link last went offline (reconnecting)
 _tcp_starting = False
 
@@ -1197,6 +1240,19 @@ def tcp_toggle(enabled, host=None, port=None, ifac=None):
             except Exception:
                 pass
             _tcp_task = None
+        if _tcp_iface is not None:
+            # A link is already up (a form opened over one): one at a time,
+            # or the old interface stays registered in Transport for good.
+            old = _tcp_iface
+            _tcp_iface = None
+            old.online = False
+            old.enabled = False
+            try:
+                if hasattr(old, 'close'):
+                    old.close()
+            except Exception:
+                pass
+            Transport.deregister_interface(old)
         from urns.interfaces.tcp import TCPClientInterface
         iface = TCPClientInterface(TCP_CONFIG)
         if iface.online:
@@ -1264,9 +1320,6 @@ def _tcp_down(save=True):
         _stop_wifi()                 # station off, wifi_enabled saved off
     else:
         _wifi_radio_off()            # station off, wishes untouched
-    gui._wifi_connected = False
-    gui._wifi_ssid_current = ""
-    gui._wifi_ip = ""
     _start_lora()
 
 
@@ -2114,6 +2167,10 @@ async def _start_saved_tcp():
     _tcp_starting = True
     try:
         for attempt in range(6):
+            if attempt:
+                settings = _load_settings()      # the wish may have been switched off meanwhile
+                if not settings.get("tcp_enabled"):
+                    break
             if not gui._wifi_connected or gui._tcp_enabled or _tcp_iface is not None:
                 break
             if tcp_toggle(True, host, port, _ifac_from_settings(settings, _TCP_CFG_IFAC)):

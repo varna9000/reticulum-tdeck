@@ -936,6 +936,7 @@ class UI:
         self.on_wifi_scan = None      # () -> [(ssid, rssi), ...]
         self.on_wifi_connect = None   # (ssid, password) -> None — async; calls set_wifi_result
         self.on_wifi_reconnect = None # () -> bool: re-associate with the saved network (TCP row, station down)
+        self._wifi_reconnect = False  # the connect in flight was the TCP row's: its failure returns there
         self.on_tcp_toggle = None     # (enabled, host, port) -> bool — sync OFF path
         self.on_tcp_connect = None    # (host, port) -> None — async; calls set_tcp_result
         self.on_node_name = None      # (name) -> None
@@ -3885,22 +3886,25 @@ class UI:
                         asyncio.create_task(self._do_wifi_scan())
                     return True
                 elif self._settings_idx == 1:  # TCP toggle
-                    if not self._wifi_connected:
+                    if self._tcp_enabled:
+                        # Toggle OFF -- first, whatever the WiFi flag says:
+                        # the link is up (reconnecting or not) and this row
+                        # is the only way to switch it off.
+                        if self.on_tcp_toggle:
+                            if self.on_tcp_toggle(False, None, None):
+                                self._tcp_enabled = False
+                                self._tcp_target = ""
+                    elif not self._wifi_connected:
                         # Needs WiFi. The station is switched off while the
                         # deck is dark with TCP off, so bring it back with
                         # the saved network; set_wifi_result opens the form.
                         if (self.on_wifi_reconnect and not self._wifi_connecting
                                 and self.on_wifi_reconnect()):
                             self._wifi_connecting = True
+                            self._wifi_reconnect = True
                             self._cache = [''] * CACHE_ROWS
                             self.dirty = True
                         return True
-                    if self._tcp_enabled:
-                        # Toggle OFF
-                        if self.on_tcp_toggle:
-                            if self.on_tcp_toggle(False, None, None):
-                                self._tcp_enabled = False
-                                self._tcp_target = ""
                     else:
                         self._open_tcp_form()
                     self._cache = [''] * CACHE_ROWS
@@ -4676,16 +4680,29 @@ class UI:
     def set_wifi_result(self, ip):
         """Async WiFi connect finished — ip string on success, None on fail."""
         self._wifi_connecting = False
+        reconnect = self._wifi_reconnect
+        self._wifi_reconnect = False
         if ip:
             self._wifi_connected = True
             self._wifi_ssid_current = self._wifi_ssid
             self._wifi_ip = ip
             self._wifi_err = ""
-            self._open_tcp_form()         # straight on to the TCP link
+            if self._tcp_enabled:
+                # The link was up all along (the chip had only lost its AP
+                # for a moment): the form would open a second one over it.
+                self._settings_page = _SET_MAIN
+                self._settings_idx = 1
+            else:
+                self._open_tcp_form()     # straight on to the TCP link
         else:
             self._wifi_err = "connect failed"
-            self._settings_page = _SET_WIFI_SCAN
-            self._settings_idx = 0
+            if reconnect:
+                # Back to the row that asked, not a scan list nobody started.
+                self._settings_page = _SET_MAIN
+                self._settings_idx = 1
+            else:
+                self._settings_page = _SET_WIFI_SCAN
+                self._settings_idx = 0
         self._cache = [''] * CACHE_ROWS
         self.dirty = True
 
