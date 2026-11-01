@@ -350,7 +350,7 @@ def draw_navbar(ui):
         rcv, tot = ui.transfer_progress
         center = "RX " + str(rcv) + "/" + str(tot)
     else:
-        icon, center, badge = _u.band_slots(ui._backbone, ui.lora_online, ui.rssi, ui.snr)
+        icon, center, badge = _u.band_slots(ui._backbone, ui._tcp_enabled, ui.lora_online, ui.rssi, ui.snr)
     clock = _u._fmt_clock() if _u._clock_valid() else ""
     right = (">>> " if ann else "") + clock
     right = right.rstrip() if not clock else right
@@ -389,7 +389,7 @@ def draw_navbar(ui):
         iw = icon[0] + 4 if icon else 0
         # A fixed-width transport group (icon, "snr N", badge): nothing walks.
         if icon:
-            cw = 15 + 4 + 5 * sw + 8 + 17
+            cw = 15 + 4 + 7 * sw + 8 + 17
         else:
             center = center[:max(0, (hi - lo) // sw)]
             cw = len(center) * sw
@@ -400,7 +400,7 @@ def draw_navbar(ui):
         if center:
             _sd(ui, center, x + iw, ny, col, hb)
         if badge:
-            ui._bitmap(badge, x + 15 + 4 + 5 * sw + 8, (NAV_H - badge[1]) // 2, col)
+            ui._bitmap(badge, x + 15 + 4 + 7 * sw + 8, (NAV_H - badge[1]) // 2, col)
     ui._cache[0] = bat_key + mid_key
 
 

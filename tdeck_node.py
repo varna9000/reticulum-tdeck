@@ -1279,12 +1279,14 @@ def _lora_changes(params, cfg):
 _TCP_CFG_IFAC = {k: TCP_CONFIG.get(k) for k in _IFAC_KEYS}
 
 
-def _drop_link():
-    """Take the TCP link down and bring LoRa back, the station untouched:
-    a link that lost its server for WIFI_GIVEUP_MS (the policy loop, lit
-    or dark), or the old link under a new dial. The peers and the
-    nomad/rnsh/rrc caches learned over it go with it: nothing may route
-    over a dead link."""
+def _drop_link(lora=True):
+    """Take the TCP link down, the station untouched: a link that lost its
+    server for WIFI_GIVEUP_MS (the policy loop, lit or dark; LoRa comes
+    back), or the old link under a new dial (lora=False: the dial's own
+    failure path restarts the radio, a success stops it anyway, and a
+    cycle in between would block the loop and announce for nothing). The
+    peers and the nomad/rnsh/rrc caches learned over it go with it:
+    nothing may route over a dead link."""
     global _tcp_iface, _tcp_task
     from urns.transport import Transport
     old = _tcp_iface
@@ -1309,7 +1311,8 @@ def _drop_link():
     nomad_browser.clear_nodes()
     rnsh_client.clear_nodes()
     rrc_client.clear_hubs()
-    _start_lora()
+    if lora:
+        _start_lora()
 
 
 def _dial_backbone(host, port, ifac=None):
@@ -1332,7 +1335,7 @@ def _dial_backbone(host, port, ifac=None):
             pass
         _tcp_task = None
     if _tcp_iface is not None:
-        _drop_link()                 # one at a time; the session over it is gone either way
+        _drop_link(lora=False)       # one at a time; the session over it is gone either way
     from urns.interfaces.tcp import TCPClientInterface
     iface = None
     try:

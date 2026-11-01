@@ -692,13 +692,18 @@ def test_wifi_row_value_comes_from_the_state_alone():
 
 
 def test_band_slots_table():
+    # (state, link registered, lora_online, rssi, snr). The reconnecting row
+    # is decided by the link, not by lora_online: the node never clears
+    # lora_online when TCP takes over, so a stale snr would show otherwise.
     A, W, B = ui._ANTENNA, ui._WIFI, ui._WIFI_BANG
-    assert ui.band_slots("up", False, None, 0) == (W, "", None)
-    assert ui.band_slots("no_server", True, -80, 7) == (A, "snr 7", B)
-    assert ui.band_slots("connecting", True, None, 0) == (A, "", B)
-    assert ui.band_slots("no_network", False, None, 0) == (B, "", None)      # reconnecting: nothing carries
-    assert ui.band_slots("off", True, -80, 7) == (A, "snr 7", None)
-    assert ui.band_slots("off", False, None, 0) == (A, "FAIL", None)
+    assert ui.band_slots("up", True, True, -80, 7) == (W, "", None)
+    assert ui.band_slots("no_server", False, True, -80, 7) == (A, "snr 7", B)
+    assert ui.band_slots("connecting", False, True, None, 0) == (A, "", B)
+    assert ui.band_slots("no_server", True, True, -80, 7) == (B, "", None)     # link registered, offline: nothing carries
+    assert ui.band_slots("no_network", True, True, -80, 7) == (B, "", None)
+    assert ui.band_slots("no_server", False, False, None, 0) == (A, "FAIL", B)  # radio fault while waiting
+    assert ui.band_slots("off", False, True, -80, 7) == (A, "snr 7", None)
+    assert ui.band_slots("off", False, False, None, 0) == (A, "FAIL", None)
 
 
 def test_wifi_bang_is_the_fan_with_the_badge():
@@ -737,10 +742,16 @@ def test_v1_band_two_slots_and_a_clock_that_does_not_move():
         icons, texts = _band_calls(g)
         assert [i for i, _ in icons] == [ui._WIFI] and not any(s.startswith("snr") for s, _ in texts)
         assert [x for s, x in texts if s == "09:41"][0] == clock_x
-        g.set_backbone_state("no_server", "home", "", link=True)
-        g.lora_online = False
+        g.set_backbone_state("no_server", "home", "", link=True)   # lora_online stays True: the node never clears it
         icons, texts = _band_calls(g)
-        assert [i for i, _ in icons] == [ui._WIFI_BANG]
+        assert [i for i, _ in icons] == [ui._WIFI_BANG], icons
+        g.set_backbone_state("no_server", "home", "", link=False)
+        g.rssi, g.snr = -120, -12
+        icons, texts = _band_calls(g)
+        tx = [x for s_, x in texts if s_ == "snr -12"][0]
+        bx = icons[1][1]
+        assert bx - (tx + len("snr -12") * g.SW) >= 8, (tx, bx)            # a negative snr still clears the badge
+        g.rssi, g.snr = -80, 7
         g.set_backbone_state("off", "", "")
         g.lora_online = True
         icons, texts = _band_calls(g)
@@ -800,6 +811,14 @@ def test_v1_setup_titles_sit_off_the_border():
     g._draw_row_cached = lambda i, text, *a: seen.append((i, text)) or True
     g.draw()
     assert (1, "  < Backbone") in seen, seen
+
+
+def test_host_entry_splits_a_pasted_host_port():
+    g = _open_tcp()
+    g.handle_key(ENTER)                                 # Host -> text entry
+    _type(g, "example.com:4243")
+    g.handle_key(ENTER)
+    assert g._tcp_edit["host"] == "example.com" and g._tcp_edit["port"] == "4243", g._tcp_edit
 
 
 if __name__ == "__main__":

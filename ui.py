@@ -477,17 +477,19 @@ _WIFI = _icon(_WIFI_ROWS)
 _WIFI_BANG = _icon(tuple((r[:14] + "##.") if y in (7, 8, 9, 10, 11, 13, 14) else (r + "..") for y, r in enumerate(_WIFI_ROWS)))
 
 
-def band_slots(state, lora_online, rssi, snr):
+def band_slots(state, link, lora_online, rssi, snr):
     """The header band's centre: (carrier icon, carrier text, badge). Left,
     what carries the traffic: the fan when the backbone link is up, else
     the antenna with "snr N" (or "FAIL"). Right, the backbone waiting (the
-    badged fan) while WiFi is on but not carrying; when LoRa is off as
-    well (a live link lost its server and is reconnecting) the badged fan
-    stands alone, because nothing carries."""
+    badged fan) while WiFi is on but not carrying. While a TCP interface is
+    still registered but offline (a live link lost its server and urns is
+    reconnecting) nothing carries -- LoRa was stopped when the link came
+    up, and lora_online is not cleared by that -- so the badged fan stands
+    alone; `link` decides that row, lora_online only "FAIL"."""
     if state == "up":
         return _WIFI, "", None
     waiting = state in ("connecting", "no_server", "no_network")
-    if waiting and not lora_online:
+    if waiting and link:
         return _WIFI_BANG, "", None
     if not lora_online:
         text = "FAIL"
@@ -1476,7 +1478,7 @@ class UI:
             rcv, tot = self.transfer_progress
             center = "RX " + str(rcv) + "/" + str(tot)
         else:
-            icon, center, badge = band_slots(self._backbone, self.lora_online, self.rssi, self.snr)
+            icon, center, badge = band_slots(self._backbone, self._tcp_enabled, self.lora_online, self.rssi, self.snr)
         clock = _fmt_clock() if _clock_valid() else ""
         if not icon and clock:
             center = (center + "  " if center else "") + clock
@@ -1526,7 +1528,7 @@ class UI:
             iw = icon[0] + 4 if icon else 0
             # The transport group has a fixed width (icon, "snr N", badge) so
             # nothing walks between states; the clock follows it at a fixed x.
-            group_w = 15 + 4 + 5 * sw + 8 + 17
+            group_w = 15 + 4 + 7 * sw + 8 + 17
             if icon:
                 cw = group_w + (2 * sw + len(clock) * sw if clock else 0)
             else:
@@ -1538,7 +1540,7 @@ class UI:
             if center:
                 self._sdraw(center, x + iw, ny, center_color, hb)
             if badge:
-                self._bitmap(badge, x + 15 + 4 + 5 * sw + 8, (NAV_H - badge[1]) // 2, self.DIM_CYAN)
+                self._bitmap(badge, x + 15 + 4 + 7 * sw + 8, (NAV_H - badge[1]) // 2, self.DIM_CYAN)
             if clock:
                 self._sdraw(clock, x + group_w + 2 * sw, ny, self.DIM_CYAN, hb)
 
@@ -4213,6 +4215,11 @@ class UI:
                 value = self.cmd_buf.decode().strip()
                 if fkey == "port" and not value.isdigit():
                     value = ""                     # letters: keep the old port
+                if fkey == "host" and ":" in value:
+                    h, _, pt = value.rpartition(":")   # a pasted host:port fills both rows
+                    if h and pt.isdigit():
+                        value = h
+                        d["port"] = pt
                 if value or not keep:
                     d[fkey] = value
                 self._close_text(back)

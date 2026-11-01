@@ -366,11 +366,11 @@ def nav(g, t, clock="09:41", valid=True):
 
 def test_pro_band_two_slots():
     print("top bar: two slots")
-    for state, lora, want_icons, want_text in (("up", False, [ui._WIFI], None), ("no_server", True, [ui._ANTENNA, ui._WIFI_BANG], "snr 7"),
-                                               ("no_server", False, [ui._WIFI_BANG], None), ("off", True, [ui._ANTENNA], "snr 7")):
+    for state, link, lora, want_icons, want_text in (("up", True, False, [ui._WIFI], None), ("no_server", False, True, [ui._ANTENNA, ui._WIFI_BANG], "snr 7"),
+                                                     ("no_server", True, True, [ui._WIFI_BANG], None), ("off", False, True, [ui._ANTENNA], "snr 7")):
         g, t = mkui()
         g.state = ui.STATE_NODES
-        g.set_backbone_state(state, "home", "", link=(state == "up"))
+        g.set_backbone_state(state, "home", "", link=link)
         g.lora_online = lora
         g.rssi, g.snr = (-80, 7) if lora else (None, 0)
         g.draw_navbar()
