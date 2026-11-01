@@ -4271,7 +4271,7 @@ class UI:
             return _pro.draw_setup(self)
         self._draw_row_cached(1, "Setup", BODY_Y, self.NEON_CYAN)
 
-        wifi_line = "WiFi: " + ("connecting..." if self._wifi_connecting else self._wifi_value())
+        wifi_line = "WiFi: " + ("connecting..." if self._wifi_connecting else self._wifi_value(width=COLS - 8))
         tcp_line = "Backbone: " + (self._tcp_target or self._tcp_default)
         name_line = "Name: " + self.node_name
         lora_line = "LoRa: " + ("Online" if self.lora_online else "OFFLINE (click=reset)")
@@ -4673,21 +4673,26 @@ class UI:
         self._cache = [''] * CACHE_ROWS
         self.dirty = True
 
-    def set_backbone_state(self, state, ssid, ip):
+    def set_backbone_state(self, state, ssid, ip, link=False):
         """The node's one state for the WiFi row (power.backbone_state):
         off / connecting / no_network / no_server / up. The older flags are
-        derived from it; Setup repaints when it is up."""
+        derived from it: _wifi_connected for the pages that ask about the
+        station, _tcp_enabled = `link` (the TCP interface exists, so TCP is
+        the transport and the header shows the globe, through a blip too).
+        Setup repaints when it is up."""
         self._backbone = state
         self._wifi_ssid_current = ssid or ""
         self._wifi_ip = ip or ""
         self._wifi_connected = state in ("up", "no_server")
-        self._tcp_enabled = state == "up"
+        self._tcp_enabled = bool(link)
         if self.state == STATE_SETTINGS and self._settings_page == _SET_MAIN:
             self._cache = [''] * CACHE_ROWS
             self.dirty = True
 
-    def _wifi_value(self, ip=True):
-        """The WiFi row's value for the state (ip=False on the Pro's narrow row)."""
+    def _wifi_value(self, ip=True, width=None):
+        """The WiFi row's value for the state (ip=False on the Pro's narrow
+        row). With a width, a long network name is cut so the state after
+        it still shows: the row's job is to tell the truth about the link."""
         st = self._backbone
         if st == "off":
             return "off"
@@ -4697,12 +4702,16 @@ class UI:
             return "connecting..."
         name = self._wifi_ssid_current
         if st == "no_server":
-            return name + ", no server"
-        if st == "no_network":
-            return name + ", no network"
-        if ip and self._wifi_ip:
-            return name + " [" + self._wifi_ip + "]"
-        return name
+            tail = ", no server"
+        elif st == "no_network":
+            tail = ", no network"
+        elif ip and self._wifi_ip:
+            tail = " [" + self._wifi_ip + "]"
+        else:
+            tail = ""
+        if width and len(name) + len(tail) > width:
+            name = name[:max(1, width - len(tail))]
+        return name + tail
 
     def set_wifi_result(self, ip):
         """Async WiFi connect finished — ip string on success, None on fail."""

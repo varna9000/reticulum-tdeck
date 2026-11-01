@@ -821,7 +821,7 @@ async def _wifi_connect_task(ssid, password, auto=False):
 
 
 async def _wifi_connect_body(ssid, password, auto):
-    global _wifi_enabled, _wifi_sta_on, _wlan, _wifi_last_try, _backbone_task
+    global _wifi_enabled, _wifi_sta_on, _wlan, _wifi_last_try, _backbone_task, _backbone_pending
     import uasyncio as asyncio
     import network
     await asyncio.sleep_ms(50)  # let the UI paint "Connecting..." first
@@ -840,6 +840,7 @@ async def _wifi_connect_body(ssid, password, auto):
         wlan.active(True)
         _wlan = wlan
         _wifi_sta_on = True
+        _publish_backbone()              # "connecting..." at once, not on the loop's next pass
         wlan.connect(ssid, password)
         for _ in range(40):  # ~8s, yielding so the UI/LoRa keep running
             if wlan.isconnected():
@@ -869,6 +870,7 @@ async def _wifi_connect_body(ssid, password, auto):
         gui._wifi_ip = ip
     if ip:
         # WiFi on means the backbone: dial it (saved host, else the default).
+        _backbone_pending = True
         _backbone_task = asyncio.create_task(_start_backbone())
     _publish_backbone()
     gc.collect()
@@ -879,7 +881,7 @@ def wifi_disconnect():
     flight is cancelled first (a late association must not re-save the
     wish or start a link the user just switched off), then the link, the
     station and both wishes go, and LoRa comes back."""
-    global _wifi_task, _backbone_task
+    global _wifi_task, _backbone_task, _backbone_pending
     for t in (_wifi_task, _backbone_task):
         if t is not None:
             try:
@@ -888,6 +890,7 @@ def wifi_disconnect():
                 pass
     _wifi_task = None
     _backbone_task = None
+    _backbone_pending = False
     _tcp_down(save=True)
     _publish_backbone()
     return True
@@ -898,7 +901,7 @@ def _publish_backbone():
     UI when it changes, with the network's name and our address."""
     global _backbone_shown
     import power
-    busy = bool(_wifi_auto_connecting or gui._wifi_connecting or _tcp_starting)
+    busy = bool(_wifi_auto_connecting or gui._wifi_connecting or _tcp_starting or _backbone_pending)
     associated = False
     if _wifi_sta_on and _wlan is not None:
         try:
@@ -917,10 +920,10 @@ def _publish_backbone():
                 ip = _wlan.ifconfig()[0]
         except Exception:
             pass
-    key = (state, ssid, ip)
+    key = (state, ssid, ip, link)
     if key != _backbone_shown:
         _backbone_shown = key
-        gui.set_backbone_state(state, ssid, ip)
+        gui.set_backbone_state(state, ssid, ip, link=link)
 
 
 def _wifi_give_up():
@@ -942,7 +945,7 @@ def _wifi_give_up():
 
 async def _wifi_policy_loop():
     """Every few seconds: is the station still worth running (power.wifi_action)."""
-    global _wifi_unconnected_since, _wifi_last_try, _wifi_dark_since, _tcp_offline_since, _backbone_task
+    global _wifi_unconnected_since, _wifi_last_try, _wifi_dark_since, _tcp_offline_since, _backbone_task, _backbone_pending
     import uasyncio as asyncio
     import power
     while True:
@@ -991,7 +994,8 @@ async def _wifi_policy_loop():
         if (_wifi_sta_on and connected and not link and screen_on and not _tcp_starting
                 and not _wifi_auto_connecting and not gui._wifi_connecting
                 and since_dial_ms >= power.WIFI_RETRY_MS):
-            _backbone_task = asyncio.create_task(_start_backbone())
+            _backbone_pending = True
+            _backbone_task = asyncio.create_task(_start_backbone(tries=1))   # one dial: each blocks the loop for up to 5 s
         # The station's job. Up: the live TCP link (a backbone whose
         # server is unreachable must not hold the deck awake all night).
         # Down: the one saved wish (WiFi on = backbone on), read only when
@@ -1190,6 +1194,7 @@ _wifi_task = None               # the connect task in flight, if any (one at a t
 _tcp_offline_since = None       # when the TCP link last went offline (reconnecting)
 _tcp_starting = False
 _backbone_task = None           # the _start_backbone task in flight (wifi_disconnect cancels it)
+_backbone_pending = False       # spawned, not yet running: the row says "connecting..." meanwhile
 _backbone_last_dial = None      # ticks_ms of the last dial (the lit re-dial waits WIFI_RETRY_MS)
 _backbone_shown = None          # (state, ssid, ip) last handed to the UI
 
@@ -1306,6 +1311,9 @@ def _dial_backbone(host, port, ifac=None):
                   "IFAC" if iface.ifac_signing_key else "plain")
         asyncio.create_task(_ntp_sync())
         return True
+    # No link now (a link that was up went with the deregistration above):
+    # the mesh radio comes back rather than leaving the deck deaf on both.
+    _start_lora()
     if DEBUG >= 1:
         print("[TCP] Interface failed to start")
     return False
@@ -1386,16 +1394,20 @@ async def backbone_apply(host, port, ifac=None):
     import uasyncio as asyncio
     await asyncio.sleep_ms(50)  # paint "Connecting..." before socket setup
     settings = _load_settings()
-    settings["tcp_host"] = host
-    settings["tcp_port"] = port
     ifac = ifac or {}
-    settings["tcp_netname"] = ifac.get("networkname") or ""
-    settings["tcp_passphrase"] = ifac.get("passphrase") or ""
-    settings["tcp_ifac_size"] = ifac.get("ifac_size") or 16
+    new = {"tcp_host": host, "tcp_port": port,
+           "tcp_netname": ifac.get("networkname") or "",
+           "tcp_passphrase": ifac.get("passphrase") or "",
+           "tcp_ifac_size": ifac.get("ifac_size") or 16}
+    unchanged = all(settings.get(k) == v for k, v in new.items())
+    settings.update(new)
     _save_settings(settings)
     addr = host + ":" + str(port)
-    if not _wifi_sta_on:
-        gui.set_tcp_result(True, addr)        # saved; dialed when WiFi comes up
+    if not _wifi_sta_on or (_tcp_iface is not None and unchanged):
+        # Nothing to dial: the station is down (dialed when WiFi comes up),
+        # or the link up already carries these values (a re-dial would
+        # clear every chat for nothing).
+        gui.set_tcp_result(True, addr)
         _publish_backbone()
         return
     ok = False
@@ -2187,19 +2199,21 @@ async def _auto_start_tcp():
     gc.collect()
 
 
-async def _start_backbone():
-    """Dial the backbone once the station is associated: up to 6 tries 10 s
-    apart (right after association DNS often is not answering yet,
+async def _start_backbone(tries=6):
+    """Dial the backbone once the station is associated: after an
+    association up to 6 tries 10 s apart (DNS often is not answering yet,
     getaddrinfo -202, and one failure used to leave the link off for the
-    whole session). Stops when a link is up or the station is gone; a dial
-    that keeps failing is left to the policy loop's lit re-dial."""
-    global _tcp_starting, _backbone_last_dial
+    whole session); the policy loop's lit re-dial is one try a minute, as
+    each dial blocks the event loop for up to 5 s. Stops when a link is up
+    or the station is gone."""
+    global _tcp_starting, _backbone_last_dial, _backbone_pending
     import uasyncio as asyncio
+    _backbone_pending = False
     if _tcp_starting:
         return
     _tcp_starting = True
     try:
-        for attempt in range(6):
+        for attempt in range(tries):
             if not _wifi_sta_on or _tcp_iface is not None:
                 break
             host, port, ifac = _backbone_target()
@@ -2208,7 +2222,8 @@ async def _start_backbone():
                 break
             if DEBUG >= 1:
                 print("[TCP] backbone dial", attempt + 1, "failed")
-            await asyncio.sleep(10)
+            if attempt + 1 < tries:
+                await asyncio.sleep(10)
     finally:
         _tcp_starting = False
     _publish_backbone()

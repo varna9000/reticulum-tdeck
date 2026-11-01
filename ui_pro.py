@@ -889,7 +889,7 @@ def setup_step(ui, d):
 def setup_items(ui):
     """(label, value, opens a sub-page, value in the small font), in
     SETUP_IDX order. The values are ui._draw_settings_main's."""
-    wifi = "connecting..." if ui._wifi_connecting else ui._wifi_value(ip=False)
+    wifi = "connecting..." if ui._wifi_connecting else ui._wifi_value(ip=False, width=27)
     v = ui._volume
     c = ui._lora_cfg
     return (

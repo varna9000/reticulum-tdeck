@@ -455,7 +455,7 @@ def test_wifi_row_values_follow_the_backbone_state():
                                   ("off", "", "", "off")):
         g.set_backbone_state(state, ssid, ip)
         assert g._wifi_value() == want, (state, g._wifi_value())
-    g.set_backbone_state("up", "home", "10.0.0.2")
+    g.set_backbone_state("up", "home", "10.0.0.2", link=True)
     assert g._wifi_connected is True and g._tcp_enabled is True
     g.set_backbone_state("no_server", "home", "10.0.0.2")
     assert g._wifi_connected is True and g._tcp_enabled is False
@@ -582,6 +582,33 @@ def test_apply_result_saves_target_even_when_the_dial_failed():
 
 def test_on_tcp_connect_is_gone():
     assert not hasattr(_mkui(), "on_tcp_connect")
+
+
+def test_tcp_enabled_means_the_link_exists_not_that_it_is_online():
+    # The main page's header shows the globe while TCP is the transport; a
+    # link blip (urns reconnecting) must not flip it to a stale LoRa reading.
+    g = _mkui()
+    g.set_backbone_state("no_server", "home", "", link=True)
+    assert g._tcp_enabled is True and g._wifi_connected is True
+    g.set_backbone_state("no_server", "home", "", link=False)
+    assert g._tcp_enabled is False
+    g.set_backbone_state("no_network", "home", "", link=True)
+    assert g._tcp_enabled is True
+    g.set_backbone_state("off", "", "", link=False)
+    assert g._tcp_enabled is False
+
+
+def test_wifi_value_keeps_the_state_suffix_for_a_long_name():
+    g = _mkui()
+    g.set_backbone_state("no_server", "FRITZ!Box 7590 XY Extra", "")
+    v = g._wifi_value(ip=False, width=27)
+    assert v.endswith(", no server") and len(v) <= 27, v
+    g.set_backbone_state("no_network", "FRITZ!Box 7590 XY Extra", "")
+    v = g._wifi_value(width=32)
+    assert v.endswith(", no network") and len(v) <= 32, v
+    g.set_backbone_state("up", "FRITZ!Box 7590 XY Extra Long Name", "10.0.0.2")
+    v = g._wifi_value(width=32)
+    assert len(v) <= 32 and v.endswith("[10.0.0.2]"), v
 
 
 if __name__ == "__main__":

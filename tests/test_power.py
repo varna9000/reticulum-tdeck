@@ -616,7 +616,7 @@ check("saved else the built-in default", 'TCP_CONFIG["target_host"]' in _bt_src 
 _body_src = _node_src.split("async def _wifi_connect_body", 1)[1].split("\ndef ", 1)[0]
 check("association starts the backbone", "_start_backbone()" in _body_src and "_backbone_task = " in _body_src)
 check("lit re-dial every WIFI_RETRY_MS while the station is associated with no link",
-      "_backbone_last_dial" in _loop_src and "_start_backbone()" in _loop_src
+      "_backbone_last_dial" in _loop_src and "_start_backbone(" in _loop_src
       and "screen_on" in _loop_src.split("_backbone_last_dial", 1)[1][:400])
 check("the loop publishes the state", "_publish_backbone()" in _loop_src)
 _wd_src = _node_src.split("def wifi_disconnect", 1)[1].split("\ndef ", 1)[0]
@@ -663,6 +663,26 @@ _readme_setup = _readme.split("### Setup", 1)[1].split("### Power", 1)[0]
 check("README names the Backbone row and no TCP row", "**Backbone**" in _readme_setup and "**TCP**" not in _readme_setup)
 check("README no longer saves a TCP enabled state", "TCP enabled state" not in _readme and "`tcp_enabled`" not in _readme)
 check("README says WiFi on is the backbone", "WiFi on" in _readme_setup or "backbone" in _readme_setup.split("**WiFi**", 1)[1][:400])
+
+print("final review 2026-11-01: one dial per lit retry, publish at once, header keeps TCP, apply idempotent, LoRa back after a failed dial")
+_node_src = open(os.path.join(ROOT, "tdeck_node.py")).read()
+_loop_src = _node_src.split("def _wifi_policy_loop", 1)[1].split("async def _low_battery_loop", 1)[0]
+_sb_src = _node_src.split("async def _start_backbone", 1)[1].split("\nasync def ", 1)[0]
+check("the backbone start takes a tries count and sleeps only between tries",
+      "async def _start_backbone(tries=" in _node_src and "if attempt + 1 < tries" in _sb_src)
+check("the lit re-dial is one dial, not a burst (each dial blocks the loop for up to 5 s)", "_start_backbone(tries=1)" in _loop_src)
+_body_src = _node_src.split("async def _wifi_connect_body", 1)[1].split("\ndef ", 1)[0]
+check("the body publishes as soon as the station is up (the row must not read 'off' for 5 s)",
+      "_publish_backbone()" in _body_src.split("_wifi_sta_on = True", 1)[1].split("wlan.connect(", 1)[0])
+_pb_src = _node_src.split("def _publish_backbone", 1)[1].split("\ndef ", 1)[0]
+check("a backbone start spawned but not yet running counts as busy", "_backbone_pending" in _pb_src)
+check("the published state carries whether the TCP interface exists (the header's transport)", "link=link" in _pb_src)
+_ap_src = _node_src.split("async def backbone_apply", 1)[1].split("\ndef ", 1)[0]
+check("apply over a live link with unchanged values does not re-dial (a re-dial clears every chat)",
+      "unchanged" in _ap_src and _ap_src.index("unchanged") < _ap_src.index("_dial_backbone("))
+_dial_src = _node_src.split("def _dial_backbone", 1)[1].split("\ndef ", 1)[0]
+check("a failed dial with no link left brings LoRa back (the deck must not be deaf on both)",
+      "_start_lora()" in _dial_src.split("return True", 1)[1])
 
 print("LowBattery (cut the pack before the chip browns out)")
 check("threshold above the brownout, below the empty mark", 2.9 < power.LOW_BATTERY_V <= 3.3)
