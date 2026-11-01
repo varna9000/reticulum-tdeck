@@ -4311,10 +4311,15 @@ class UI:
     def _wake_label(self):
         return ("msgs", "all", "never")[self._wake_mode]
 
+    def _setup_title(self, text):
+        """A Setup page's title row: two columns in on the v1, like the rows
+        under it (the Pro draws its own header band from the bare text)."""
+        return text if _pro is not None else "  " + text
+
     def _draw_settings_main(self):
         if _pro is not None:
             return _pro.draw_setup(self)
-        self._draw_row_cached(1, "Setup", BODY_Y, self.NEON_CYAN)
+        self._draw_row_cached(1, self._setup_title("Setup"), BODY_Y, self.NEON_CYAN)
 
         wifi_line = "WiFi: " + self._wifi_value(width=COLS - 8)
         tcp_line = "Backbone: " + (self._tcp_target or self._tcp_default)
@@ -4365,11 +4370,17 @@ class UI:
                 if self._cache[i + 2] == cache_key:
                     continue
                 self._cache[i + 2] = cache_key
+                # The label (up to the colon, or the whole row when it has no
+                # value) in its own colour: dim, so the value carries the row;
+                # white on the selected row against the yellow value.
+                label = line[:line.index(":") + 1] if ":" in line else line
                 if sel:
                     self.tft.text(self.font, self._tb(_pad(line)), 0, y, self.YELLOW, self.SEL_BG)
+                    self.tft.text(self.font, self._tb(label), 0, y, self.WHITE, self.SEL_BG)
                     self.tft.fill_rect(4, y, 3, CHAR_H, self.NEON_MAG)
                 else:
                     self._row(line, y, self.NEON_CYAN)
+                    self.tft.text(self.font, self._tb(label), 0, y, self.DIM_CYAN, self.BG_DARK)
                 if sub:
                     self._bitmap(_SUBPAGE, 9, y + (CHAR_H - _SUBPAGE[1]) // 2,
                                  self.YELLOW if sel else self.DIM_CYAN)
@@ -4624,7 +4635,7 @@ class UI:
             self.tft.fill_rect(_RAIL_X, y + CHAR_H - 2, 12, 2, c)
 
     def _draw_lora_freq(self):
-        self._draw_row_cached(1, "LoRa Frequency (kHz)", BODY_Y, self.NEON_CYAN)
+        self._draw_row_cached(1, self._setup_title("LoRa Frequency (kHz)"), BODY_Y, self.NEON_CYAN)
         cur = (self._lora_edit or self._lora_cfg)["freq_khz"]
         self._draw_row_cached(2, "  current " + str(cur) + " kHz",
                               BODY_Y + CHAR_H, self.NEON_CYAN)
@@ -4687,7 +4698,7 @@ class UI:
         self._draw_settings_bottom_bar()
 
     def _draw_wifi_pass(self):
-        self._draw_row_cached(1, "Connect to: " + self._wifi_ssid[:26], BODY_Y, self.NEON_CYAN)
+        self._draw_row_cached(1, self._setup_title("Connect to: " + self._wifi_ssid[:26]), BODY_Y, self.NEON_CYAN)
 
         for i in range(1, BODY_ROWS):
             self._draw_row_cached(i + 1, "", BODY_Y + i * CHAR_H, self.NEON_CYAN)
@@ -4792,7 +4803,7 @@ class UI:
         self.dirty = True
 
     def _draw_node_name(self):
-        self._draw_row_cached(1, "Node Name", BODY_Y, self.NEON_CYAN)
+        self._draw_row_cached(1, self._setup_title("Node Name"), BODY_Y, self.NEON_CYAN)
 
         for i in range(1, BODY_ROWS):
             self._draw_row_cached(i + 1, "", BODY_Y + i * CHAR_H, self.NEON_CYAN)
@@ -4803,7 +4814,7 @@ class UI:
     def _draw_settings_tcp(self):
         """Settings > Backbone: the server host (its own group, the address
         is the row), the optional access code group, Apply."""
-        self._draw_row_cached(1, "< Backbone", BODY_Y, self.NEON_CYAN)
+        self._draw_row_cached(1, self._setup_title("< Backbone"), BODY_Y, self.NEON_CYAN)
         if self._tcp_connecting:
             for i in range(1, BODY_ROWS):
                 self._draw_row_cached(i + 1, "", BODY_Y + i * CHAR_H, self.NEON_CYAN)
@@ -4833,7 +4844,7 @@ class UI:
             self._close_text(_SET_MAIN)
             return
         title, d, key, back, keep = self._text_entry
-        self._draw_row_cached(1, "< " + title, BODY_Y, self.NEON_CYAN)
+        self._draw_row_cached(1, self._setup_title("< " + title), BODY_Y, self.NEON_CYAN)
         cur = d.get(key) or ""
         rows = [("", "blank"),
                 ("current: " + (_tail(cur, COLS - 2 - 9) if cur else "none"), "text"),

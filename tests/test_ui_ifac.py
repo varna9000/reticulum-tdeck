@@ -441,7 +441,10 @@ def test_v1_setup_draws_rows_in_setup_order():
     drawn = []
     g.tft.text = lambda font, s, x, y, *a: drawn.append((s.decode("latin-1") if isinstance(s, (bytes, bytearray)) else s).strip())
     g._draw_settings_main()
-    rows = [s for s in drawn if s and s != "Setup"]
+    rows = []
+    for s_ in drawn:                              # the label overdraw repeats a row's head: skip it
+        if s_ and s_ != "Setup" and not s_.endswith(":") and (not rows or rows[-1] != s_):
+            rows.append(s_)
     assert rows[0].startswith("WiFi:") and rows[1].startswith("Backbone: h:1") and rows[2].startswith("LoRa:"), rows[:3]
     assert rows[3].startswith("LoRa cfg:") and rows[4] == "Radio stats" and rows[5].startswith("Vol:"), rows[3:6]
     assert rows[6].startswith("Kbd light:"), rows[6]
@@ -590,7 +593,7 @@ def test_form_title_is_backbone():
     seen = []
     g._draw_row_cached = lambda i, text, *a: seen.append(text) or True
     g.draw()
-    assert "< Backbone" in seen, seen
+    assert "  < Backbone" in seen, seen          # two columns in on the v1
 
 
 def test_apply_result_saves_target_even_when_the_dial_failed():
@@ -755,6 +758,48 @@ def test_band_precedence_audio_and_transfer_win():
     g._audio_status = "PLAY"
     icons, texts = _band_calls(g)
     assert icons == [] and any(s.startswith("[PLAY]") for s, _ in texts), texts   # the clock may follow the text
+
+
+def _v1_rows(g):
+    calls = []
+    g.tft.text = lambda f, s, x, y, color=0, bg=0: calls.append(((s.decode("latin-1") if isinstance(s, (bytes, bytearray)) else s).rstrip(), x, color, bg))
+    g._cache = [''] * ui.CACHE_ROWS
+    g._draw_settings_main()
+    return calls
+
+
+def test_v1_setup_labels_are_dim_and_values_bright():
+    g = _mkui()
+    g.set_backbone_state("up", "home", "1.2.3.4", link=True)
+    g._settings_idx = 3                               # LoRa selected, so WiFi is an unselected row
+    calls = _v1_rows(g)
+    assert ("  WiFi:", 0, g.DIM_CYAN, g.BG_DARK) in calls, calls[:6]
+    assert any(s.startswith("  WiFi: home") and c == g.NEON_CYAN for s, x, c, b in calls)
+    assert ("  Radio stats", 0, g.DIM_CYAN, g.BG_DARK) in calls          # no value: all label
+    sel = [(s, c, b) for s, x, c, b in calls if b == g.SEL_BG]
+    assert ("  LoRa:", g.WHITE, g.SEL_BG) in sel and any(s.startswith("  LoRa: Online") and c == g.YELLOW for s, c, b in sel), sel
+
+
+def test_v1_hash_rows_split_label_and_hash():
+    g = _mkui()
+    g.my_address = "ab" * 16
+    g._settings_idx = 13                              # Id selected: both hash rows in view
+    calls = _v1_rows(g)
+    assert ("  Id:", g.WHITE, g.SEL_BG) in [(s, c, b) for s, x, c, b in calls], calls
+    assert ("  Addr:", 0, g.DIM_CYAN, g.BG_DARK) in calls, calls
+
+
+def test_v1_setup_titles_sit_off_the_border():
+    g = _mkui()
+    seen = []
+    g._draw_row_cached = lambda i, text, *a: seen.append((i, text)) or True
+    g.draw()
+    assert (1, "  Setup") in seen, seen
+    g = _open_tcp()
+    seen[:] = []
+    g._draw_row_cached = lambda i, text, *a: seen.append((i, text)) or True
+    g.draw()
+    assert (1, "  < Backbone") in seen, seen
 
 
 if __name__ == "__main__":

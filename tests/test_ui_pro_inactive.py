@@ -130,7 +130,7 @@ g._settings_page = ui._SET_NODE_NAME
 g.cmd_buf = bytearray(b"x")
 g._cache = [''] * ui.CACHE_ROWS
 g.draw()
-check("v1 sub-page header is the old row at BODY_Y", any(s == "Node Name" and y == ui.BODY_Y for s, x, y in g.tft.texts), repr(g.tft.texts[:3]))
+check("v1 sub-page header is the old row at BODY_Y, two columns in", any(s.rstrip() == "  Node Name" and y == ui.BODY_Y for s, x, y in g.tft.texts), repr(g.tft.texts[:3]))
 
 
 def v1_lines(page, **kw):
