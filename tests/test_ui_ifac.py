@@ -788,7 +788,7 @@ def test_v1_setup_labels_are_dim_and_values_bright():
     assert any(s.startswith("  WiFi: home") and c == g.NEON_CYAN for s, x, c, b in calls)
     assert ("  Radio stats", 0, g.DIM_CYAN, g.BG_DARK) in calls          # no value: all label
     sel = [(s, c, b) for s, x, c, b in calls if b == g.SEL_BG]
-    assert ("  LoRa:", g.WHITE, g.SEL_BG) in sel and any(s.startswith("  LoRa: Online") and c == g.YELLOW for s, c, b in sel), sel
+    assert ("  LoRa:", g.WHITE, g.SEL_BG) in sel and any(s.startswith("  LoRa: ") and c == g.YELLOW for s, c, b in sel), sel
 
 
 def test_v1_hash_rows_split_label_and_hash():
@@ -819,6 +819,24 @@ def test_host_entry_splits_a_pasted_host_port():
     _type(g, "example.com:4243")
     g.handle_key(ENTER)
     assert g._tcp_edit["host"] == "example.com" and g._tcp_edit["port"] == "4243", g._tcp_edit
+
+
+def test_lora_row_says_paused_while_the_backbone_carries():
+    # Found on the Pro (2026-11-01): with the link up the LoRa row still said
+    # "Online" -- the node never clears lora_online when TCP takes over.
+    g = _mkui()
+    g.lora_online = True
+    g.set_backbone_state("up", "home", "1.2.3.4", link=True)
+    calls = _v1_rows(g)
+    assert any(s_.startswith("  LoRa: paused (backbone)") for s_, x, c, b in calls), [s_ for s_, *_ in calls][:6]
+    calls2 = []
+    g.on_lora_reset = lambda: calls2.append(1) or True
+    g._settings_idx = 3
+    g.handle_key(ENTER)
+    assert calls2 == []                                  # select only: a reset under the link would be wrong
+    g.set_backbone_state("off", "", "")
+    calls = _v1_rows(g)
+    assert any(s_.startswith("  LoRa: Online") for s_, x, c, b in calls)
 
 
 if __name__ == "__main__":

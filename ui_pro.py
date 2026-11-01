@@ -897,7 +897,7 @@ def setup_items(ui):
     return (
         ("WiFi", wifi, ui._backbone == "off", False),
         ("Backbone", ui._tcp_target or ui._tcp_default, True, False),
-        ("LoRa", "Online" if ui.lora_online else "OFFLINE - select to reset", False, False),
+        ("LoRa", "paused (backbone)" if ui._tcp_enabled else "Online" if ui.lora_online else "OFFLINE - select to reset", False, False),
         ("LoRa cfg", "%dk SF%d BW%s" % (c["freq_khz"], c["sf"], c["bw"]), True, False),
         ("Radio stats", "view", True, False),
         ("Volume", "[" + "#" * v + "." * (10 - v) + "] " + str(v), False, False),

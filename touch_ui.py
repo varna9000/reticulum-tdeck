@@ -163,8 +163,8 @@ def _tap_pro_setup(ui, y):
     ui._setup_armed = -1
     ui._settings_idx = idx
     ui.dirty = True
-    if idx == 3 and ui.lora_online:
-        return True                        # a click would reset a healthy radio: select only
+    if idx == 3 and (ui.lora_online or ui._tcp_enabled):
+        return True                        # healthy, or paused under the link: select only
     if idx == 0 and ui._backbone != "off":
         # A click here switches the backbone off, which also clears every
         # chat. It takes a tap that selects and a tap that confirms, however

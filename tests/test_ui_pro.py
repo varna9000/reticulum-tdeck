@@ -1065,6 +1065,12 @@ def test_setup_items():
     g.set_backbone_state("no_server", "FRITZ!Box 7590 XY Extra", "")
     it = P.setup_items(g)
     check("a long name is cut so the state still fits the 27-column value", it[0][1].endswith(", no server") and len(it[0][1]) <= 27, repr(it[0]))
+    g.lora_online = True
+    g.set_backbone_state("up", "home", "", link=True)
+    it = P.setup_items(g)
+    check("LoRa row says paused while the backbone carries", it[2][1] == "paused (backbone)" and not it[2][2], repr(it[2]))
+    g.set_backbone_state("up", "home", "10.0.0.7")       # back to the state the checks below assume
+    g.lora_online = False
     g.set_backbone_state("up", "home", "")
     g._wifi_connecting = True
     it = P.setup_items(g)

@@ -3957,8 +3957,8 @@ class UI:
                     self.dirty = True
                     return True
                 elif self._settings_idx == 3:  # LoRa reset (only a wedged radio)
-                    if self.lora_online:
-                        return True          # a click would reset a healthy radio: select only
+                    if self.lora_online or self._tcp_enabled:
+                        return True          # healthy, or paused under the link: select only
                     if self.on_lora_reset:
                         self.on_lora_reset()
                     self._cache = [''] * CACHE_ROWS
@@ -4331,7 +4331,10 @@ class UI:
         wifi_line = "WiFi: " + self._wifi_value(width=COLS - 8)
         tcp_line = "Backbone: " + (self._tcp_target or self._tcp_default)
         name_line = "Name: " + self.node_name
-        lora_line = "LoRa: " + ("Online" if self.lora_online else "OFFLINE (click=reset)")
+        # The radio is stopped while the backbone link carries the traffic;
+        # lora_online keeps the last health reading, so the row says why.
+        lora_line = "LoRa: " + ("paused (backbone)" if self._tcp_enabled else
+                                "Online" if self.lora_online else "OFFLINE (click=reset)")
 
         vol_bar = "#" * self._volume + "." * (10 - self._volume)
         vol_line = "Vol:  [" + vol_bar + "] " + str(self._volume)
