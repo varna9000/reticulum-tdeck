@@ -141,6 +141,24 @@ def wifi_shown(connected, sta_on, busy, shown):
     return bool(connected)
 
 
+def backbone_state(sta_on, busy, associated, link, online):
+    """The one state behind Setup's WiFi row (WiFi on = the backbone link):
+    "off" (station down), "connecting" (a connect task or the backbone
+    start in flight), "no_network" (station up, no AP: lost it and hunting;
+    never "off", so the row's tap is still the disconnect -- the
+    2026-10-31 case), "up" (link online) or "no_server" (associated, link
+    down or never came up)."""
+    if not sta_on:
+        return "off"
+    if busy:
+        return "connecting"
+    if not associated:
+        return "no_network"
+    if link and online:
+        return "up"
+    return "no_server"
+
+
 class LowBattery:
     """Counts consecutive low readings on battery; sample() is True on the
     reading that should power the deck off."""

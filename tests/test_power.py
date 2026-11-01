@@ -634,6 +634,16 @@ _tt_src = _node_src.split("def tcp_toggle", 1)[1].split("\ndef ", 1)[0]
 check("tcp_toggle(True) over a live link deregisters it first",
       "deregister_interface" in _tt_src.split("if enabled:", 1)[1].split("TCPClientInterface(TCP_CONFIG)", 1)[0])
 
+print("backbone_state (one state for the Setup WiFi row)")
+check("station off: off", power.backbone_state(False, False, False, False, False) == "off")
+check("connect in flight: connecting", power.backbone_state(True, True, False, False, False) == "connecting")
+check("associated, link up: up", power.backbone_state(True, False, True, True, True) == "up")
+check("associated, no link: no_server", power.backbone_state(True, False, True, False, False) == "no_server")
+check("associated, link offline: no_server", power.backbone_state(True, False, True, True, False) == "no_server")
+check("station up, no AP, link registered: no_network (never off while the station is up)",
+      power.backbone_state(True, False, False, True, False) == "no_network")
+check("station up, no AP, no link: no_network", power.backbone_state(True, False, False, False, False) == "no_network")
+
 print("LowBattery (cut the pack before the chip browns out)")
 check("threshold above the brownout, below the empty mark", 2.9 < power.LOW_BATTERY_V <= 3.3)
 lb = power.LowBattery()
