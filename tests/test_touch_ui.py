@@ -1025,7 +1025,7 @@ def frow(i):
 
 def test_tcp_form_taps():
     print("review: the TCP form takes taps (Pro)")
-    # TCP rows: blank, Host, blank, legend, Net, Pass, IFAC, blank, Connect.
+    # TCP rows: blank, legend Server, Host, Port, blank, legend, Net, Pass, IFAC, blank, Apply.
     g = mkui(ui.STATE_SETTINGS)
     g._settings_page = ui._SET_TCP_HOST
     g._tcp_edit = g._tcp_seed()
@@ -1033,14 +1033,14 @@ def test_tcp_form_taps():
     g.draw()
     drawn(g)
     hy = lambda f: dict((fl, y) for y, fl in g._form_hits)[f] + ui.CHAR_H // 2
-    check("a tap on Pass is accepted", tap(g, 100, hy(2)) is True)
-    check("it selects the row", g._tcp_field == 2, str(g._tcp_field))
+    check("a tap on Pass is accepted", tap(g, 100, hy(3)) is True)
+    check("it selects the row", g._tcp_field == 3, str(g._tcp_field))
     settle(g)
     check("and only selects: the first tap moves the bar",
           g._settings_page == ui._SET_TCP_HOST and g._text_entry is None, repr(g._settings_page))
     g.draw()
     drawn(g)
-    check("a tap on the selected row is accepted", tap(g, 100, hy(2)) is True)
+    check("a tap on the selected row is accepted", tap(g, 100, hy(3)) is True)
     settle(g)
     check("and opens its text page",
           g._settings_page == ui._SET_TEXT and g._text_entry[2] == "passphrase",
@@ -1049,33 +1049,34 @@ def test_tcp_form_taps():
     g.draw()
     drawn(g)
     size = g._tcp_edit["ifac_size"]
-    check("a tap on IFAC selects it", tap(g, 100, hy(3)) is True and g._tcp_field == 3)
+    check("a tap on IFAC selects it", tap(g, 100, hy(4)) is True and g._tcp_field == 4)
     settle(g)
     check("without stepping it", g._tcp_edit["ifac_size"] == size, repr(g._tcp_edit))
     g.draw()
     drawn(g)
-    check("the second tap steps it", tap(g, 100, hy(3)) is True)
+    check("the second tap steps it", tap(g, 100, hy(4)) is True)
     settle(g)
     check("...the size changed", g._tcp_edit["ifac_size"] != size and g._settings_page == ui._SET_TCP_HOST,
           repr(g._tcp_edit))
     g.draw()
     drawn(g)
-    check("the legend row is not a target", tap(g, 100, frow(3)) is False and g._tcp_field == 3)
-    check("a blank row is not a target", tap(g, 100, hy(3) + ui.CHAR_H) is False)
+    check("the legend row is not a target", tap(g, 100, frow(1)) is False and g._tcp_field == 4)
+    check("a blank row is not a target", tap(g, 100, hy(4) + ui.CHAR_H) is False)
     got = []
     g.on_backbone_apply = lambda h, p, i: got.append((h, p, i))
-    g._tcp_edit["host"] = "rns.example.org:4242"
+    g._tcp_edit["host"] = "rns.example.org"
+    g._tcp_edit["port"] = "4242"
     g.draw()
     drawn(g)
-    check("a tap on Connect selects it", tap(g, 100, hy(4)) is True and g._tcp_field == 4)
+    check("a tap on Apply selects it", tap(g, 100, hy(5)) is True and g._tcp_field == 5)
     settle(g)
     check("the first tap does not connect", got == [], repr(got))
     g.draw()
     drawn(g)
-    check("the second tap is accepted", tap(g, 100, hy(4)) is True)
+    check("the second tap is accepted", tap(g, 100, hy(5)) is True)
     settle(g)
     check("and connects", len(got) == 1 and g._tcp_connecting, repr(got))
-    check("while connecting a tap lands nowhere", tap(g, 100, hy(4)) is False)
+    check("while connecting a tap lands nowhere", tap(g, 100, hy(5)) is False)
 
 
 def test_lora_editor_taps():
@@ -1148,19 +1149,19 @@ def test_form_group_has_air_on_the_pro():
     ys = dict((f, y) for y, f in g._form_hits)
     half = ui.CHAR_H // 2
     check("Net..Pass..IFAC are a row and a half apart",
-          ys[2] - ys[1] == ui.CHAR_H + half and ys[3] - ys[2] == ui.CHAR_H + half, repr(ys))
-    legend_y = ys[1] - half - ui.CHAR_H
+          ys[3] - ys[2] == ui.CHAR_H + half and ys[4] - ys[3] == ui.CHAR_H + half, repr(ys))
+    legend_y = ys[2] - half - ui.CHAR_H
     rail = [(y, h) for x, y, w, h, c in g.tft.rects if x == ui._RAIL_X and w == 2]
     covered = set()
     for y, h in rail:
         covered.update(range(y, y + h))
-    want = range(legend_y + ui.CHAR_H // 2, ys[3] + ui.CHAR_H)
+    want = range(legend_y + ui.CHAR_H // 2, ys[4] + ui.CHAR_H)
     check("the rail is unbroken from the legend to the last row", all(y in covered for y in want),
           repr(sorted(set(want) - covered)[:5]))
     foot = [(x, y) for x, y, w, h, c in g.tft.rects if x == ui._RAIL_X and w > 2 and h == 2]
     check("two feet (the Server host group's, then half a row under IFAC): the rows sit centred in the bracket",
-          len(foot) == 2 and foot[-1] == (ui._RAIL_X, ys[3] + ui.CHAR_H + half - 2), repr(foot))
-    want = range(legend_y + ui.CHAR_H // 2, ys[3] + ui.CHAR_H + half)
+          len(foot) == 2 and foot[-1] == (ui._RAIL_X, ys[4] + ui.CHAR_H + half - 2), repr(foot))
+    want = range(legend_y + ui.CHAR_H // 2, ys[4] + ui.CHAR_H + half)
     check("the rail reaches the foot", all(y in covered for y in want), repr(sorted(set(want) - covered)[:5]))
     g = mkui(ui.STATE_SETTINGS)
     g.set_lora_config({"freq_khz": 868800, "bw": 125, "sf": 8, "coding_rate": 5, "tx_power": 22})

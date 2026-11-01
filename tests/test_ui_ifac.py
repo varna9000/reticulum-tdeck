@@ -93,14 +93,14 @@ def _open_tcp(target="h:1", saved=("mymesh", "pw", 8)):
 
 def test_tcp_row_opens_form_with_saved_values():
     g = _open_tcp()
-    assert g._tcp_edit == {"host": "h:1", "networkname": "mymesh",
+    assert g._tcp_edit == {"host": "h", "port": "1", "networkname": "mymesh",
                            "passphrase": "pw", "ifac_size": 8}
     assert g._tcp_field == 0
 
 
 def test_tcp_form_falls_back_to_default_host():
     g = _open_tcp(target="", saved=("", "", 16))
-    assert g._tcp_edit["host"] == "d.example:4242"
+    assert g._tcp_edit["host"] == "d.example" and g._tcp_edit["port"] == "4242"
     assert g._tcp_edit["ifac_size"] == 16
 
 
@@ -111,21 +111,22 @@ def test_host_entry_keeps_current_on_empty_enter():
     assert g._accepting_text()
     g.handle_key(ENTER)                        # nothing typed
     assert g._settings_page == ui._SET_TCP_HOST
-    assert g._tcp_edit["host"] == "h:1"
+    assert g._tcp_edit["host"] == "h"
 
 
 def test_host_entry_takes_a_new_value():
     g = _open_tcp()
     g.handle_key(ENTER)
-    _type(g, "rns.example.org:4242")
+    _type(g, "rns.example.org")
     g.handle_key(ENTER)
-    assert g._tcp_edit["host"] == "rns.example.org:4242"
+    assert g._tcp_edit["host"] == "rns.example.org"
 
 
 def test_net_entry_sets_and_empty_enter_clears():
     g = _open_tcp()
+    g._settings_scroll_down()
     g._settings_scroll_down()                  # Net
-    assert g._tcp_field == 1
+    assert g._tcp_field == 2
     g.handle_key(ENTER)
     _type(g, "othermesh")
     g.handle_key(ENTER)
@@ -137,9 +138,9 @@ def test_net_entry_sets_and_empty_enter_clears():
 
 def test_pass_entry_sets_value():
     g = _open_tcp()
-    g._settings_scroll_down()
-    g._settings_scroll_down()                  # Pass
-    assert g._tcp_field == 2
+    for _ in range(3):
+        g._settings_scroll_down()              # Pass
+    assert g._tcp_field == 3
     g.handle_key(ENTER)
     _type(g, "correct horse")
     g.handle_key(ENTER)
@@ -152,7 +153,7 @@ def test_text_entry_esc_cancels_and_backspace_on_empty_goes_back():
     _type(g, "junk")
     g.handle_key(ESC)
     assert g._settings_page == ui._SET_TCP_HOST
-    assert g._tcp_edit["host"] == "h:1"
+    assert g._tcp_edit["host"] == "h"
     g.handle_key(ENTER)
     g.handle_key(BKSP)
     assert g._settings_page == ui._SET_TCP_HOST
@@ -160,9 +161,9 @@ def test_text_entry_esc_cancels_and_backspace_on_empty_goes_back():
 
 def test_ifac_size_cycles_between_64_and_128_bit():
     g = _open_tcp()
-    for _ in range(3):
+    for _ in range(4):
         g._settings_scroll_down()              # IFAC
-    assert g._tcp_field == 3
+    assert g._tcp_field == 4
     g.handle_key(ENTER)
     assert g._tcp_edit["ifac_size"] == 16
     g.handle_key(ENTER)
@@ -173,20 +174,20 @@ def test_ifac_size_cycles_between_64_and_128_bit():
     assert g._tcp_edit["ifac_size"] == 8
 
 
-def test_navigation_stays_within_the_five_rows():
+def test_navigation_stays_within_the_six_rows():
     g = _open_tcp()
     g._settings_scroll_up()
     assert g._tcp_field == 0
     for _ in range(9):
         g._settings_scroll_down()
-    assert g._tcp_field == 4                   # Connect is the last row
+    assert g._tcp_field == 5                   # Apply is the last row
 
 
 def test_apply_passes_host_port_and_code():
     g = _open_tcp()
     got = []
     g.on_backbone_apply = lambda host, port, ifac: got.append((host, port, ifac))
-    for _ in range(4):
+    for _ in range(5):
         g._settings_scroll_down()
     g.handle_key(ENTER)
     assert got == [("h", 1, {"networkname": "mymesh", "passphrase": "pw", "ifac_size": 8})]
@@ -202,7 +203,7 @@ def test_apply_with_no_code_passes_empty_fields():
     g = _open_tcp(saved=("", "", 16))
     got = []
     g.on_backbone_apply = lambda host, port, ifac: got.append(ifac)
-    for _ in range(4):
+    for _ in range(5):
         g._settings_scroll_down()
     g.handle_key(ENTER)
     assert got == [{"networkname": "", "passphrase": "", "ifac_size": 16}]
@@ -211,8 +212,8 @@ def test_apply_with_no_code_passes_empty_fields():
 def test_apply_with_bad_host_goes_back_without_dialing():
     g = _open_tcp()
     g.on_backbone_apply = lambda *a: (_ for _ in ()).throw(AssertionError("must not connect"))
-    g._tcp_edit["host"] = "no-port-here"
-    for _ in range(4):
+    g._tcp_edit["host"] = "   "                 # blank host: nothing to dial
+    for _ in range(5):
         g._settings_scroll_down()
     g.handle_key(ENTER)
     assert g._settings_page == ui._SET_MAIN
@@ -226,7 +227,7 @@ def test_failed_apply_still_records_what_was_typed():
     g = _open_tcp()
     g.on_backbone_apply = lambda *a: None
     g._tcp_edit["networkname"] = "typo"
-    for _ in range(4):
+    for _ in range(5):
         g._settings_scroll_down()
     g.handle_key(ENTER)
     g.set_tcp_result(False, "h:1")
@@ -251,14 +252,14 @@ def test_backbone_row_opens_a_working_form():
     g._settings_idx = 1
     g.handle_key(ENTER)
     assert g._settings_page == ui._SET_TCP_HOST
-    assert g._tcp_edit == {"host": "d.example:4242", "networkname": "mymesh",
+    assert g._tcp_edit == {"host": "d.example", "port": "4242", "networkname": "mymesh",
                            "passphrase": "pw", "ifac_size": 8}
     g.draw()
     g.handle_key(ENTER)                        # Host -> text entry, no crash
     assert g._settings_page == ui._SET_TEXT
-    _type(g, "h:1")
+    _type(g, "h")
     g.handle_key(ENTER)
-    assert g._tcp_edit["host"] == "h:1"
+    assert g._tcp_edit["host"] == "h"
 
 
 def test_text_page_without_an_entry_falls_back_to_setup():
@@ -397,9 +398,9 @@ def test_lcd_group_rows_stay_one_row_apart():
     g.tft.rects = []
     g.draw()
     ys = dict((f, y) for y, f in g._form_hits)
-    assert ys[2] - ys[1] == ui.CHAR_H and ys[3] - ys[2] == ui.CHAR_H, ys
+    assert ys[3] - ys[2] == ui.CHAR_H and ys[4] - ys[3] == ui.CHAR_H, ys
     foot = [(x, y) for x, y, w, h, c in g.tft.rects if x == ui._RAIL_X and w > 2 and h == 2]
-    assert len(foot) == 2 and foot[-1] == (ui._RAIL_X, ys[3] + ui.CHAR_H - 2), foot    # the host group's, then under IFAC, no air below
+    assert len(foot) == 2 and foot[-1] == (ui._RAIL_X, ys[4] + ui.CHAR_H - 2), foot    # the host group's, then under IFAC, no air below
 
 
 def _run():
@@ -545,18 +546,44 @@ def test_tcp_toggle_and_reconnect_callbacks_are_gone():
     assert not hasattr(g, "on_tcp_toggle") and not hasattr(g, "on_wifi_reconnect")
 
 
-def test_backbone_form_rows_host_group_then_code_then_apply():
+def test_seed_splits_host_and_port():
+    g = _open_tcp(target="rns.example.org:4242")
+    assert g._tcp_edit["host"] == "rns.example.org" and g._tcp_edit["port"] == "4242"
+
+
+def test_form_rows_server_group_then_code_then_apply():
     g = _open_tcp()
     drawn = []
     g._draw_form = lambda rows, sel: drawn.extend(rows)
     g.draw()
-    kinds = [(r[0], r[1]) for r in drawn if r[1] not in ("blank", "space")]
-    assert kinds[0] == ("Server host", "legend"), kinds
-    host_row = [r for r in drawn if r[0] == "h:1"]
-    assert host_row and host_row[0][1] == "text" and host_row[0][2] == 0 and host_row[0][3] is True, drawn
-    assert kinds[-1] == ("[ Apply ]", "action"), kinds
-    assert not any(r[0].startswith("Host") for r in drawn)
+    fields = [(r[0].split()[0], r[2]) for r in drawn if len(r) > 2 and r[2] is not None]
+    assert fields[:2] == [("Host", 0), ("Port", 1)], fields
+    assert fields[-1] == ("[", 5) and [f for _, f in fields] == [0, 1, 2, 3, 4, 5], fields
+    assert drawn[1] == ("Server", "legend"), drawn[:3]
+    host_row = [r[0] for r in drawn if r[0].startswith("Host")][0]
+    assert host_row == ("Host   h" if ui.COLS >= 40 else "Host h"), host_row
 
+
+def test_port_entry_keeps_the_old_value_on_empty_or_letters():
+    g = _open_tcp()
+    g._settings_scroll_down()                       # Port
+    g.handle_key(ENTER)
+    assert g._settings_page == ui._SET_TEXT
+    g.handle_key(ENTER)                             # empty
+    assert g._tcp_edit["port"] == "1"
+    g.handle_key(ENTER); _type(g, "4x"); g.handle_key(ENTER)
+    assert g._tcp_edit["port"] == "1"
+    g.handle_key(ENTER); _type(g, "4242"); g.handle_key(ENTER)
+    assert g._tcp_edit["port"] == "4242"
+
+
+def test_apply_with_blank_port_goes_back_without_dialing():
+    g = _open_tcp()
+    g.on_backbone_apply = lambda *a: (_ for _ in ()).throw(AssertionError("must not dial"))
+    g._tcp_edit["port"] = ""
+    g._tcp_field = ui._TCP_CONNECT
+    g.handle_key(ENTER)
+    assert g._settings_page == ui._SET_MAIN and g._settings_idx == 1
 
 def test_form_title_is_backbone():
     g = _open_tcp()

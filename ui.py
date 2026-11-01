@@ -82,8 +82,8 @@ _LORA_FIELDS = ("freq_khz", "bw", "sf", "coding_rate", "tx_power")
 _LORA_TEXT_FIELDS = ("networkname", "passphrase")
 _LORA_APPLY = 7
 # The TCP form's rows: the host, the access code, then 4 = Connect.
-_TCP_FIELDS = ("host", "networkname", "passphrase", "ifac_size")
-_TCP_CONNECT = 4
+_TCP_FIELDS = ("host", "port", "networkname", "passphrase", "ifac_size")
+_TCP_CONNECT = 5
 # IFAC sizes offered, in bytes (urns' unit); shown in bits, the reference
 # config's unit, so "ifac_size = 64" on a server reads as 64 here. 16 is the
 # reference TCP default. LoRa is always 8 and has no row for it.
@@ -4186,12 +4186,12 @@ class UI:
                 f = self._tcp_field
                 if f == _TCP_CONNECT:
                     self._tcp_apply()
-                elif f == 3:                       # IFAC size cycles
+                elif f == 4:                       # IFAC size cycles
                     self._tcp_cycle_size(1)
-                else:                              # Host / Net / Pass -> text entry
-                    self._open_text(("Host", "Network name", "Passphrase")[f],
+                else:                              # Host / Port / Net / Pass -> text entry
+                    self._open_text(("Host", "Port", "Network name", "Passphrase")[f],
                                     self._tcp_edit, _TCP_FIELDS[f], _SET_TCP_HOST,
-                                    keep_empty=(f == 0))
+                                    keep_empty=(f <= 1))
                 return True
             return True
         elif self._settings_page == _SET_TEXT:
@@ -4211,6 +4211,8 @@ class UI:
                 return True
             elif ch == 0x0D:   # store; an empty line clears (or keeps, for the host)
                 value = self.cmd_buf.decode().strip()
+                if fkey == "port" and not value.isdigit():
+                    value = ""                     # letters: keep the old port
                 if value or not keep:
                     d[fkey] = value
                 self._close_text(back)
@@ -4782,7 +4784,7 @@ class UI:
         self._tcp_connecting = False
         self._tcp_target = addr
         if self._tcp_edit is not None:
-            self._tcp_ifac = {k: self._tcp_edit[k] for k in _TCP_FIELDS[1:]}
+            self._tcp_ifac = {k: self._tcp_edit[k] for k in _TCP_FIELDS[2:]}
         self._tcp_edit = None
         self._settings_page = _SET_MAIN
         self._settings_idx = 1
@@ -4813,10 +4815,14 @@ class UI:
         e = self._tcp_edit
         if e is None:                 # the page set directly, not via the row
             e = self._tcp_seed()
-        rows = [("", "blank"), ("Server host", "legend"), _SPACE,
-                (_tail(e["host"], COLS - 3), "text", 0, True), _SPACE,
+        # Host and Port with labels; on 30 columns a one-space gap keeps 22
+        # characters for the host (the default fills them exactly).
+        gap = "   " if COLS >= 40 else " "
+        rows = [("", "blank"), ("Server", "legend"), _SPACE,
+                ("Host" + gap + _tail(e["host"], COLS - 3 - 4 - len(gap)), "text", 0, True), _SPACE,
+                ("Port" + gap + e["port"], "text", 1, True), _SPACE,
                 ("", "blank")]
-        rows += self._code_rows(e, 1)
+        rows += self._code_rows(e, 2)
         rows.append(("", "blank"))
         rows.append(("[ Apply ]", "action", _TCP_CONNECT))
         self._draw_form(rows, self._tcp_field)
@@ -4838,7 +4844,12 @@ class UI:
 
     def _tcp_seed(self):
         e = dict(self._tcp_ifac)
-        e["host"] = self._tcp_target or self._tcp_default
+        addr = self._tcp_target or self._tcp_default
+        host, _, port = addr.rpartition(":")
+        if not host:                          # no colon: the whole thing is the host
+            host, port = addr, "4242"
+        e["host"] = host
+        e["port"] = port
         return e
 
     def _open_tcp_form(self):
@@ -4865,20 +4876,13 @@ class UI:
         reports back through set_tcp_result). A host that does not parse
         drops back to Setup, as the old entry page did."""
         e = self._tcp_edit
-        host, port = None, None
-        addr = e["host"].strip()
-        if ":" in addr:
-            parts = addr.rsplit(":", 1)
-            host = parts[0]
-            try:
-                port = int(parts[1])
-            except:
-                pass
+        host = e["host"].strip()
+        port = int(e["port"]) if e["port"].strip().isdigit() else None
         if host and port and self.on_backbone_apply:
             self._tcp_connecting = True
             self._cache = [''] * CACHE_ROWS
             self.dirty = True
-            self.on_backbone_apply(host, port, {k: e[k] for k in _TCP_FIELDS[1:]})
+            self.on_backbone_apply(host, port, {k: e[k] for k in _TCP_FIELDS[2:]})
             return
         self._tcp_edit = None
         self._settings_page = _SET_MAIN
@@ -5418,7 +5422,7 @@ class UI:
     def _settings_adjust(self, delta):
         """Trackball left/right on an adjustable settings row."""
         if self._settings_page == _SET_TCP_HOST:
-            if self._tcp_field == 3 and self._tcp_edit is not None:
+            if self._tcp_field == 4 and self._tcp_edit is not None:
                 self._tcp_cycle_size(delta)
             return
         if self._settings_page == _SET_LORA:
