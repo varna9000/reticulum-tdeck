@@ -657,6 +657,13 @@ check("station up, no AP, link registered: no_network (never off while the stati
       power.backbone_state(True, False, False, True, False) == "no_network")
 check("station up, no AP, no link: no_network", power.backbone_state(True, False, False, False, False) == "no_network")
 
+print("README (the Setup rows after the backbone switch)")
+_readme = open(os.path.join(ROOT, "README.md")).read()
+_readme_setup = _readme.split("### Setup", 1)[1].split("### Power", 1)[0]
+check("README names the Backbone row and no TCP row", "**Backbone**" in _readme_setup and "**TCP**" not in _readme_setup)
+check("README no longer saves a TCP enabled state", "TCP enabled state" not in _readme and "`tcp_enabled`" not in _readme)
+check("README says WiFi on is the backbone", "WiFi on" in _readme_setup or "backbone" in _readme_setup.split("**WiFi**", 1)[1][:400])
+
 print("LowBattery (cut the pack before the chip browns out)")
 check("threshold above the brownout, below the empty mark", 2.9 < power.LOW_BATTERY_V <= 3.3)
 lb = power.LowBattery()

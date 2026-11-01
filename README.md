@@ -527,11 +527,13 @@ Getting usable audio from the T-Deck's ES7210 ADC for Codec2 encoding required s
 
 Press `s` from the node list to open setup. Navigate with trackball, select with trackball click, go back with backspace.
 
-**WiFi** — Scan for networks, select one, enter password. After connecting, the TCP host entry page opens automatically.
+The rows, in order: WiFi, Backbone, LoRa, LoRa cfg, Radio stats, Volume, Keyboard light, Touch feedback (Pro), Announce, Sleep, Wake, Time zone, Name, Addr, Id. The two transports come first, each as a switch followed by its settings; then the sound and feel toggles; then what the deck does on its own; then who you are.
 
-**TCP** — Connect to a remote Reticulum node over WiFi. When TCP is OFF, click to open the TCP Server form: the **Host** row (pre-filled with the last used `host:port` or the default from `tdeck_config.py`), an optional **Access code** group for a server that requires one (see [Interface access codes](#interface-access-codes-ifac)), and **Connect**. Click a text row to type its value; Enter on an empty line clears a code field and keeps the host. When TCP is ON, click to disconnect — this also disconnects WiFi and restarts LoRa. Only one interface (LoRa or TCP) is active at a time.
+**WiFi** — The backbone switch: WiFi on means the TCP backbone link is on. Off: click to scan for networks, select one, enter the password; the deck associates and dials the backbone (the saved host, else the built-in default) by itself, no form in between. The row then says how that goes: the network name alone when the link is up, `name, no server` when the station is up but the link is down (retried every minute while the screen is lit), `name, no network` when the access point has been lost, `connecting...` in between, `off` when the station is down. On (any state but off): click to switch the backbone off — link, station and LoRa back. That drops the session and clears every chat, so it takes a second click (the row says `Enter again to disconnect`); any other key cancels. On the Pro the confirming tap does the same. Only one interface (LoRa or TCP) is active at a time.
 
-**Name** — Change the node's display name. Saved to flash and persisted across reboots.
+**Backbone** — The server host and access code, as a page: a **Server host** group holding the `host:port` (pre-filled with the saved one or the default from `tdeck_config.py`), an optional **Access code** group for a server that requires one (see [Interface access codes](#interface-access-codes-ifac)), and **Apply**. Click a text row to type its value; Enter on an empty line clears a code field and keeps the host. Apply saves what was typed; with the backbone up it re-dials the link with the new values, otherwise the values are used at the next WiFi connect.
+
+**LoRa** — The mesh radio: `Online`, or `OFFLINE` with a click to reset it. While online a click only selects the row.
 
 **LoRa cfg** — The radio parameters (frequency, bandwidth, spreading factor, coding rate, TX power), which must match every peer on the mesh, plus the mesh's optional **Access code** (network name and passphrase). *Apply & Save* retunes and re-keys the live radio without a restart; the row itself reports *Applied & saved* or *Apply FAILED*.
 
@@ -543,13 +545,15 @@ Press `s` from the node list to open setup. Navigate with trackball, select with
 
 **Wake** — What wakes the screen automatically: `msgs` (incoming messages only, the default), `all` (messages and peer announces — the pre-1.4 behaviour, keeps the screen lit on a busy mesh), or `never` (input only).
 
+**Name** — Change the node's display name. Saved to flash and persisted across reboots.
+
 **Addr** — Your LXMF address, the last-but-one row. Click it to show the address as a **QR code** holding `lxma://<address>:<public key>`, the contact format [Columba](https://github.com/torlando-tech/columba) and [MeshChatX](https://github.com/Quad4-Software/MeshChatX) scan, so a phone can add the T-Deck without anyone typing 32 hex characters. The screen stays on while the code shows (for up to two minutes); backspace goes back. Apps that read only their own format (Ratspeak) or a bare hash (Skywave) will not scan it — type the address there.
 
 **Id** — Your identity hash, the last row. This is what an `rnsh` listener's `-a` list or an RRC hub operator asks for. Not clickable.
 
 Connecting to WiFi or a TCP server no longer freezes the UI — the screen shows `Connecting...` while the work runs in the background, then reports the result.
 
-All settings (WiFi credentials, TCP host/port and access code, LoRa radio parameters and access code, node name, TCP enabled state, volume, keyboard backlight, auto-announce, sleep timeout) are saved to `/rns/settings.json` and restored on boot. If WiFi and TCP were enabled when the device was last used, they reconnect automatically on startup.
+All settings (WiFi credentials, backbone host/port and access code, LoRa radio parameters and access code, node name, volume, keyboard backlight, auto-announce, sleep timeout) are saved to `/rns/settings.json` and restored on boot. If WiFi was on when the device was last used, it reconnects on startup and dials the backbone. (Before this, WiFi and TCP were two switches; a deck that had WiFi saved on comes up on the backbone after the update, on the saved host or else the built-in default.)
 
 ### Power
 
@@ -559,7 +563,7 @@ Everything the firmware does to make a charge last:
 - **Wake policy.** Any keypress or trackball event wakes the screen. Whether an incoming message or a peer announce also wakes it follows Setup → Wake (messages only by default, or all, or never).
 - **Safe first key.** The key that wakes the screen is consumed, not acted on, so waking a deck with Enter never sends the draft in the composer.
 - **CPU light sleep.** While the screen is off, on battery and with the WiFi station down, the ESP32 itself sleeps between events. A received LoRa packet wakes it in about a millisecond, so nothing is missed and announces still go out on schedule. A keypress wakes the Pro; the trackball click wakes the v1, whose keyboard cannot raise an interrupt, so the v1 also wakes every 300 ms to poll it. Idle draw on the Pro falls from about 84 mA to the mid-30s, roughly 2.4× the standby time.
-- **WiFi only with a job.** A WiFi association cannot survive the chip's sleep, so the station is kept up only while it has something to do: TCP is on (the link is real-time, and the deck stays awake at roughly 55 mA on the Pro, about a day), or the screen is lit. With TCP off, the station is switched off 30 s after the screen goes dark and stays off until you need it: the TCP row in Setup reconnects to the saved network and opens the TCP form, or connect from the WiFi row. With TCP on, a lit screen retries a lost association once a minute, and a link whose server stays unreachable for 30 s while dark is given up like a lost access point. The saved WiFi and TCP settings are never changed by any of this.
+- **WiFi only with a job.** A WiFi association cannot survive the chip's sleep, so the station is kept up only while it has something to do: TCP is on (the link is real-time, and the deck stays awake at roughly 55 mA on the Pro, about a day), or the screen is lit. WiFi on means the backbone link, so a station without a link (the server down, the host wrong) is switched off 30 s after the screen goes dark; a lit screen retries the association once a minute and re-dials the link once a minute. The saved WiFi wish and backbone settings are never changed by any of this.
 - **What keeps it awake.** TCP on, a USB host on the cable (so the console keeps working; a plain charger only pauses sleep for a few seconds), and anything the screen timeout also waits for. Sleep never interrupts a transfer, playback, recording or DTMF listen.
 - **Sleep diagnostics.** Setup → Radio shows a `sleep` row: `l12 k2 t5` counts wakes by cause (LoRa packet, key, timer); `off usb`, `off wifi` and so on name what is currently preventing sleep. `SLEEP_ON_USB = True` in the config file allows sleeping with a cable in, for bench work only, since the USB console drops during every sleep.
 - **Idle clock.** Both decks drop the CPU to 80 MHz while the screen is dark and nothing is transferring, and back to 240 MHz the moment it lights or a transfer starts.
@@ -596,13 +600,13 @@ The remote node needs a `TCPServerInterface` in its Reticulum config:
   listen_port = 4242
 ```
 
-When TCP is activated, LoRa is stopped (only one interface at a time). When TCP is deactivated, WiFi is disconnected and LoRa restarts.
+When WiFi connects the deck dials the backbone and LoRa is stopped (only one interface at a time). Switching WiFi off drops the link and restarts LoRa.
 
 ### Interface access codes (IFAC)
 
 A Reticulum interface can require an access code: with `network_name` and/or `passphrase` set on an interface, every packet on it carries a truncated signature derived from them and is masked, and the other end drops anything that does not verify. It is an access filter, not encryption — Reticulum's end-to-end encryption is unchanged.
 
-The T-Deck can join such a network on either interface (Setup → TCP form, or Setup → LoRa cfg). Both ends must use the same name, passphrase and code size:
+The T-Deck can join such a network on either interface (Setup → Backbone, or Setup → LoRa cfg). Both ends must use the same name, passphrase and code size:
 
 | | T-Deck | Reference config |
 |---|---|---|
@@ -750,7 +754,7 @@ Only one network interface is active at a time. Switching from LoRa to TCP stops
 
 ### Settings Persistence
 
-Settings are stored as JSON in `/rns/settings.json` on the device flash. Saved fields: `wifi_ssid`, `wifi_pass`, `tcp_enabled`, `tcp_host`, `tcp_port`, `tcp_netname`, `tcp_passphrase`, `tcp_ifac_size` (bytes), `node_name`, and `lora` (the radio parameters plus `networkname` / `passphrase` when a mesh access code is set). On boot, WiFi and TCP are automatically restored if they were active in the previous session.
+Settings are stored as JSON in `/rns/settings.json` on the device flash. Saved fields: `wifi_ssid`, `wifi_pass`, `wifi_enabled` (the one switch: WiFi on = backbone on), `tcp_host`, `tcp_port`, `tcp_netname`, `tcp_passphrase`, `tcp_ifac_size` (bytes), `node_name`, and `lora` (the radio parameters plus `networkname` / `passphrase` when a mesh access code is set). On boot, WiFi is restored if it was on in the previous session, and the backbone is dialed with it.
 
 Additionally, the favorites are stored in similar way, just in separate and individual files(`/rns/peers.json`, `/rns/nodes.json`, `/rns/hubs.json` and `/rns/shells.json`). On boot, the favorites are automatically loaded from files.
 

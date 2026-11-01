@@ -7,7 +7,7 @@
 # framebuffer that follows lib/eink_shim.py's rules (luminance > 60 is ink;
 # glyphs on an ink background come out as paper), with the real 8x16 and 6x12
 # fonts. Writes list.png, sheet.png, chat.png, chat_cursor.png, rec.png,
-# rec_warm.png, setup.png and setup_end.png, each at 4x.
+# rec_warm.png, setup.png, setup_end.png and setup_noserver.png, each at 4x.
 
 import os
 import struct
@@ -224,10 +224,8 @@ def scene_setup(out):
     g.state = ui.STATE_SETTINGS
     g._settings_page = ui._SET_MAIN
     g.node_name = "Pro"
-    g._wifi_connected = True
-    g._wifi_ssid_current = "homenet"
-    g._wifi_ip = "192.168.1.106"
-    g._tcp_enabled = False
+    g.set_backbone_state("up", "homenet", "192.168.1.106")
+    g._tcp_target = "rns.varnatransport.com:4242"
     g.my_address = "93481a35c0ffee11" * 2
     g.my_identity_hash = "0123456789abcdef" * 2
     g.my_lxma_uri = "lxma://x"
@@ -237,6 +235,11 @@ def scene_setup(out):
     g._settings_idx = 14
     g.draw()
     t.png(os.path.join(out, "setup_end.png"))
+    g._settings_idx = 0
+    g.set_backbone_state("no_server", "homenet", "")
+    g.draw()
+    t.png(os.path.join(out, "setup_noserver.png"))
+    g.set_backbone_state("up", "homenet", "192.168.1.106")
     g._settings_page = ui._SET_NODE_NAME
     g.cmd_buf = bytearray(b"Pro")
     g._cache = [''] * ui.CACHE_ROWS
@@ -402,4 +405,4 @@ if __name__ == "__main__":
     scene_setup(out)
     scene_rrc(out)
     scene_misc(out)
-    print("wrote 23 PNGs to", out)
+    print("wrote 24 PNGs to", out)
