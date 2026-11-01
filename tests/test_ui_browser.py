@@ -567,7 +567,7 @@ def test_wifi_result_flow():
     g._wifi_connecting = True
     g.set_wifi_result("10.0.0.5")
     assert g._wifi_connected and g._wifi_ip == "10.0.0.5"
-    assert g._settings_page == ui._SET_TCP_HOST and not g._wifi_connecting
+    assert g._settings_page == ui._SET_MAIN and g._settings_idx == 0 and not g._wifi_connecting   # no form: the node dials the backbone
     g._wifi_connecting = True
     g.set_wifi_result(None)
     assert g._wifi_err == "connect failed"

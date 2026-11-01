@@ -660,7 +660,7 @@ def test_setup():
     tap(g, 100, 42 + 32 * 7 + 31)
     check("the last pixel line of the last row is still that row, not the footer", g._settings_idx == 14, str(g._settings_idx))
     g = mksetup(idx=3)
-    g._wifi_connected = True
+    g.set_backbone_state("up", "home", "")
     seen = keys_pressed(g)
     check("WiFi while connected: the first tap is accepted", tap(g, 100, srow(0)) is True and g._settings_idx == 0)
     settle(g)
@@ -1434,20 +1434,30 @@ def test_chat_layout_key_at_the_history_cap():
 
 def test_setup_guards():
     print("review: Setup one-tap guards")
-    # Disconnecting WiFi or TCP tears the session down and clears every chat:
-    # it always takes a tap that selects and a second that confirms, however
-    # the row came to be selected (Setup opens with WiFi selected).
+    # Disconnecting the backbone tears the session down and clears every
+    # chat: it always takes a tap that selects and a second that confirms,
+    # however the row came to be selected (Setup opens with WiFi selected).
+    # The confirming tap leaves the arm set for the handler, which acts
+    # only when it sees it.
     g = mksetup(idx=0)
-    g._wifi_connected = True
+    g.set_backbone_state("up", "home", "")
     seen = keys_pressed(g)
-    check("Setup just opened, WiFi connected: one tap on WiFi does not disconnect", tap(g, 100, srow(0)) is True)
+    check("Setup just opened, backbone up: one tap on WiFi does not disconnect", tap(g, 100, srow(0)) is True)
     settle(g)
     check("...no click was sent", seen == [], repr(seen))
+    armed = []
+    g.handle_key = lambda k: (seen.append(bytes(k)), armed.append(g._setup_armed)) and True
     tap(g, 100, srow(0), t=300000)
     settle(g)
-    check("the confirming tap acts", seen == [b'\r'], repr(seen))
+    check("the confirming tap acts with the arm still set", seen == [b'\r'] and armed == [0], "%r %r" % (seen, armed))
     g = mksetup(idx=0)
-    g._wifi_connected = True
+    g.set_backbone_state("no_network", "home", "")
+    seen = keys_pressed(g)
+    tap(g, 100, srow(0))
+    settle(g)
+    check("AP lost under the link: the row is still the disconnect, first tap only selects", seen == [], repr(seen))
+    g = mksetup(idx=0)
+    g.set_backbone_state("up", "home", "")
     seen = keys_pressed(g)
     tap(g, 100, srow(0))
     settle(g)
@@ -1457,22 +1467,19 @@ def test_setup_guards():
     tap(g, 100, srow(0), t=400000)
     settle(g)
     check("a tap elsewhere in between disarms it", seen == [], repr(seen))
-    g = mksetup(idx=5)
-    g._wifi_connected = True
-    g._tcp_enabled = True
+    g = mksetup(idx=0)
+    g.set_backbone_state("off", "", "")
     seen = keys_pressed(g)
-    tap(g, 100, srow(1))
+    tap(g, 100, srow(0))
     settle(g)
-    check("TCP while on is the same teardown: first tap only selects", g._settings_idx == 1 and seen == [], repr(seen))
-    tap(g, 100, srow(1), t=300000)
-    settle(g)
-    check("...second tap acts", seen == [b'\r'], repr(seen))
-    g = mksetup(idx=5)
-    g._wifi_connected = True
-    seen = keys_pressed(g)
-    tap(g, 100, srow(1))
-    settle(g)
-    check("TCP while off opens its host page on one tap", seen == [b'\r'], repr(seen))
+    check("WiFi off: one tap acts (it opens the scan)", seen == [b'\r'], repr(seen))
+    for state in ("off", "up", "no_server"):
+        g = mksetup(idx=5)
+        g.set_backbone_state(state, "home", "")
+        seen = keys_pressed(g)
+        tap(g, 100, srow(1))
+        settle(g)
+        check("Backbone row opens its form on one tap (%s)" % state, g._settings_idx == 1 and seen == [b'\r'], repr(seen))
     g = mksetup(idx=5)
     g.lora_online = True
     seen = keys_pressed(g)
@@ -1492,10 +1499,10 @@ def test_setup_guards():
     tap(g, 100, srow(5))
     check("an acting tap is a layout change, so a tap during its refresh is dropped", touch_ui.layout_key(g) != k0)
     k1 = touch_ui.layout_key(g)
-    g._wifi_connected = True
+    g.set_backbone_state("up", "home", "")
     check("WiFi coming up behind the screen is one too", touch_ui.layout_key(g) != k1)
     g = mksetup(idx=0)
-    g._wifi_connected = True
+    g.set_backbone_state("up", "home", "")
     g._draw_settings_bottom_bar()
     seen = keys_pressed(g)
     check("the footer's (CLICK) hint is dead on this page: it would act on a row the finger is not on",
@@ -1745,23 +1752,6 @@ def test_touch_feedback_is_a_setting():
     check("...through the click path", g._haptics is True and seen == [True], repr(seen))
 
 
-def test_tcp_row_switches_tcp_off_through_the_toggle():
-    print("review: the TCP row's confirming tap reaches on_tcp_toggle(False) (2026-11-01: a night on TCP)")
-    g = mksetup(idx=5)
-    g._wifi_connected = True
-    g._tcp_enabled = True
-    g._tcp_target = "h:1"
-    calls = []
-    g.on_tcp_toggle = lambda en, h, p: calls.append((en, h, p)) or True
-    g.on_wifi_reconnect = lambda: calls.append("reconnect") or True
-    tap(g, 100, srow(1))
-    settle(g)
-    tap(g, 100, srow(1), t=300000)
-    settle(g)
-    check("the toggle is called with False, not the WiFi reconnect", calls == [(False, None, None)], repr(calls))
-    check("the row shows OFF", g._tcp_enabled is False and g._tcp_target == "", repr((g._tcp_enabled, g._tcp_target)))
-
-
 if __name__ == "__main__":
     test_touch_feedback_is_a_setting()
     test_a_rightward_swipe_is_back_where_it_means_nothing_else()
@@ -1816,7 +1806,6 @@ if __name__ == "__main__":
     test_row_edges()
     test_chat_layout_key_at_the_history_cap()
     test_setup_guards()
-    test_tcp_row_switches_tcp_off_through_the_toggle()
     test_rrc_review()
     test_shell_menu_review()
     print()

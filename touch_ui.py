@@ -165,13 +165,16 @@ def _tap_pro_setup(ui, y):
     ui.dirty = True
     if idx == 3 and ui.lora_online:
         return True                        # a click would reset a healthy radio: select only
-    if (idx == 0 and ui._wifi_connected) or (idx == 1 and ui._tcp_enabled):
-        # A click here drops WiFi/TCP, which also clears every chat. It
-        # takes a tap that selects and a tap that confirms, however the row
-        # came to be selected: Setup opens with WiFi already selected.
+    if idx == 0 and ui._backbone != "off":
+        # A click here switches the backbone off, which also clears every
+        # chat. It takes a tap that selects and a tap that confirms, however
+        # the row came to be selected: Setup opens with WiFi already
+        # selected. The confirming tap leaves the arm set: the handler acts
+        # only when it sees it (a keyboard Enter arms the same way).
         if armed != idx:
             ui._setup_armed = idx
             return True
+        ui._setup_armed = idx
     # One tap acts: the rows are finger-sized. The count goes into
     # layout_key, so a second tap landing in this one's refresh is dropped
     # instead of toggling the row back.

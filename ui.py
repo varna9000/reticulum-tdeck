@@ -849,6 +849,7 @@ class UI:
         self._settings_page = _SET_MAIN
         self._settings_idx = 0
         self._backbone = "off"       # the WiFi row's one state (power.backbone_state), set by the node
+        self._setup_armed = -1       # Setup row whose first Enter/tap armed a teardown (-1: none)
         self._wifi_networks = []     # [(ssid, rssi), ...]
         self._wifi_scanning = False
         self._wifi_ssid = ""         # selected SSID for password entry
@@ -943,9 +944,7 @@ class UI:
         self.on_add_contact = None       # (dest_hash) -> None — added by Find; seek a path
         self.on_wifi_scan = None      # () -> [(ssid, rssi), ...]
         self.on_wifi_connect = None   # (ssid, password) -> None — async; calls set_wifi_result
-        self.on_wifi_reconnect = None # () -> bool: re-associate with the saved network (TCP row, station down)
-        self._wifi_reconnect = False  # the connect in flight was the TCP row's: its failure returns there
-        self.on_tcp_toggle = None     # (enabled, host, port) -> bool — sync OFF path
+        self.on_wifi_disconnect = None # () -> bool: the backbone switch off (link, station, LoRa back)
         self.on_tcp_connect = None    # (host, port) -> None — async; calls set_tcp_result
         self.on_node_name = None      # (name) -> None
         self.on_lora_reset = None     # () -> bool
@@ -3866,20 +3865,28 @@ class UI:
 
     def _handle_key_settings(self, ch, key):
         if self._settings_page == _SET_MAIN:
+            armed = self._setup_armed
+            self._setup_armed = -1
             if ch == 0x1B or (ch == 0x08 and time.ticks_diff(time.ticks_ms(), self._state_change_ms) > 500):
                 self.state = STATE_NODES
                 self._state_change_ms = time.ticks_ms()
                 self.dirty = True
                 return True
             elif ch == 0x0D:  # Enter
-                if self._settings_idx == 0:  # WiFi toggle
-                    if self._wifi_connected:
+                if self._settings_idx == 0:  # WiFi: the backbone switch
+                    if self._backbone != "off":
+                        # Switch off: link, station, LoRa back. It drops the
+                        # session and clears every chat, so it takes a second
+                        # Enter (the Pro's confirming tap arrives with the arm
+                        # set); any other key disarms.
+                        if armed != 0:
+                            self._setup_armed = 0
+                            self._cache = [''] * CACHE_ROWS
+                            self.dirty = True
+                            return True
                         self._wifi_scanning = False
-                        # Toggle TCP as well - Will stop WiFI and Start LoRa
-                        if self.on_tcp_toggle:
-                            if self.on_tcp_toggle(False, None, None):
-                                self._tcp_enabled = False
-                                self._tcp_target = ""
+                        if self.on_wifi_disconnect:
+                            self.on_wifi_disconnect()
                         self._cache = [''] * CACHE_ROWS
                         self.dirty = True
                         return True
@@ -3893,28 +3900,8 @@ class UI:
                     if self.on_wifi_scan:
                         asyncio.create_task(self._do_wifi_scan())
                     return True
-                elif self._settings_idx == 1:  # TCP toggle
-                    if self._tcp_enabled:
-                        # Toggle OFF -- first, whatever the WiFi flag says:
-                        # the link is up (reconnecting or not) and this row
-                        # is the only way to switch it off.
-                        if self.on_tcp_toggle:
-                            if self.on_tcp_toggle(False, None, None):
-                                self._tcp_enabled = False
-                                self._tcp_target = ""
-                    elif not self._wifi_connected:
-                        # Needs WiFi. The station is switched off while the
-                        # deck is dark with TCP off, so bring it back with
-                        # the saved network; set_wifi_result opens the form.
-                        if (self.on_wifi_reconnect and not self._wifi_connecting
-                                and self.on_wifi_reconnect()):
-                            self._wifi_connecting = True
-                            self._wifi_reconnect = True
-                            self._cache = [''] * CACHE_ROWS
-                            self.dirty = True
-                        return True
-                    else:
-                        self._open_tcp_form()
+                elif self._settings_idx == 1:  # Backbone: host and access code
+                    self._open_tcp_form()
                     self._cache = [''] * CACHE_ROWS
                     self.dirty = True
                     return True
@@ -3924,7 +3911,9 @@ class UI:
                     self._cache = [''] * CACHE_ROWS
                     self.dirty = True
                     return True
-                elif self._settings_idx == 3:  # LoRa reset
+                elif self._settings_idx == 3:  # LoRa reset (only a wedged radio)
+                    if self.lora_online:
+                        return True          # a click would reset a healthy radio: select only
                     if self.on_lora_reset:
                         self.on_lora_reset()
                     self._cache = [''] * CACHE_ROWS
@@ -4702,6 +4691,8 @@ class UI:
         st = self._backbone
         if st == "off":
             return "off"
+        if self._setup_armed == 0:
+            return "Enter again to disconnect"
         if st == "connecting":
             return "connecting..."
         name = self._wifi_ssid_current
@@ -4716,29 +4707,19 @@ class UI:
     def set_wifi_result(self, ip):
         """Async WiFi connect finished — ip string on success, None on fail."""
         self._wifi_connecting = False
-        reconnect = self._wifi_reconnect
-        self._wifi_reconnect = False
         if ip:
+            # Back to Setup: the node dials the backbone itself and the WiFi
+            # row says how that goes (set_backbone_state).
             self._wifi_connected = True
             self._wifi_ssid_current = self._wifi_ssid
             self._wifi_ip = ip
             self._wifi_err = ""
-            if self._tcp_enabled:
-                # The link was up all along (the chip had only lost its AP
-                # for a moment): the form would open a second one over it.
-                self._settings_page = _SET_MAIN
-                self._settings_idx = 1
-            else:
-                self._open_tcp_form()     # straight on to the TCP link
+            self._settings_page = _SET_MAIN
+            self._settings_idx = 0
         else:
             self._wifi_err = "connect failed"
-            if reconnect:
-                # Back to the row that asked, not a scan list nobody started.
-                self._settings_page = _SET_MAIN
-                self._settings_idx = 1
-            else:
-                self._settings_page = _SET_WIFI_SCAN
-                self._settings_idx = 0
+            self._settings_page = _SET_WIFI_SCAN
+            self._settings_idx = 0
         self._cache = [''] * CACHE_ROWS
         self.dirty = True
 
@@ -5230,6 +5211,7 @@ class UI:
 
     def _settings_scroll_up(self):
         if self._settings_page == _SET_MAIN:
+            self._setup_armed = -1
             if _pro is not None:
                 _pro.setup_step(self, -1)
             else:
@@ -5253,6 +5235,7 @@ class UI:
 
     def _settings_scroll_down(self):
         if self._settings_page == _SET_MAIN:
+            self._setup_armed = -1
             if _pro is not None:
                 _pro.setup_step(self, 1)
             else:

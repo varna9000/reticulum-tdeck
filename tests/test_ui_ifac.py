@@ -91,37 +91,6 @@ def _open_tcp(target="h:1", saved=("mymesh", "pw", 8)):
     return g
 
 
-def test_tcp_row_without_wifi_reconnects_with_saved_credentials():
-    # With TCP off the station is switched off while the deck is dark, so
-    # the TCP row is the natural place to bring it back: it asks the node to
-    # re-associate with the saved credentials and the form opens on success
-    # (set_wifi_result) instead of refusing with nothing to click.
-    g = _mkui()
-    g._wifi_connected = False
-    g._tcp_enabled = False
-    calls = []
-    g.on_wifi_reconnect = lambda: calls.append(1) or True
-    g._settings_idx = 1
-    g.handle_key(ENTER)
-    assert calls == [1]
-    assert g._wifi_connecting is True
-    assert g._settings_page == ui._SET_MAIN
-    g.set_wifi_result("10.0.0.2")
-    assert g._settings_page == ui._SET_TCP_HOST
-    assert g._wifi_connecting is False
-
-
-def test_tcp_row_without_wifi_and_nothing_saved_does_nothing():
-    g = _mkui()
-    g._wifi_connected = False
-    g._tcp_enabled = False
-    g.on_wifi_reconnect = lambda: False
-    g._settings_idx = 1
-    g.handle_key(ENTER)
-    assert g._wifi_connecting is False
-    assert g._settings_page == ui._SET_MAIN
-
-
 def test_tcp_row_opens_form_with_saved_values():
     g = _open_tcp()
     assert g._tcp_edit == {"host": "h:1", "networkname": "mymesh",
@@ -270,15 +239,14 @@ def test_esc_on_form_discards_edits():
     assert g._tcp_ifac["networkname"] == "mymesh"
 
 
-def test_wifi_connect_auto_opens_a_working_form():
-    # Review finding: set_wifi_result jumped to the page without opening the
-    # form, so Enter on any row crashed on _tcp_edit = None.
+def test_backbone_row_opens_a_working_form():
+    # Review finding (then): a page set without opening the form crashed on
+    # _tcp_edit = None. Now the Backbone row is the only way in.
     g = _mkui()
     g._tcp_default = "d.example:4242"
-    g._wifi_ssid = "home"
-    g._wifi_connecting = True
     g.set_tcp_ifac("mymesh", "pw", 8)
-    g.set_wifi_result("192.168.1.9")
+    g._settings_idx = 1
+    g.handle_key(ENTER)
     assert g._settings_page == ui._SET_TCP_HOST
     assert g._tcp_edit == {"host": "d.example:4242", "networkname": "mymesh",
                            "passphrase": "pw", "ifac_size": 8}
@@ -448,52 +416,6 @@ def _run():
     return failed
 
 
-def test_tcp_row_with_tcp_on_switches_it_off_even_when_wifi_looks_down():
-    # Review 2026-11-01: the row branched on the WiFi flag first, so a link
-    # that was up while the chip reported no AP (or a 5 s old snapshot of
-    # it) reconnected WiFi under the live link instead of switching TCP off.
-    g = _mkui()
-    g._wifi_connected = False
-    g._tcp_enabled = True
-    g._tcp_target = "h:1"
-    calls = []
-    g.on_tcp_toggle = lambda en, h, p: calls.append((en, h, p)) or True
-    g.on_wifi_reconnect = lambda: calls.append("reconnect") or True
-    g._settings_idx = 1
-    g.handle_key(ENTER)
-    assert calls == [(False, None, None)], calls
-    assert g._tcp_enabled is False
-    assert g._wifi_connecting is False
-
-
-def test_wifi_result_with_tcp_on_does_not_open_the_form_over_the_link():
-    g = _mkui()
-    g._tcp_enabled = True
-    g._tcp_target = "h:1"
-    g._wifi_connecting = True
-    g.set_wifi_result("10.0.0.2")
-    assert g._settings_page == ui._SET_MAIN
-    assert g._wifi_connected is True
-
-
-def test_failed_reconnect_from_the_tcp_row_returns_to_setup_not_the_scan_page():
-    g = _mkui()
-    g._wifi_connected = False
-    g._tcp_enabled = False
-    g.on_wifi_reconnect = lambda: True
-    g._settings_idx = 1
-    g.handle_key(ENTER)
-    g.set_wifi_result(None)
-    assert g._settings_page == ui._SET_MAIN
-    assert g._settings_idx == 1
-    assert g._wifi_err == "connect failed"
-    # ...while a connect from the password page still lands on the scan list
-    g = _mkui()
-    g._wifi_connecting = True
-    g.set_wifi_result(None)
-    assert g._settings_page == ui._SET_WIFI_SCAN
-
-
 def test_setup_order_is_the_agreed_one():
     assert ui.SETUP_ORDER == (0, 1, 3, 10, 9, 4, 5, 6, 7, 8, 11, 2, 12, 13)   # v1 geometry in this suite
     g = _mkui()
@@ -547,6 +469,77 @@ def test_backbone_state_change_repaints_setup():
     g.dirty = False
     g.set_backbone_state("up", "home", "1.2.3.4")
     assert g.dirty is False
+
+
+def test_wifi_row_while_up_needs_a_second_enter_then_disconnects():
+    g = _mkui()
+    g.set_backbone_state("no_network", "home", "")      # the 2026-10-31 case: AP lost, link registered
+    calls = []
+    g.on_wifi_disconnect = lambda: calls.append(1) or True
+    g._settings_idx = 0
+    g.handle_key(ENTER)
+    assert calls == [] and g._setup_armed == 0 and g._settings_page == ui._SET_MAIN
+    assert g._wifi_value() == "Enter again to disconnect"
+    g.handle_key(ENTER)
+    assert calls == [1] and g._setup_armed == -1
+
+
+def test_wifi_row_arm_is_cleared_by_another_key():
+    g = _mkui()
+    g.set_backbone_state("up", "home", "1.2.3.4")
+    calls = []
+    g.on_wifi_disconnect = lambda: calls.append(1) or True
+    g._settings_idx = 0
+    g.handle_key(ENTER)
+    g._settings_scroll_down()
+    g._settings_scroll_up()
+    g.handle_key(ENTER)
+    assert calls == [] and g._setup_armed == 0
+
+
+def test_wifi_row_while_off_opens_the_scan():
+    g = _mkui()
+    g.set_backbone_state("off", "", "")
+    g._settings_idx = 0
+    g.handle_key(ENTER)
+    assert g._settings_page == ui._SET_WIFI_SCAN
+
+
+def test_backbone_row_always_opens_the_form():
+    for state in ("off", "up", "no_server", "no_network"):
+        g = _mkui()
+        g.set_backbone_state(state, "home", "")
+        g._settings_idx = 1
+        g.handle_key(ENTER)
+        assert g._settings_page == ui._SET_TCP_HOST, state
+
+
+def test_lora_row_while_online_only_selects():
+    g = _mkui()
+    g.lora_online = True
+    calls = []
+    g.on_lora_reset = lambda: calls.append(1) or True
+    g._settings_idx = 3
+    g.handle_key(ENTER)
+    assert calls == []
+    g.lora_online = False
+    g.handle_key(ENTER)
+    assert calls == [1]
+
+
+def test_wifi_result_returns_to_setup_without_the_form():
+    g = _mkui()
+    g._wifi_connecting = True
+    g.set_wifi_result("10.0.0.2")
+    assert g._settings_page == ui._SET_MAIN and g._settings_idx == 0 and g._wifi_connecting is False
+    g._wifi_connecting = True
+    g.set_wifi_result(None)
+    assert g._settings_page == ui._SET_WIFI_SCAN and g._wifi_err == "connect failed"
+
+
+def test_tcp_toggle_and_reconnect_callbacks_are_gone():
+    g = _mkui()
+    assert not hasattr(g, "on_tcp_toggle") and not hasattr(g, "on_wifi_reconnect")
 
 
 if __name__ == "__main__":
