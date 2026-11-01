@@ -1732,6 +1732,23 @@ def test_touch_feedback_is_a_setting():
     check("...through the click path", g._haptics is True and seen == [True], repr(seen))
 
 
+def test_tcp_row_switches_tcp_off_through_the_toggle():
+    print("review: the TCP row's confirming tap reaches on_tcp_toggle(False) (2026-11-01: a night on TCP)")
+    g = mksetup(idx=5)
+    g._wifi_connected = True
+    g._tcp_enabled = True
+    g._tcp_target = "h:1"
+    calls = []
+    g.on_tcp_toggle = lambda en, h, p: calls.append((en, h, p)) or True
+    g.on_wifi_reconnect = lambda: calls.append("reconnect") or True
+    tap(g, 100, srow(1))
+    settle(g)
+    tap(g, 100, srow(1), t=300000)
+    settle(g)
+    check("the toggle is called with False, not the WiFi reconnect", calls == [(False, None, None)], repr(calls))
+    check("the row shows OFF", g._tcp_enabled is False and g._tcp_target == "", repr((g._tcp_enabled, g._tcp_target)))
+
+
 if __name__ == "__main__":
     test_touch_feedback_is_a_setting()
     test_a_rightward_swipe_is_back_where_it_means_nothing_else()
@@ -1786,6 +1803,7 @@ if __name__ == "__main__":
     test_row_edges()
     test_chat_layout_key_at_the_history_cap()
     test_setup_guards()
+    test_tcp_row_switches_tcp_off_through_the_toggle()
     test_rrc_review()
     test_shell_menu_review()
     print()

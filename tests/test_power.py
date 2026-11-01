@@ -602,6 +602,15 @@ check("give-up is guarded against a connect in flight", "_wifi_connecting" in _o
 check("give-up without TCP writes no settings",
       "_save_settings" not in _node_src.split("def _wifi_give_up", 1)[1].split("_wifi_radio_off()", 1)[1][:400])
 
+print("wifi_shown (what Setup says about the station: a beacon loss is not a disconnect for good)")
+check("station off: left to the off paths", power.wifi_shown(False, False, False, True) is True)
+check("station up, AP gone: shown at once", power.wifi_shown(False, True, False, True) is False)
+check("station up, AP back (the chip re-associates by itself): shown again, so the TCP row toggles instead of reconnecting",
+      power.wifi_shown(True, True, False, False) is True)
+check("a connect in flight reports itself", power.wifi_shown(True, True, True, False) is False)
+check("loop shows the station through wifi_shown", "power.wifi_shown(" in _loop_src)
+check("loop has one writer of the shown flag", _loop_src.count("gui._wifi_connected = ") == 1, str(_loop_src.count("gui._wifi_connected = ")))
+
 print("LowBattery (cut the pack before the chip browns out)")
 check("threshold above the brownout, below the empty mark", 2.9 < power.LOW_BATTERY_V <= 3.3)
 lb = power.LowBattery()

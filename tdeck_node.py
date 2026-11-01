@@ -909,8 +909,10 @@ async def _wifi_policy_loop():
             _wifi_unconnected_since = None
         elif _wifi_unconnected_since is None:
             _wifi_unconnected_since = now
-            if gui._wifi_connected and _wifi_sta_on:
-                gui._wifi_connected = False      # the AP went away under us
+        # What Setup shows: the AP going away under us, and coming back.
+        gui._wifi_connected = power.wifi_shown(connected, _wifi_sta_on,
+                                               _wifi_auto_connecting or gui._wifi_connecting,
+                                               gui._wifi_connected)
         # The TCP link's state: urns keeps the interface and reconnects
         # forever once the server is gone, so note when it went offline.
         link = _tcp_iface is not None
