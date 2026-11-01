@@ -611,5 +611,55 @@ def test_wifi_value_keeps_the_state_suffix_for_a_long_name():
     assert len(v) <= 32 and v.endswith("[10.0.0.2]"), v
 
 
+def test_wifi_row_arm_expires_after_its_window():
+    g = _mkui()
+    g.set_backbone_state("up", "home", "1.2.3.4")
+    calls = []
+    g.on_wifi_disconnect = lambda: calls.append(1) or True
+    g._settings_idx = 0
+    now = [1000000]
+    saved = ui.time.ticks_ms
+    ui.time.ticks_ms = lambda: now[0]
+    try:
+        g.handle_key(ENTER)
+        assert g._setup_armed == 0
+        now[0] += ui.SETUP_ARM_MS + 1
+        g.handle_key(ENTER)
+        assert calls == [] and g._setup_armed == 0       # re-armed, not fired
+        now[0] += 1000
+        g.handle_key(ENTER)
+        assert calls == [1]
+    finally:
+        ui.time.ticks_ms = saved
+
+
+def test_wifi_row_disarm_by_another_key_repaints():
+    g = _mkui()
+    g.set_backbone_state("up", "home", "1.2.3.4")
+    g._settings_idx = 0
+    g.handle_key(ENTER)
+    assert g._wifi_value() == "Enter again to disconnect"
+    g.dirty = False
+    g.handle_key(b" ")                       # any key the page does not act on
+    assert g._setup_armed == -1 and g.dirty is True
+    assert g._wifi_value() == "home [1.2.3.4]"
+    g.handle_key(ENTER)
+    g.dirty = False
+    g._settings_scroll_down()                # a move disarms and repaints too
+    assert g._setup_armed == -1 and g.dirty is True
+
+
+def test_wifi_row_value_comes_from_the_state_alone():
+    # The old _wifi_connecting special case could disagree with the state
+    # (a cancelled manual connect left it True for good).
+    g = _mkui()
+    g.set_backbone_state("up", "home", "1.2.3.4")
+    g._wifi_connecting = True
+    drawn = []
+    g.tft.text = lambda font, s, x, y, *a: drawn.append((s.decode("latin-1") if isinstance(s, (bytes, bytearray)) else s).strip())
+    g._draw_settings_main()
+    assert any(r.startswith("WiFi: home [1.2.3.4]") for r in drawn), drawn[:3]
+
+
 if __name__ == "__main__":
     sys.exit(1 if _run() else 0)

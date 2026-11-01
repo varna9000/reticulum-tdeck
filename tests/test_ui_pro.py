@@ -1049,6 +1049,10 @@ def test_setup_items():
     g.set_backbone_state("no_server", "FRITZ!Box 7590 XY Extra", "")
     it = P.setup_items(g)
     check("a long name is cut so the state still fits the 27-column value", it[0][1].endswith(", no server") and len(it[0][1]) <= 27, repr(it[0]))
+    g.set_backbone_state("up", "home", "")
+    g._wifi_connecting = True
+    it = P.setup_items(g)
+    check("the Pro row too comes from the state alone", it[0][1] == "home", repr(it[0]))
     check("Backbone still offers its form", it[1][2] is True)
     check("LoRa offline says what selecting does", it[2][1].startswith("OFFLINE") and "reset" in it[2][1])
     check("no URI, no QR", not it[13][2])

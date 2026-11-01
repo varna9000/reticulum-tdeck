@@ -128,15 +128,16 @@ def tcp_job(link_exists, online, offline_ms):
     return bool(online or offline_ms < WIFI_GIVEUP_MS)
 
 
-def backbone_state(sta_on, busy, associated, link, online):
+def backbone_state(sta_on, busy, associated, link, online, wished=False):
     """The one state behind Setup's WiFi row (WiFi on = the backbone link):
     "off" (station down), "connecting" (a connect task or the backbone
-    start in flight), "no_network" (station up, no AP: lost it and hunting;
-    never "off", so the row's tap is still the disconnect -- the
-    2026-10-31 case), "up" (link online) or "no_server" (associated, link
-    down or never came up)."""
+    start in flight; or the station down after a dark give-up with the
+    wish on and the screen lit, when the retry is due within a pass),
+    "no_network" (station up, no AP: lost it and hunting; never "off", so
+    the row's tap is still the disconnect -- the 2026-10-31 case), "up"
+    (link online) or "no_server" (associated, link down or never came up)."""
     if not sta_on:
-        return "off"
+        return "connecting" if wished else "off"
     if busy:
         return "connecting"
     if not associated:

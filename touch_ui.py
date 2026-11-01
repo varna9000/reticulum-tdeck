@@ -171,10 +171,13 @@ def _tap_pro_setup(ui, y):
         # the row came to be selected: Setup opens with WiFi already
         # selected. The confirming tap leaves the arm set: the handler acts
         # only when it sees it (a keyboard Enter arms the same way).
+        import time
         if armed != idx:
             ui._setup_armed = idx
+            ui._setup_armed_ms = time.ticks_ms()
             return True
         ui._setup_armed = idx
+        ui._setup_armed_ms = time.ticks_ms()
     # One tap acts: the rows are finger-sized. The count goes into
     # layout_key, so a second tap landing in this one's refresh is dropped
     # instead of toggling the row back.

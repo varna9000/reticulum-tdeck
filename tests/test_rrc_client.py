@@ -1220,7 +1220,7 @@ def test_every_interface_switch_clears_the_hub_list():
     # the hub list with it too.
     src = open(os.path.join(REPO, "tdeck_node.py")).read()
     sites = src.count("rnsh_client.clear_nodes()")
-    assert sites == 2, sites
+    assert sites == 3, sites     # _dial_backbone's teardown of a live link (2026-11-01) is the third switch path
     assert src.count("nomad_browser.clear_nodes()") == sites
     assert src.count("rrc_client.clear_hubs()") == sites, \
         "an interface switch does not clear the RRC hub list"

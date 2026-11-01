@@ -143,6 +143,7 @@ _SET_MAIN_LAST = 13 if COLS >= 40 else 15
 # Touch feedback after Keyboard light (ui_pro.SETUP_IDX); its Id is 14
 # because the hashes take two rows in 30 columns.
 SETUP_ORDER = (0, 1, 3, 10, 9, 4, 5, 6, 7, 8, 11, 2, 12, 13 if COLS >= 40 else 14)
+SETUP_ARM_MS = 5000   # a WiFi-off confirm (second Enter / tap) must follow within this
 _ADDR_ROWS = 1 if COLS >= 40 else 2      # Setup rows 12.. that are the address
 # Touch feedback (the Pro's motor click). Past the last row either layout
 # numbers, so the v1 cannot reach it; ui_pro.SETUP_IDX places it.
@@ -850,6 +851,7 @@ class UI:
         self._settings_idx = 0
         self._backbone = "off"       # the WiFi row's one state (power.backbone_state), set by the node
         self._setup_armed = -1       # Setup row whose first Enter/tap armed a teardown (-1: none)
+        self._setup_armed_ms = 0     # when; the arm expires after SETUP_ARM_MS
         self._wifi_networks = []     # [(ssid, rssi), ...]
         self._wifi_scanning = False
         self._wifi_ssid = ""         # selected SSID for password entry
@@ -3866,7 +3868,9 @@ class UI:
     def _handle_key_settings(self, ch, key):
         if self._settings_page == _SET_MAIN:
             armed = self._setup_armed
-            self._setup_armed = -1
+            if armed != -1 and time.ticks_diff(time.ticks_ms(), self._setup_armed_ms) > SETUP_ARM_MS:
+                armed = -1                   # the window closed: this Enter arms again
+            self._disarm_setup()             # any key disarms; Enter on WiFi re-arms below
             if ch == 0x1B or (ch == 0x08 and time.ticks_diff(time.ticks_ms(), self._state_change_ms) > 500):
                 self.state = STATE_NODES
                 self._state_change_ms = time.ticks_ms()
@@ -3881,6 +3885,7 @@ class UI:
                         # set); any other key disarms.
                         if armed != 0:
                             self._setup_armed = 0
+                            self._setup_armed_ms = time.ticks_ms()
                             self._cache = [''] * CACHE_ROWS
                             self.dirty = True
                             return True
@@ -4271,7 +4276,7 @@ class UI:
             return _pro.draw_setup(self)
         self._draw_row_cached(1, "Setup", BODY_Y, self.NEON_CYAN)
 
-        wifi_line = "WiFi: " + ("connecting..." if self._wifi_connecting else self._wifi_value(width=COLS - 8))
+        wifi_line = "WiFi: " + self._wifi_value(width=COLS - 8)
         tcp_line = "Backbone: " + (self._tcp_target or self._tcp_default)
         name_line = "Name: " + self.node_name
         lora_line = "LoRa: " + ("Online" if self.lora_online else "OFFLINE (click=reset)")
@@ -5219,9 +5224,17 @@ class UI:
             r += d
         self._settings_idx = SETUP_ORDER[r]
 
+    def _disarm_setup(self):
+        """A move or a key other than the confirming Enter drops the arm,
+        and the row's "Enter again" text with it."""
+        if self._setup_armed != -1:
+            self._setup_armed = -1
+            self._cache = [''] * CACHE_ROWS
+            self.dirty = True
+
     def _settings_scroll_up(self):
         if self._settings_page == _SET_MAIN:
-            self._setup_armed = -1
+            self._disarm_setup()
             if _pro is not None:
                 _pro.setup_step(self, -1)
             else:
@@ -5245,7 +5258,7 @@ class UI:
 
     def _settings_scroll_down(self):
         if self._settings_page == _SET_MAIN:
-            self._setup_armed = -1
+            self._disarm_setup()
             if _pro is not None:
                 _pro.setup_step(self, 1)
             else:

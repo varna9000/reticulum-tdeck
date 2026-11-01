@@ -864,16 +864,22 @@ async def _wifi_connect_body(ssid, password, auto):
         print("[WiFi]", "connected " + ip if ip else "connect failed", ssid)
     if not auto:
         gui.set_wifi_result(ip)
-    elif ip:
-        gui._wifi_connected = True
-        gui._wifi_ssid_current = ssid
-        gui._wifi_ip = ip
     if ip:
         # WiFi on means the backbone: dial it (saved host, else the default).
         _backbone_pending = True
         _backbone_task = asyncio.create_task(_start_backbone())
     _publish_backbone()
     gc.collect()
+
+
+def _associated():
+    """The chip's word: the station is up and associated."""
+    if _wifi_sta_on and _wlan is not None:
+        try:
+            return bool(_wlan.isconnected())
+        except Exception:
+            pass
+    return False
 
 
 def wifi_disconnect():
@@ -902,15 +908,14 @@ def _publish_backbone():
     global _backbone_shown
     import power
     busy = bool(_wifi_auto_connecting or gui._wifi_connecting or _tcp_starting or _backbone_pending)
-    associated = False
-    if _wifi_sta_on and _wlan is not None:
-        try:
-            associated = bool(_wlan.isconnected())
-        except Exception:
-            associated = False
+    associated = _associated()
     link = _tcp_iface is not None
     online = bool(link and getattr(_tcp_iface, "online", False))
-    state = power.backbone_state(_wifi_sta_on, busy, associated, link, online)
+    # Station down after a dark give-up with the wish on: the lit retry is
+    # due within a pass, so a lit screen sees "connecting...", not "off"
+    # (whose tap would start a scan under the association).
+    wished = bool(not _wifi_sta_on and _wifi_enabled and gui._screen_on)
+    state = power.backbone_state(_wifi_sta_on, busy, associated, link, online, wished=wished)
     ssid = ip = ""
     if state not in ("off", "connecting"):
         ssid = gui._wifi_ssid_current
@@ -930,8 +935,10 @@ def _wifi_give_up():
     """The deck is dark and its station has no job: no TCP link (or one
     that lost its server), or it has been hunting for an AP that is not
     there. Station off, and the TCP link (if any) with it, which puts
-    LoRa back. The saved wishes are not touched: the next lit screen
-    tries again (TCP wished) or the TCP row reconnects (TCP off)."""
+    LoRa back. The saved wish is not touched: the next lit screen tries
+    again at once (the retry clock is reset)."""
+    global _wifi_last_try
+    _wifi_last_try = None
     if _tcp_iface is None:
         _wifi_radio_off()            # LoRa untouched, nothing saved
         if DEBUG >= 1:
@@ -993,6 +1000,7 @@ async def _wifi_policy_loop():
                          else time.ticks_diff(now, _backbone_last_dial))
         if (_wifi_sta_on and connected and not link and screen_on and not _tcp_starting
                 and not _wifi_auto_connecting and not gui._wifi_connecting
+                and not _backbone_pending and (_backbone_task is None or _backbone_task.done())
                 and since_dial_ms >= power.WIFI_RETRY_MS):
             _backbone_pending = True
             _backbone_task = asyncio.create_task(_start_backbone(tries=1))   # one dial: each blocks the loop for up to 5 s
@@ -1292,9 +1300,23 @@ def _dial_backbone(host, port, ifac=None):
         except Exception:
             pass
         Transport.deregister_interface(old)
+        # The session over it is gone whether or not the new dial lands:
+        # nothing may route over the dead link.
+        gui.clear_peers()
+        _lxmf_to_peer.clear()
+        nomad_browser.clear_nodes()
+        rnsh_client.clear_nodes()
+        rrc_client.clear_hubs()
     from urns.interfaces.tcp import TCPClientInterface
-    iface = TCPClientInterface(TCP_CONFIG)
-    if iface.online:
+    iface = None
+    try:
+        iface = TCPClientInterface(TCP_CONFIG)
+        online = bool(iface.online)
+    except Exception as e:
+        online = False
+        if DEBUG >= 1:
+            print("[TCP] dial error:", e)
+    if online:
         iface.setup_ifac(TCP_CONFIG)   # before any packet moves: poll_loop starts below
         # Stop LoRa — only one interface at a time
         _stop_lora()
@@ -1399,14 +1421,20 @@ async def backbone_apply(host, port, ifac=None):
            "tcp_netname": ifac.get("networkname") or "",
            "tcp_passphrase": ifac.get("passphrase") or "",
            "tcp_ifac_size": ifac.get("ifac_size") or 16}
-    unchanged = all(settings.get(k) == v for k, v in new.items())
+    # Against what the deck dials now (saved, else the default): on a deck
+    # that never saved a host the keys are absent, not the default.
+    cur_host, cur_port, cur_ifac = _backbone_target()
+    unchanged = (cur_host == host and cur_port == port
+                 and (cur_ifac.get("networkname") or "") == new["tcp_netname"]
+                 and (cur_ifac.get("passphrase") or "") == new["tcp_passphrase"]
+                 and (cur_ifac.get("ifac_size") or 16) == new["tcp_ifac_size"])
     settings.update(new)
     _save_settings(settings)
     addr = host + ":" + str(port)
-    if not _wifi_sta_on or (_tcp_iface is not None and unchanged):
-        # Nothing to dial: the station is down (dialed when WiFi comes up),
-        # or the link up already carries these values (a re-dial would
-        # clear every chat for nothing).
+    if not _wifi_sta_on or not _associated() or (_tcp_iface is not None and unchanged):
+        # Nothing to dial: the station is down or has no AP (dialed when it
+        # associates), or the link up already carries these values (a
+        # re-dial would clear every chat for nothing).
         gui.set_tcp_result(True, addr)
         _publish_backbone()
         return
@@ -2216,12 +2244,13 @@ async def _start_backbone(tries=6):
         for attempt in range(tries):
             if not _wifi_sta_on or _tcp_iface is not None:
                 break
-            host, port, ifac = _backbone_target()
-            _backbone_last_dial = time.ticks_ms()
-            if _dial_backbone(host, port, ifac):
-                break
-            if DEBUG >= 1:
-                print("[TCP] backbone dial", attempt + 1, "failed")
+            if _associated():                 # no AP: a dial would only block the loop
+                host, port, ifac = _backbone_target()
+                _backbone_last_dial = time.ticks_ms()
+                if _dial_backbone(host, port, ifac):
+                    break
+                if DEBUG >= 1:
+                    print("[TCP] backbone dial", attempt + 1, "failed")
             if attempt + 1 < tries:
                 await asyncio.sleep(10)
     finally:

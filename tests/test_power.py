@@ -684,6 +684,36 @@ _dial_src = _node_src.split("def _dial_backbone", 1)[1].split("\ndef ", 1)[0]
 check("a failed dial with no link left brings LoRa back (the deck must not be deaf on both)",
       "_start_lora()" in _dial_src.split("return True", 1)[1])
 
+print("second review 2026-11-01")
+check("station down with the wish on and the screen lit: connecting (the lit retry is due), not off",
+      power.backbone_state(False, False, False, False, False, wished=True) == "connecting"
+      and power.backbone_state(False, False, False, False, False, wished=False) == "off"
+      and power.backbone_state(False, True, False, False, False) == "off")
+_node_src = open(os.path.join(ROOT, "tdeck_node.py")).read()
+_loop_src = _node_src.split("def _wifi_policy_loop", 1)[1].split("async def _low_battery_loop", 1)[0]
+_ap_src = _node_src.split("async def backbone_apply", 1)[1].split("\ndef ", 1)[0]
+check("apply's 'unchanged' compares with the effective target (saved else default), not raw keys",
+      "_backbone_target()" in _ap_src.split("unchanged", 1)[0])
+check("apply dials only when associated (a dial with no AP blocks the deck for the socket timeout)",
+      "_associated()" in _ap_src.split("_dial_backbone(", 1)[0])
+_sb_src = _node_src.split("async def _start_backbone", 1)[1].split("\nasync def ", 1)[0]
+check("the backbone start waits for an association before each try", "_associated()" in _sb_src.split("_dial_backbone(", 1)[0])
+_dial_src = _node_src.split("def _dial_backbone", 1)[1].split("\ndef ", 1)[0]
+check("a torn-down link's peers and caches go with it, before the new dial (a failed dial must not route over the dead link)",
+      "gui.clear_peers()" in _dial_src.split("TCPClientInterface(TCP_CONFIG)", 1)[0])
+check("a dial that raises after the teardown still brings LoRa back",
+      "except Exception" in _dial_src and "_start_lora()" in _dial_src.split("except Exception", 1)[1])
+check("the lit re-dial does not spawn over a pending or running start",
+      "_backbone_pending" in _loop_src.split("_start_backbone(tries=1)", 1)[0].split("since_dial_ms = ", 1)[1]
+      and ".done()" in _loop_src.split("_start_backbone(tries=1)", 1)[0].split("since_dial_ms = ", 1)[1])
+_body_src = _node_src.split("async def _wifi_connect_body", 1)[1].split("\ndef ", 1)[0]
+check("the connect body no longer writes the shown flags by hand (the published state owns them)",
+      "gui._wifi_connected = True" not in _body_src and "gui._wifi_ssid_current = " not in _body_src)
+_giveup_src = _node_src.split("def _wifi_give_up", 1)[1].split("\nasync def ", 1)[0]
+check("a dark give-up makes the next lit pass retry at once", "_wifi_last_try = None" in _giveup_src)
+_pb_src = _node_src.split("def _publish_backbone", 1)[1].split("\ndef ", 1)[0]
+check("the publisher passes the wish", "wished=" in _pb_src)
+
 print("LowBattery (cut the pack before the chip browns out)")
 check("threshold above the brownout, below the empty mark", 2.9 < power.LOW_BATTERY_V <= 3.3)
 lb = power.LowBattery()
