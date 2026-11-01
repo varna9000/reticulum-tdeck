@@ -821,7 +821,7 @@ async def _wifi_connect_task(ssid, password, auto=False):
 
 
 async def _wifi_connect_body(ssid, password, auto):
-    global _wifi_enabled, _wifi_sta_on, _wlan, _wifi_last_try
+    global _wifi_enabled, _wifi_sta_on, _wlan, _wifi_last_try, _backbone_task
     import uasyncio as asyncio
     import network
     await asyncio.sleep_ms(50)  # let the UI paint "Connecting..." first
@@ -867,24 +867,60 @@ async def _wifi_connect_body(ssid, password, auto):
         gui._wifi_connected = True
         gui._wifi_ssid_current = ssid
         gui._wifi_ip = ip
-        asyncio.create_task(_start_saved_tcp())
+    if ip:
+        # WiFi on means the backbone: dial it (saved host, else the default).
+        _backbone_task = asyncio.create_task(_start_backbone())
+    _publish_backbone()
     gc.collect()
 
 
-def wifi_reconnect_saved():
-    """Setup's TCP row with the station down: re-associate with the saved
-    network so the TCP form can open (gui.set_wifi_result does that).
-    True when a connect was started."""
-    if gui._wifi_connecting or _wifi_auto_connecting:
-        return False
-    settings = _load_settings()
-    ssid = settings.get("wifi_ssid")
-    password = settings.get("wifi_pass")
-    if not (ssid and password):
-        return False
-    gui._wifi_ssid = ssid            # what set_wifi_result reports as current
-    wifi_connect_async(ssid, password, auto=False)
+def wifi_disconnect():
+    """Setup's WiFi row switched off: the backbone switch. Whatever is in
+    flight is cancelled first (a late association must not re-save the
+    wish or start a link the user just switched off), then the link, the
+    station and both wishes go, and LoRa comes back."""
+    global _wifi_task, _backbone_task
+    for t in (_wifi_task, _backbone_task):
+        if t is not None:
+            try:
+                t.cancel()
+            except Exception:
+                pass
+    _wifi_task = None
+    _backbone_task = None
+    _tcp_down(save=True)
+    _publish_backbone()
     return True
+
+
+def _publish_backbone():
+    """One state for Setup's WiFi row (power.backbone_state), handed to the
+    UI when it changes, with the network's name and our address."""
+    global _backbone_shown
+    import power
+    busy = bool(_wifi_auto_connecting or gui._wifi_connecting or _tcp_starting)
+    associated = False
+    if _wifi_sta_on and _wlan is not None:
+        try:
+            associated = bool(_wlan.isconnected())
+        except Exception:
+            associated = False
+    link = _tcp_iface is not None
+    online = bool(link and getattr(_tcp_iface, "online", False))
+    state = power.backbone_state(_wifi_sta_on, busy, associated, link, online)
+    ssid = ip = ""
+    if state not in ("off", "connecting"):
+        ssid = gui._wifi_ssid_current
+        try:
+            ssid = _wlan.config("ssid") or ssid
+            if associated:
+                ip = _wlan.ifconfig()[0]
+        except Exception:
+            pass
+    key = (state, ssid, ip)
+    if key != _backbone_shown:
+        _backbone_shown = key
+        gui.set_backbone_state(state, ssid, ip)
 
 
 def _wifi_give_up():
@@ -897,16 +933,16 @@ def _wifi_give_up():
         _wifi_radio_off()            # LoRa untouched, nothing saved
         if DEBUG >= 1:
             print("[WiFi] idle while dark; station off until the screen wakes")
-        return
-    _tcp_down(save=False)            # link, station and LoRa restart; wishes kept
-    gui._tcp_enabled = False         # the Setup page clears this itself; here nobody else does
-    if DEBUG >= 1:
-        print("[WiFi] no AP or server while dark; station off until the screen wakes")
+    else:
+        _tcp_down(save=False)        # link, station and LoRa restart; wishes kept
+        if DEBUG >= 1:
+            print("[WiFi] no AP or server while dark; station off until the screen wakes")
+    _publish_backbone()
 
 
 async def _wifi_policy_loop():
     """Every few seconds: is the station still worth running (power.wifi_action)."""
-    global _wifi_unconnected_since, _wifi_last_try, _wifi_dark_since, _tcp_offline_since
+    global _wifi_unconnected_since, _wifi_last_try, _wifi_dark_since, _tcp_offline_since, _backbone_task
     import uasyncio as asyncio
     import power
     while True:
@@ -934,27 +970,9 @@ async def _wifi_policy_loop():
             _wifi_unconnected_since = None
         elif _wifi_unconnected_since is None:
             _wifi_unconnected_since = now
-        # What Setup shows: the AP going away under us, and coming back.
-        shown = power.wifi_shown(connected, _wifi_sta_on,
-                                 _wifi_auto_connecting or gui._wifi_connecting,
-                                 gui._wifi_connected)
-        if shown != gui._wifi_connected:
-            gui._wifi_connected = shown
-            if shown:
-                # The chip associated by itself (after a beacon loss, or
-                # after a connect task gave up on a slow AP): the name and
-                # address, and the saved TCP link, as the connect task's
-                # success path does.
-                try:
-                    gui._wifi_ssid_current = _wlan.config("ssid") or gui._wifi_ssid_current
-                    gui._wifi_ip = _wlan.ifconfig()[0]
-                except Exception:
-                    pass
-                asyncio.create_task(_start_saved_tcp())
-            import ui as _ui
-            if gui.state == _ui.STATE_SETTINGS:
-                gui._cache = [''] * _ui.CACHE_ROWS
-                gui.dirty = True
+        # What Setup shows: one state, from the station, the tasks in
+        # flight and the link (power.backbone_state).
+        _publish_backbone()
         # The TCP link's state: urns keeps the interface and reconnects
         # forever once the server is gone, so note when it went offline.
         link = _tcp_iface is not None
@@ -964,10 +982,21 @@ async def _wifi_policy_loop():
             _tcp_offline_since = now
         offline_ms = 0 if _tcp_offline_since is None else time.ticks_diff(now, _tcp_offline_since)
         since_try_ms = power.WIFI_RETRY_MS if _wifi_last_try is None else time.ticks_diff(now, _wifi_last_try)
-        # The station's job. Up: the live TCP link (a saved wish whose
+        # A station that is associated with no link (the first dial failed:
+        # DNS not ready, server down, host mistyped) re-dials while the
+        # screen is lit, every WIFI_RETRY_MS; dark, the give-up below drops
+        # the station after WIFI_GIVEUP_MS (no link is no job).
+        since_dial_ms = (power.WIFI_RETRY_MS if _backbone_last_dial is None
+                         else time.ticks_diff(now, _backbone_last_dial))
+        if (_wifi_sta_on and connected and not link and screen_on and not _tcp_starting
+                and not _wifi_auto_connecting and not gui._wifi_connecting
+                and since_dial_ms >= power.WIFI_RETRY_MS):
+            _backbone_task = asyncio.create_task(_start_backbone())
+        # The station's job. Up: the live TCP link (a backbone whose
         # server is unreachable must not hold the deck awake all night).
-        # Down: the saved wish, read only when a retry is actually due,
-        # and a "no" is not re-read for another retry period.
+        # Down: the one saved wish (WiFi on = backbone on), read only when
+        # a retry is actually due, and a "no" is not re-read for another
+        # retry period.
         settings = None
         if _wifi_sta_on:
             tcp_wanted = power.tcp_job(link, link and _tcp_offline_since is None, offline_ms)
@@ -975,7 +1004,7 @@ async def _wifi_policy_loop():
             tcp_wanted = False
             if screen_on and since_try_ms >= power.WIFI_RETRY_MS:
                 settings = _load_settings()
-                tcp_wanted = bool(settings.get("tcp_enabled"))
+                tcp_wanted = bool(settings.get("wifi_enabled"))
                 if not tcp_wanted:
                     _wifi_last_try = now
         dark_ms = 0 if _wifi_dark_since is None else time.ticks_diff(now, _wifi_dark_since)
@@ -1160,6 +1189,9 @@ _wifi_auto_connecting = False   # a boot/retry association in flight (policy loo
 _wifi_task = None               # the connect task in flight, if any (one at a time)
 _tcp_offline_since = None       # when the TCP link last went offline (reconnecting)
 _tcp_starting = False
+_backbone_task = None           # the _start_backbone task in flight (wifi_disconnect cancels it)
+_backbone_last_dial = None      # ticks_ms of the last dial (the lit re-dial waits WIFI_RETRY_MS)
+_backbone_shown = None          # (state, ssid, ip) last handed to the UI
 
 
 # Interface access codes (issue #20). urns derives the code from the
@@ -1167,7 +1199,7 @@ _tcp_starting = False
 # in bytes; the UI hands us {"networkname", "passphrase", "ifac_size"} with
 # "" for an empty field. Blank fields are dropped from the config rather than
 # passed as "", so urns sees them as unset, and no size is passed without a
-# code. tcp_toggle / _start_lora build their interfaces by hand, outside
+# code. _dial_backbone / _start_lora build their interfaces by hand, outside
 # rns.setup_interfaces(), which is the only place urns calls setup_ifac --
 # so they call it themselves.
 _IFAC_KEYS = ("networkname", "passphrase", "ifac_size")
@@ -1225,77 +1257,65 @@ def _lora_changes(params, cfg):
 _TCP_CFG_IFAC = {k: TCP_CONFIG.get(k) for k in _IFAC_KEYS}
 
 
-def tcp_toggle(enabled, host=None, port=None, ifac=None):
+def _dial_backbone(host, port, ifac=None):
+    """Bring the TCP backbone link up over the station (LoRa stops: one
+    interface at a time). A link already up is taken down first (one at a
+    time, or the old interface stays registered for good). True when the
+    link is online. Writes no settings: backbone_apply is the one writer
+    of the host and code, and a dial of the default is not a wish."""
     global _tcp_iface, _tcp_task
     import uasyncio as asyncio
     from urns.transport import Transport
-    if enabled:
-        TCP_CONFIG["target_host"] = host
-        TCP_CONFIG["target_port"] = port
-        _ifac_overlay(TCP_CONFIG, ifac)
-        # Cancel stale TCP poll_loop task
-        if _tcp_task is not None:
-            try:
-                _tcp_task.cancel()
-            except Exception:
-                pass
-            _tcp_task = None
-        if _tcp_iface is not None:
-            # A link is already up (a form opened over one): one at a time,
-            # or the old interface stays registered in Transport for good.
-            old = _tcp_iface
-            _tcp_iface = None
-            old.online = False
-            old.enabled = False
-            try:
-                if hasattr(old, 'close'):
-                    old.close()
-            except Exception:
-                pass
-            Transport.deregister_interface(old)
-        from urns.interfaces.tcp import TCPClientInterface
-        iface = TCPClientInterface(TCP_CONFIG)
-        if iface.online:
-            iface.setup_ifac(TCP_CONFIG)   # before any packet moves: poll_loop starts below
-            # Stop LoRa — only one interface at a time
-            _stop_lora()
-            gui.clear_peers()
-            _lxmf_to_peer.clear()
-            nomad_browser.clear_nodes()
-            rnsh_client.clear_nodes()
-            rrc_client.clear_hubs()
-            Transport.register_interface(iface)
-            _tcp_task = asyncio.create_task(iface.poll_loop())
-            _tcp_iface = iface
-            settings = _load_settings()
-            settings["tcp_enabled"] = True
-            settings["tcp_host"] = host
-            settings["tcp_port"] = port
-            if ifac is not None:
-                # The UI's own copy is set by gui.set_tcp_result (form path)
-                # or _auto_start_tcp (boot) -- one writer each.
-                settings["tcp_netname"] = ifac.get("networkname") or ""
-                settings["tcp_passphrase"] = ifac.get("passphrase") or ""
-                settings["tcp_ifac_size"] = ifac.get("ifac_size") or 16
-            _save_settings(settings)
-            if DEBUG >= 1:
-                print("[TCP] Interface started ->", host + ":" + str(port),
-                      "IFAC" if iface.ifac_signing_key else "plain")
-            asyncio.create_task(_ntp_sync())
-            return True
+    TCP_CONFIG["target_host"] = host
+    TCP_CONFIG["target_port"] = port
+    _ifac_overlay(TCP_CONFIG, ifac)
+    # Cancel stale TCP poll_loop task
+    if _tcp_task is not None:
+        try:
+            _tcp_task.cancel()
+        except Exception:
+            pass
+        _tcp_task = None
+    if _tcp_iface is not None:
+        old = _tcp_iface
+        _tcp_iface = None
+        old.online = False
+        old.enabled = False
+        try:
+            if hasattr(old, 'close'):
+                old.close()
+        except Exception:
+            pass
+        Transport.deregister_interface(old)
+    from urns.interfaces.tcp import TCPClientInterface
+    iface = TCPClientInterface(TCP_CONFIG)
+    if iface.online:
+        iface.setup_ifac(TCP_CONFIG)   # before any packet moves: poll_loop starts below
+        # Stop LoRa — only one interface at a time
+        _stop_lora()
+        gui.clear_peers()
+        _lxmf_to_peer.clear()
+        nomad_browser.clear_nodes()
+        rnsh_client.clear_nodes()
+        rrc_client.clear_hubs()
+        Transport.register_interface(iface)
+        _tcp_task = asyncio.create_task(iface.poll_loop())
+        _tcp_iface = iface
         if DEBUG >= 1:
-            print("[TCP] Interface failed to start")
-        return False
-    else:
-        _tcp_down(save=True)
+            print("[TCP] Interface started ->", host + ":" + str(port),
+                  "IFAC" if iface.ifac_signing_key else "plain")
+        asyncio.create_task(_ntp_sync())
         return True
+    if DEBUG >= 1:
+        print("[TCP] Interface failed to start")
+    return False
 
 
 def _tcp_down(save=True):
     """Close the TCP link, drop the station and bring LoRa back. save=True
-    (the user switched TCP off) records both wishes as off; save=False (the
-    policy loop gave up while dark) writes nothing, so a reset in between
-    cannot lose what the user asked for."""
+    (the user switched the backbone off) records the wish as off; save=False
+    (the policy loop gave up while dark) writes nothing, so a reset in
+    between cannot lose what the user asked for."""
     global _tcp_iface
     from urns.transport import Transport
     if _tcp_iface is not None:
@@ -1305,10 +1325,6 @@ def _tcp_down(save=True):
             _tcp_iface.close()
         Transport.deregister_interface(_tcp_iface)
         _tcp_iface = None
-    if save:
-        settings = _load_settings()
-        settings["tcp_enabled"] = False
-        _save_settings(settings)
     gui.clear_peers()
     _lxmf_to_peer.clear()
     nomad_browser.clear_nodes()
@@ -1349,27 +1365,54 @@ async def _ntp_sync():
         await asyncio.sleep(10)
 
 
-def tcp_connect_async(host, port, ifac=None):
-    """GUI callback: connect TCP without blocking on the Enter keypress. The
-    UI shows 'Connecting...' first; gui.set_tcp_result() reports the outcome.
-    (The interface init itself is synchronous, but yielding first lets the
-    'Connecting...' row paint before the brief socket-setup pause.)
-    ifac: the form's {"networkname", "passphrase", "ifac_size"} or None."""
-    import uasyncio as asyncio
-    asyncio.create_task(_tcp_connect_task(host, port, ifac))
+def _backbone_target():
+    """The backbone to dial: the saved host, port and access code, else the
+    built-in default (tdeck_config.TCP_CONFIG), the same values the Setup
+    Backbone row shows. WiFi on always means a backbone, so a deck that
+    never saved a host dials this one."""
+    settings = _load_settings()
+    host = settings.get("tcp_host") or TCP_CONFIG["target_host"]
+    port = settings.get("tcp_port") or TCP_CONFIG["target_port"]
+    return host, port, _ifac_from_settings(settings, _TCP_CFG_IFAC)
 
 
-async def _tcp_connect_task(host, port, ifac):
+async def backbone_apply(host, port, ifac=None):
+    """Setup's Backbone form, Apply: what was typed is saved first (a wrong
+    host shows as "no server" and is corrected in the form, which is seeded
+    from the saved values); with the station up the link is re-dialed with
+    it (the old link goes first, inside the dial). gui.set_tcp_result
+    reports back either way."""
+    global _backbone_last_dial
     import uasyncio as asyncio
     await asyncio.sleep_ms(50)  # paint "Connecting..." before socket setup
+    settings = _load_settings()
+    settings["tcp_host"] = host
+    settings["tcp_port"] = port
+    ifac = ifac or {}
+    settings["tcp_netname"] = ifac.get("networkname") or ""
+    settings["tcp_passphrase"] = ifac.get("passphrase") or ""
+    settings["tcp_ifac_size"] = ifac.get("ifac_size") or 16
+    _save_settings(settings)
+    addr = host + ":" + str(port)
+    if not _wifi_sta_on:
+        gui.set_tcp_result(True, addr)        # saved; dialed when WiFi comes up
+        _publish_backbone()
+        return
     ok = False
+    _backbone_last_dial = time.ticks_ms()
     try:
-        ok = tcp_toggle(True, host, port, ifac)
+        ok = _dial_backbone(host, port, ifac)
     except Exception as e:
         if DEBUG >= 1:
-            print("[TCP] async connect error:", e)
-    gui.set_tcp_result(bool(ok), host + ":" + str(port))
+            print("[TCP] apply error:", e)
+    gui.set_tcp_result(bool(ok), addr)
+    _publish_backbone()
     gc.collect()
+
+
+def _on_backbone_apply(host, port, ifac):
+    import uasyncio as asyncio
+    asyncio.create_task(backbone_apply(host, port, ifac))
 
 
 def _apply_display_name(name):
@@ -1612,9 +1655,8 @@ gui.on_send = gui_send
 gui.on_announce = gui_announce
 gui.on_wifi_scan = wifi_scan
 gui.on_wifi_connect = wifi_connect_async
-gui.on_wifi_reconnect = wifi_reconnect_saved
-gui.on_tcp_toggle = tcp_toggle
-gui.on_tcp_connect = tcp_connect_async
+gui.on_wifi_disconnect = wifi_disconnect
+gui.on_backbone_apply = _on_backbone_apply
 gui.on_node_name = set_node_name
 gui.on_lora_reset = lora_reset
 gui.on_lora_config = on_lora_config
@@ -2135,52 +2177,41 @@ async def _auto_connect_wifi_async():
 
 
 async def _auto_start_tcp():
-    """Restore the TCP host entry from saved settings (needs the event loop).
-    The link itself is started by the WiFi connect's success path."""
+    """The Backbone row's host and code (saved, else the built-in default;
+    needs the event loop). The link itself is dialed by every association."""
     import uasyncio as asyncio
     await asyncio.sleep(0)
-    settings = _load_settings()
-    host = settings.get("tcp_host")
-    port = settings.get("tcp_port")
-    if settings.get("wifi_enabled") == True and host and port:
-        gui._tcp_target = host + ":" + str(port)
-    ifac = _ifac_from_settings(settings, _TCP_CFG_IFAC)
+    host, port, ifac = _backbone_target()
+    gui._tcp_target = host + ":" + str(port)
     gui.set_tcp_ifac(ifac["networkname"], ifac["passphrase"], ifac["ifac_size"])
     gc.collect()
 
 
-async def _start_saved_tcp():
-    """Bring the saved TCP link up after WiFi connected, if it was enabled
-    last session and is not up already. Retries: right after WiFi
-    associates, DNS often isn't answering yet (getaddrinfo -202), and one
-    failure used to leave TCP off for the whole session. Stops if the user
-    connects by hand or WiFi goes away."""
-    global _tcp_starting
+async def _start_backbone():
+    """Dial the backbone once the station is associated: up to 6 tries 10 s
+    apart (right after association DNS often is not answering yet,
+    getaddrinfo -202, and one failure used to leave the link off for the
+    whole session). Stops when a link is up or the station is gone; a dial
+    that keeps failing is left to the policy loop's lit re-dial."""
+    global _tcp_starting, _backbone_last_dial
     import uasyncio as asyncio
     if _tcp_starting:
-        return
-    settings = _load_settings()
-    host = settings.get("tcp_host")
-    port = settings.get("tcp_port")
-    if not (settings.get("tcp_enabled") and host and port):
         return
     _tcp_starting = True
     try:
         for attempt in range(6):
-            if attempt:
-                settings = _load_settings()      # the wish may have been switched off meanwhile
-                if not settings.get("tcp_enabled"):
-                    break
-            if not gui._wifi_connected or gui._tcp_enabled or _tcp_iface is not None:
+            if not _wifi_sta_on or _tcp_iface is not None:
                 break
-            if tcp_toggle(True, host, port, _ifac_from_settings(settings, _TCP_CFG_IFAC)):
-                gui._tcp_enabled = True
+            host, port, ifac = _backbone_target()
+            _backbone_last_dial = time.ticks_ms()
+            if _dial_backbone(host, port, ifac):
                 break
             if DEBUG >= 1:
-                print("[TCP] auto-connect attempt", attempt + 1, "failed")
+                print("[TCP] backbone dial", attempt + 1, "failed")
             await asyncio.sleep(10)
     finally:
         _tcp_starting = False
+    _publish_backbone()
     gc.collect()
 
 

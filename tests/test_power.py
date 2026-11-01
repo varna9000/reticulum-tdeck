@@ -569,7 +569,7 @@ _loop_src = _node_src.split("def _wifi_policy_loop", 1)[1].split("async def _low
 _sta_branch = _loop_src.split("if _wifi_sta_on:\n", 1)[1]
 check("station up: its job is the live TCP link, never the saved wish (a server that is down must not hold it)",
       "power.tcp_job(" in _sta_branch[:200] and "_load_settings" not in _sta_branch.split("else", 1)[0])
-_task_src = _node_src.split("async def _wifi_connect_task", 1)[1].split("def wifi_reconnect_saved", 1)[0]
+_task_src = _node_src.split("async def _wifi_connect_task", 1)[1].split("def _wifi_give_up", 1)[0]
 check("auto connect does not rewrite unchanged settings", "changed" in _task_src.split("if wlan.isconnected():", 1)[1][:900])
 _probe_src = open(os.path.join(ROOT, "tools", "tdeck_pro_dcdc_probe.py")).read()
 check("dcdc probe leaves continuous RX through the driver before the raw regulator write",
@@ -602,24 +602,37 @@ check("give-up is guarded against a connect in flight", "_wifi_connecting" in _o
 check("give-up without TCP writes no settings",
       "_save_settings" not in _node_src.split("def _wifi_give_up", 1)[1].split("_wifi_radio_off()", 1)[1][:400])
 
-print("wifi_shown (what Setup says about the station: a beacon loss is not a disconnect for good)")
-check("station off: left to the off paths", power.wifi_shown(False, False, False, True) is True)
-check("station up, AP gone: shown at once", power.wifi_shown(False, True, False, True) is False)
-check("station up, AP back (the chip re-associates by itself): shown again, so the TCP row toggles instead of reconnecting",
-      power.wifi_shown(True, True, False, False) is True)
-check("a connect in flight reports itself", power.wifi_shown(True, True, True, False) is False)
-check("loop shows the station through wifi_shown", "power.wifi_shown(" in _loop_src)
-check("loop has one writer of the shown flag", _loop_src.count("gui._wifi_connected = ") == 1, str(_loop_src.count("gui._wifi_connected = ")))
+print("backbone (2026-11-01): one wish, dial on association, one published state")
+check("tcp_enabled is written and read nowhere", '"tcp_enabled"' not in _node_src)
+check("the UI's TCP toggle, TCP connect and WiFi reconnect callbacks are gone",
+      "on_tcp_toggle" not in _node_src and "on_tcp_connect" not in _node_src and "on_wifi_reconnect" not in _node_src)
+check("the UI gets one state", "gui.set_backbone_state(" in _node_src and "power.backbone_state(" in _node_src)
+check("wifi_shown is gone", "wifi_shown" not in _node_src and not hasattr(power, "wifi_shown"))
+_sb_src = _node_src.split("async def _start_backbone", 1)[1].split("\nasync def ", 1)[0]
+check("the backbone start has no wish gate and dials saved-else-default", "tcp_enabled" not in _sb_src and "_backbone_target()" in _sb_src)
+check("the backbone start clears its flag in a finally", "finally:" in _sb_src and "_tcp_starting = False" in _sb_src.split("finally:", 1)[1])
+_bt_src = _node_src.split("def _backbone_target", 1)[1].split("\ndef ", 1)[0]
+check("saved else the built-in default", 'TCP_CONFIG["target_host"]' in _bt_src and '"tcp_host"' in _bt_src)
+_body_src = _node_src.split("async def _wifi_connect_body", 1)[1].split("\ndef ", 1)[0]
+check("association starts the backbone", "_start_backbone()" in _body_src and "_backbone_task = " in _body_src)
+check("lit re-dial every WIFI_RETRY_MS while the station is associated with no link",
+      "_backbone_last_dial" in _loop_src and "_start_backbone()" in _loop_src
+      and "screen_on" in _loop_src.split("_backbone_last_dial", 1)[1][:400])
+check("the loop publishes the state", "_publish_backbone()" in _loop_src)
+_wd_src = _node_src.split("def wifi_disconnect", 1)[1].split("\ndef ", 1)[0]
+check("disconnect cancels the connect in flight and the backbone start before tearing down",
+      "_wifi_task" in _wd_src.split("_tcp_down(save=True)", 1)[0] and "_backbone_task" in _wd_src.split("_tcp_down(save=True)", 1)[0])
+_ap_src = _node_src.split("async def backbone_apply", 1)[1].split("\ndef ", 1)[0]
+check("apply writes what was typed before dialing", _ap_src.index("_save_settings") < _ap_src.index("_dial_backbone("))
+check("apply with the station down only saves", "set_tcp_result(True" in _ap_src)
+check("the down-station wish is wifi_enabled", 'settings.get("wifi_enabled")' in _loop_src)
+check("boot restores the Backbone row's host whatever the WiFi wish",
+      "_backbone_target()" in _node_src.split("async def _auto_start_tcp", 1)[1].split("\nasync def ", 1)[0])
 
 print("review 2026-11-01: the station is supervised whenever it is up, one association at a time")
 check("policy loop supervises a station that is up even with the wish off (a failed manual connect left it hunting, awake)",
       "if not _wifi_enabled and not _wifi_sta_on:" in _loop_src)
-check("the loop repaints Setup when the shown state changes", "gui.dirty = True" in _loop_src)
-check("the loop fills the name and address, and starts the saved link, when the chip associates by itself",
-      "_start_saved_tcp" in _loop_src and "_wifi_ssid_current" in _loop_src)
-_sst_src = _node_src.split("async def _start_saved_tcp", 1)[1].split("\nasync def ", 1)[0]
-check("saved-TCP retries re-read the wish (a TCP-off in between must stick)",
-      '.get("tcp_enabled")' in _sst_src.split("for attempt", 1)[1])
+check("the repaint on a state change lives in the UI's setter, not the loop", "gui.dirty = True" not in _loop_src)
 _scan_src = _node_src.split("def wifi_scan", 1)[1].split("\ndef ", 1)[0]
 check("a scan on a deck whose station was off leaves the radio off afterwards",
       "wlan.active(False)" in _scan_src.split("finally:", 1)[1].split("for iface in paused", 1)[0])
@@ -630,9 +643,9 @@ check("the connect task clears its in-flight flag in a finally",
       "finally:" in _task_src and "_wifi_auto_connecting = False" in _task_src.split("finally:", 1)[1])
 _td_src = _node_src.split("def _tcp_down", 1)[1].split("\nasync def ", 1)[0]
 check("_tcp_down leaves the shown WiFi state to _wifi_radio_off", "gui._wifi_connected" not in _td_src)
-_tt_src = _node_src.split("def tcp_toggle", 1)[1].split("\ndef ", 1)[0]
-check("tcp_toggle(True) over a live link deregisters it first",
-      "deregister_interface" in _tt_src.split("if enabled:", 1)[1].split("TCPClientInterface(TCP_CONFIG)", 1)[0])
+_tt_src = _node_src.split("def _dial_backbone", 1)[1].split("\ndef ", 1)[0]
+check("a dial over a live link deregisters it first",
+      "deregister_interface" in _tt_src.split("TCPClientInterface(TCP_CONFIG)", 1)[0])
 
 print("backbone_state (one state for the Setup WiFi row)")
 check("station off: off", power.backbone_state(False, False, False, False, False) == "off")

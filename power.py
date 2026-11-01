@@ -128,19 +128,6 @@ def tcp_job(link_exists, online, offline_ms):
     return bool(online or offline_ms < WIFI_GIVEUP_MS)
 
 
-def wifi_shown(connected, sta_on, busy, shown):
-    """What Setup says about the station this pass. With the station up it
-    is what the chip reports: the AP going away is shown at once, and so
-    is its return (the chip re-associates by itself after a beacon loss;
-    a page left saying "not connected" made the TCP row reconnect WiFi
-    instead of switching TCP off, 2026-11-01). A connect in flight (busy)
-    reports its own result, and the paths that switch the station off
-    clear the flag themselves, so both leave it as it is."""
-    if not sta_on or busy:
-        return shown
-    return bool(connected)
-
-
 def backbone_state(sta_on, busy, associated, link, online):
     """The one state behind Setup's WiFi row (WiFi on = the backbone link):
     "off" (station down), "connecting" (a connect task or the backbone
