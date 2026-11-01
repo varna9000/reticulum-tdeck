@@ -343,19 +343,14 @@ def draw_navbar(ui):
         bat = "{:.1f}V".format(ui.bat_v)
     ann = ui.announce_flash and time.ticks_diff(time.ticks_ms(), ui.announce_flash) < 2000
     icon = None
+    badge = None
     if ui._audio_status:
         center = "[" + ui._audio_status + "]"
     elif ui.transfer_progress:
         rcv, tot = ui.transfer_progress
         center = "RX " + str(rcv) + "/" + str(tot)
-    elif ui._tcp_enabled:
-        icon, center = _u._GLOBE, ""
-    elif not ui.lora_online:
-        icon, center = _u._ANTENNA, "FAIL"
-    elif ui.rssi is not None:
-        icon, center = _u._ANTENNA, "snr " + str(ui.snr or 0)
     else:
-        icon, center = _u._ANTENNA, ""
+        icon, center, badge = _u.band_slots(ui._backbone, ui.lora_online, ui.rssi, ui.snr)
     clock = _u._fmt_clock() if _u._clock_valid() else ""
     right = (">>> " if ann else "") + clock
     right = right.rstrip() if not clock else right
@@ -365,7 +360,8 @@ def draw_navbar(ui):
     left_end = 4 * _u.CHAR_W + 5 * sw
     bl = 3 if ui.bat_v > 3.9 else (2 if ui.bat_v > 3.6 else (1 if ui.bat_v > 3.3 else 0))
     bat_key = bat + str(bl)
-    mid_key = ("G" if icon is _u._GLOBE else "A" if icon else "") + center + "|" + right
+    mid_key = (("W" if icon is _u._WIFI else "B" if icon is _u._WIFI_BANG else "A" if icon else "")
+               + ("!" if badge else "") + center + "|" + right)
     if ui._cache[0] == '':
         ui._nav_bat_cache = ''
         ui._nav_mid_cache = ''
@@ -391,14 +387,20 @@ def draw_navbar(ui):
         lo = left_end + sw
         hi = rx - sw
         iw = icon[0] + 4 if icon else 0
-        center = center[:max(0, (hi - lo - iw) // sw)]
-        cw = iw + len(center) * sw
+        # A fixed-width transport group (icon, "snr N", badge): nothing walks.
+        if icon:
+            cw = 15 + 4 + 5 * sw + 8 + 17
+        else:
+            center = center[:max(0, (hi - lo) // sw)]
+            cw = len(center) * sw
         x = max(lo, min((W - cw) // 2, hi - cw))
         col = ui.NEON_MAG if (not ui._tcp_enabled and not ui.lora_online) else ui.DIM_CYAN
         if icon:
             ui._bitmap(icon, x, (NAV_H - icon[1]) // 2, col)
         if center:
             _sd(ui, center, x + iw, ny, col, hb)
+        if badge:
+            ui._bitmap(badge, x + 15 + 4 + 5 * sw + 8, (NAV_H - badge[1]) // 2, col)
     ui._cache[0] = bat_key + mid_key
 
 

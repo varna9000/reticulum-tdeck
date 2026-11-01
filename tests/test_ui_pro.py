@@ -364,6 +364,22 @@ def nav(g, t, clock="09:41", valid=True):
     return [c for c in texts(t, "small")]
 
 
+def test_pro_band_two_slots():
+    print("top bar: two slots")
+    for state, lora, want_icons, want_text in (("up", False, [ui._WIFI], None), ("no_server", True, [ui._ANTENNA, ui._WIFI_BANG], "snr 7"),
+                                               ("no_server", False, [ui._WIFI_BANG], None), ("off", True, [ui._ANTENNA], "snr 7")):
+        g, t = mkui()
+        g.state = ui.STATE_NODES
+        g.set_backbone_state(state, "home", "", link=(state == "up"))
+        g.lora_online = lora
+        g.rssi, g.snr = (-80, 7) if lora else (None, 0)
+        g.draw_navbar()
+        icons = [c[1] for c in t.calls if c[0] == "icon"]
+        check("band %s/%s icons" % (state, lora), icons == want_icons, repr(icons))
+        small = [c[1] for c in texts(t, "small")]
+        check("band %s/%s text" % (state, lora), (want_text in small) if want_text else not any(s.startswith("snr") for s in small), repr(small))
+
+
 def test_navbar_clock_right_no_name():
     print("top bar")
     g, t = mkui()
@@ -1966,6 +1982,7 @@ if __name__ == "__main__":
     test_tab_bar()
     test_toolbar()
     test_no_body_frame_on_the_pro_list()
+    test_pro_band_two_slots()
     test_navbar_clock_right_no_name()
     test_sheet_items_per_tab()
     test_sheet_open_draw_close()

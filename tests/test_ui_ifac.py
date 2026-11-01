@@ -661,5 +661,74 @@ def test_wifi_row_value_comes_from_the_state_alone():
     assert any(r.startswith("WiFi: home [1.2.3.4]") for r in drawn), drawn[:3]
 
 
+def test_band_slots_table():
+    A, W, B = ui._ANTENNA, ui._WIFI, ui._WIFI_BANG
+    assert ui.band_slots("up", False, None, 0) == (W, "", None)
+    assert ui.band_slots("no_server", True, -80, 7) == (A, "snr 7", B)
+    assert ui.band_slots("connecting", True, None, 0) == (A, "", B)
+    assert ui.band_slots("no_network", False, None, 0) == (B, "", None)      # reconnecting: nothing carries
+    assert ui.band_slots("off", True, -80, 7) == (A, "snr 7", None)
+    assert ui.band_slots("off", False, None, 0) == (A, "FAIL", None)
+
+
+def test_wifi_bang_is_the_fan_with_the_badge():
+    def pixels(icon):
+        w, h, runs = icon
+        return {(x + dx, dy) for dx, dy, n in runs for x in range(n)}
+    fan, bang = pixels(ui._WIFI), pixels(ui._WIFI_BANG)
+    badge = {(x, y) for x in (14, 15) for y in list(range(7, 12)) + [13, 14]}
+    assert ui._WIFI[0] == 15 and ui._WIFI[1] == 15 and ui._WIFI_BANG[0] == 17 and ui._WIFI_BANG[1] == 15
+    assert bang == fan | badge
+
+
+def _band_calls(g):
+    icons, texts = [], []
+    g._bitmap = lambda icon, x, y, c: icons.append((icon, x))
+    g._sdraw = lambda s, x, y, c, bg=None: texts.append((s, x))
+    g._cache[0] = ''
+    g.draw_navbar()
+    return icons, texts
+
+
+def test_v1_band_two_slots_and_a_clock_that_does_not_move():
+    g = _mkui()
+    g.state = ui.STATE_NODES
+    g.lora_online = True
+    g.rssi, g.snr = -80, 7
+    saved = (ui._clock_valid, ui._fmt_clock)
+    ui._clock_valid, ui._fmt_clock = (lambda: True), (lambda: "09:41")
+    try:
+        g.set_backbone_state("no_server", "home", "", link=False)
+        icons, texts = _band_calls(g)
+        assert [i for i, _ in icons] == [ui._ANTENNA, ui._WIFI_BANG], icons
+        assert ("snr 7", icons[0][1] + ui._ANTENNA[0] + 4) in texts, texts
+        clock_x = [x for s, x in texts if s == "09:41"][0]
+        g.set_backbone_state("up", "home", "1.2.3.4", link=True)
+        icons, texts = _band_calls(g)
+        assert [i for i, _ in icons] == [ui._WIFI] and not any(s.startswith("snr") for s, _ in texts)
+        assert [x for s, x in texts if s == "09:41"][0] == clock_x
+        g.set_backbone_state("no_server", "home", "", link=True)
+        g.lora_online = False
+        icons, texts = _band_calls(g)
+        assert [i for i, _ in icons] == [ui._WIFI_BANG]
+        g.set_backbone_state("off", "", "")
+        g.lora_online = True
+        icons, texts = _band_calls(g)
+        assert [i for i, _ in icons] == [ui._ANTENNA] and ("snr 7", icons[0][1] + ui._ANTENNA[0] + 4) in texts
+        assert [x for s, x in texts if s == "09:41"][0] == clock_x
+    finally:
+        ui._clock_valid, ui._fmt_clock = saved
+
+
+def test_band_precedence_audio_and_transfer_win():
+    g = _mkui()
+    g.state = ui.STATE_NODES
+    g.set_backbone_state("no_server", "home", "", link=False)
+    g.lora_online = True
+    g._audio_status = "PLAY"
+    icons, texts = _band_calls(g)
+    assert icons == [] and any(s.startswith("[PLAY]") for s, _ in texts), texts   # the clock may follow the text
+
+
 if __name__ == "__main__":
     sys.exit(1 if _run() else 0)

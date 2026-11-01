@@ -467,6 +467,37 @@ _GLOBE = _icon(("..#####..", ".#.#.#.#.", "#..#.#..#", "#..#.#..#", "#########",
 _ANTENNA = _icon((".#.......#.", "#..#...#..#", "#.#..#..#.#", "#.#.###.#.#",
                   "#..#.#.#..#", ".#...#...#.", ".....#.....", "....###....",
                   "...#.#.#...", "..#..#..#.."))
+# The header band's backbone glyphs: the WiFi fan (the link is up), and the
+# fan with a "!" badge (WiFi on, the backbone not there: dialing, no server,
+# no network). A crossed fan would mean "WiFi off" to anyone with a phone.
+_WIFI_ROWS = ("...............", "...............", "....#######....", "..##.......##..", ".#...........#.",
+              "#....#####....#", "...##.....##...", "..#.........#..", ".....#####.....", "....#.....#....",
+              "...#.......#...", "......###......", ".....#####.....", "......###......", "...............")
+_WIFI = _icon(_WIFI_ROWS)
+_WIFI_BANG = _icon(tuple((r[:14] + "##.") if y in (7, 8, 9, 10, 11, 13, 14) else (r + "..") for y, r in enumerate(_WIFI_ROWS)))
+
+
+def band_slots(state, lora_online, rssi, snr):
+    """The header band's centre: (carrier icon, carrier text, badge). Left,
+    what carries the traffic: the fan when the backbone link is up, else
+    the antenna with "snr N" (or "FAIL"). Right, the backbone waiting (the
+    badged fan) while WiFi is on but not carrying; when LoRa is off as
+    well (a live link lost its server and is reconnecting) the badged fan
+    stands alone, because nothing carries."""
+    if state == "up":
+        return _WIFI, "", None
+    waiting = state in ("connecting", "no_server", "no_network")
+    if waiting and not lora_online:
+        return _WIFI_BANG, "", None
+    if not lora_online:
+        text = "FAIL"
+    elif rssi is not None:
+        text = "snr " + str(snr or 0)
+    else:
+        text = ""
+    return _ANTENNA, text, (_WIFI_BANG if waiting else None)
+
+
 # The keyboard's mic key (Sym+0), for the DM footer's record hint.
 _MIC = _icon(("..###..", ".#####.", ".#####.", ".#####.", ".#####.",
               "#.###.#", "#.....#", ".#...#.", "..###..", "...#...", "..###.."))
@@ -1438,21 +1469,18 @@ class UI:
         # globe for TCP, antenna for LoRa (magenta when the radio failed) --
         # with the SNR; then the mesh clock once time is synced.
         icon = None
+        badge = None
         if self._audio_status:
             center = "[" + self._audio_status + "]"
         elif self.transfer_progress:
             rcv, tot = self.transfer_progress
             center = "RX " + str(rcv) + "/" + str(tot)
-        elif self._tcp_enabled:
-            icon, center = _GLOBE, ""
-        elif not self.lora_online:
-            icon, center = _ANTENNA, "FAIL"
-        elif self.rssi is not None:
-            icon, center = _ANTENNA, "snr " + str(self.snr or 0)
         else:
-            icon, center = _ANTENNA, ""
-        if _clock_valid():
-            center = (center + "  " if center else "") + _fmt_clock()
+            icon, center, badge = band_slots(self._backbone, self.lora_online, self.rssi, self.snr)
+        clock = _fmt_clock() if _clock_valid() else ""
+        if not icon and clock:
+            center = (center + "  " if center else "") + clock
+            clock = ""
 
         right_str = (ann + " " if ann else "") + name
         center_color = self.NEON_MAG if (not self._tcp_enabled and not self.lora_online) else self.DIM_CYAN
@@ -1463,7 +1491,8 @@ class UI:
 
         bl = 3 if self.bat_v > 3.9 else (2 if self.bat_v > 3.6 else (1 if self.bat_v > 3.3 else 0))
         bat_key = bat_v_str + str(bl)
-        mid_key = ("G" if icon is _GLOBE else "A" if icon else "") + center + right_str
+        mid_key = (("W" if icon is _WIFI else "B" if icon is _WIFI_BANG else "A" if icon else "")
+                   + ("!" if badge else "") + center + clock + right_str)
 
         if self._cache[0] == '':
             self._nav_bat_cache = ''
@@ -1495,14 +1524,23 @@ class UI:
                 self._sdraw(ann, right_x, ny, self.NEON_MAG, hb)
             lo, hi = left_end + sw, right_x - sw
             iw = icon[0] + 4 if icon else 0
-            fit = max(0, (hi - lo - iw) // sw)
-            center = center[:fit]
-            cw = iw + len(center) * sw
+            # The transport group has a fixed width (icon, "snr N", badge) so
+            # nothing walks between states; the clock follows it at a fixed x.
+            group_w = 15 + 4 + 5 * sw + 8 + 17
+            if icon:
+                cw = group_w + (2 * sw + len(clock) * sw if clock else 0)
+            else:
+                center = center[:max(0, (hi - lo) // sw)]
+                cw = len(center) * sw
             x = max(lo, min((SCREEN_W - cw) // 2, hi - cw))
             if icon:
                 self._bitmap(icon, x, (NAV_H - icon[1]) // 2, center_color)
             if center:
                 self._sdraw(center, x + iw, ny, center_color, hb)
+            if badge:
+                self._bitmap(badge, x + 15 + 4 + 5 * sw + 8, (NAV_H - badge[1]) // 2, self.DIM_CYAN)
+            if clock:
+                self._sdraw(clock, x + group_w + 2 * sw, ny, self.DIM_CYAN, hb)
 
         self._cache[0] = bat_key + mid_key
 
