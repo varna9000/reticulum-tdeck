@@ -529,9 +529,11 @@ Press `s` from the node list to open setup. Navigate with trackball, select with
 
 The rows, in order: WiFi, Backbone, LoRa, LoRa cfg, Radio stats, Volume, Keyboard light, Touch feedback (Pro), Announce, Sleep, Wake, Time zone, Name, Addr, Id. The two transports come first, each as a switch followed by its settings; then the sound and feel toggles; then what the deck does on its own; then who you are.
 
-**WiFi** — The backbone switch: WiFi on means the TCP backbone link is on. Off: click to scan for networks, select one, enter the password; the deck associates and dials the backbone (the saved host, else the built-in default) by itself, no form in between. The row then says how that goes: the network name alone when the link is up, `name, no server` when the station is up but the link is down (retried every minute while the screen is lit), `name, no network` when the access point has been lost, `connecting...` in between, `off` when the station is down. On (any state but off): click to switch the backbone off — link, station and LoRa back. That drops the session and clears every chat, so it takes a second click (the row says `Enter again to disconnect`); any other key cancels. On the Pro the confirming tap does the same. Only one interface (LoRa or TCP) is active at a time.
+**WiFi** — The backbone switch: WiFi on means the TCP backbone link is on. Off: click to scan for networks, select one, enter the password; the deck associates and dials the backbone (the saved host, else the built-in default) by itself, no form in between. The row then says how that goes: the network name alone when the link is up, `name, no server` when the station is up but the link is down (retried every minute while the screen is lit), `name, no network` when the access point has been lost, `connecting...` in between, `off` when the station is down. On (any state but off): click to switch the backbone off — link, station and LoRa back. That drops the session and clears every chat, so it takes a second click (the row says `Enter again to disconnect`); any other key cancels. On the Pro the confirming tap does the same. Only one interface (LoRa or TCP) carries traffic at a time.
 
-**Backbone** — The server host and access code, as a page: a **Server host** group holding the `host:port` (pre-filled with the saved one or the default from `tdeck_config.py`), an optional **Access code** group for a server that requires one (see [Interface access codes](#interface-access-codes-ifac)), and **Apply**. Click a text row to type its value; Enter on an empty line clears a code field and keeps the host. Apply saves what was typed; with the backbone up it re-dials the link with the new values, otherwise the values are used at the next WiFi connect.
+The header band's centre shows the same thing at a glance, in two fixed slots. Left, what carries the traffic: the antenna with `snr N` while LoRa does, the WiFi fan while the backbone link is up. Right, only while WiFi is on but the link is not there (dialing, no server, no network): the fan with a `!` badge, the backbone you asked for is not there yet, and the Setup row says why. A live link that lost its server shows the badged fan alone for up to 30 s, until the deck drops it and LoRa carries again. Nothing moves between states; on the v1 the badge is dim.
+
+**Backbone** — The server host and access code, as a page: a **Server** group with the **Host** and **Port** rows (pre-filled with the saved link or the default from `tdeck_config.py`), an optional **Access code** group for a server that requires one (see [Interface access codes](#interface-access-codes-ifac)), and **Apply**. Click a text row to type its value; Enter on an empty line clears a code field and keeps the host and the port (a port that is not a number is kept too). Apply saves what was typed; with the backbone up it re-dials the link with the new values, otherwise the values are used at the next WiFi connect.
 
 **LoRa** — The mesh radio: `Online`, or `OFFLINE` with a click to reset it. While online a click only selects the row.
 
@@ -546,6 +548,8 @@ The rows, in order: WiFi, Backbone, LoRa, LoRa cfg, Radio stats, Volume, Keyboar
 **Wake** — What wakes the screen automatically: `msgs` (incoming messages only, the default), `all` (messages and peer announces — the pre-1.4 behaviour, keeps the screen lit on a busy mesh), or `never` (input only).
 
 **Name** — Change the node's display name. Saved to flash and persisted across reboots.
+
+On the v1 the labels of the Setup rows are dim and the values bright (the value is what changes between visits); on the selected row the label is white and the value yellow. The page titles sit two columns in, like the rows.
 
 **Addr** — Your LXMF address, the last-but-one row. Click it to show the address as a **QR code** holding `lxma://<address>:<public key>`, the contact format [Columba](https://github.com/torlando-tech/columba) and [MeshChatX](https://github.com/Quad4-Software/MeshChatX) scan, so a phone can add the T-Deck without anyone typing 32 hex characters. The screen stays on while the code shows (for up to two minutes); backspace goes back. Apps that read only their own format (Ratspeak) or a bare hash (Skywave) will not scan it — type the address there.
 
@@ -600,7 +604,7 @@ The remote node needs a `TCPServerInterface` in its Reticulum config:
   listen_port = 4242
 ```
 
-When WiFi connects the deck dials the backbone and LoRa is stopped (only one interface at a time). Switching WiFi off drops the link and restarts LoRa.
+When WiFi connects the deck dials the backbone and LoRa is stopped (only one interface at a time). Switching WiFi off drops the link and restarts LoRa. A link that loses its server is given 30 s to come back, screen lit or dark; then it is dropped and LoRa carries again, while the station stays (lit) and re-dials once a minute, or is given up too (dark).
 
 ### Interface access codes (IFAC)
 

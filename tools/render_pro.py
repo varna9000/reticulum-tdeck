@@ -7,7 +7,8 @@
 # framebuffer that follows lib/eink_shim.py's rules (luminance > 60 is ink;
 # glyphs on an ink background come out as paper), with the real 8x16 and 6x12
 # fonts. Writes list.png, sheet.png, chat.png, chat_cursor.png, rec.png,
-# rec_warm.png, setup.png, setup_end.png and setup_noserver.png, each at 4x.
+# rec_warm.png, setup.png, setup_end.png, setup_noserver.png and the hdr_*.png
+# header states, each at 4x.
 
 import os
 import struct
@@ -405,4 +406,18 @@ if __name__ == "__main__":
     scene_setup(out)
     scene_rrc(out)
     scene_misc(out)
-    print("wrote 24 PNGs to", out)
+    # The header band's transport slots: the fan (backbone up), antenna + snr
+    # with the badged fan (WiFi on, no link, mesh carrying), the badged fan
+    # alone (a live link reconnecting).
+    for name, state, link, lora in (("hdr_up", "up", True, False), ("hdr_waiting", "no_server", False, True),
+                                    ("hdr_reconnecting", "no_server", True, False)):
+        g, t = mk()
+        for i in range(3):
+            g.add_peer(bytes([i + 1]) * 16, "peer%02d" % i, hops=2, rssi=-87)
+        g.set_backbone_state(state, "homenet", "", link=link)
+        g.lora_online = lora
+        g.rssi = -80 if lora else None
+        g.snr = 7
+        g.draw()
+        t.png(os.path.join(out, name + ".png"))
+    print("wrote 27 PNGs to", out)

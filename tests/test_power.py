@@ -663,6 +663,9 @@ _readme_setup = _readme.split("### Setup", 1)[1].split("### Power", 1)[0]
 check("README names the Backbone row and no TCP row", "**Backbone**" in _readme_setup and "**TCP**" not in _readme_setup)
 check("README no longer saves a TCP enabled state", "TCP enabled state" not in _readme and "`tcp_enabled`" not in _readme)
 check("README says WiFi on is the backbone", "WiFi on" in _readme_setup or "backbone" in _readme_setup.split("**WiFi**", 1)[1][:400])
+check("README describes the header's two slots (the fan, the badge)", "fan with a" in _readme_setup and "badge" in _readme_setup)
+check("README: Host and Port rows in the Backbone form", "**Host**" in _readme_setup and "**Port**" in _readme_setup)
+check("README: the 30 s link drop", "30 s" in _readme.split("### TCP over WiFi", 1)[1][:900])
 
 print("final review 2026-11-01: one dial per lit retry, publish at once, header keeps TCP, apply idempotent, LoRa back after a failed dial")
 _node_src = open(os.path.join(ROOT, "tdeck_node.py")).read()
