@@ -945,7 +945,7 @@ class UI:
         self.on_wifi_scan = None      # () -> [(ssid, rssi), ...]
         self.on_wifi_connect = None   # (ssid, password) -> None — async; calls set_wifi_result
         self.on_wifi_disconnect = None # () -> bool: the backbone switch off (link, station, LoRa back)
-        self.on_tcp_connect = None    # (host, port) -> None — async; calls set_tcp_result
+        self.on_backbone_apply = None # (host, port, ifac) -> None — async; saves, re-dials; calls set_tcp_result
         self.on_node_name = None      # (name) -> None
         self.on_lora_reset = None     # () -> bool
         self.on_lora_config = None    # (params) -> bool — live-apply + persist radio params
@@ -4142,7 +4142,7 @@ class UI:
             elif ch == 0x0D:   # Enter / trackball click on the selected row
                 f = self._tcp_field
                 if f == _TCP_CONNECT:
-                    self._tcp_connect()
+                    self._tcp_apply()
                 elif f == 3:                       # IFAC size cycles
                     self._tcp_cycle_size(1)
                 else:                              # Host / Net / Pass -> text entry
@@ -4724,13 +4724,13 @@ class UI:
         self.dirty = True
 
     def set_tcp_result(self, ok, addr):
-        """Async TCP connect finished — back to the settings menu either way."""
+        """Apply finished (the dial may have failed): what was typed is what
+        the node saved, so the row and the form's seed show it either way;
+        the link's state reaches the WiFi row through set_backbone_state."""
         self._tcp_connecting = False
-        if ok:
-            self._tcp_enabled = True
-            self._tcp_target = addr
-            if self._tcp_edit is not None:
-                self._tcp_ifac = {k: self._tcp_edit[k] for k in _TCP_FIELDS[1:]}
+        self._tcp_target = addr
+        if self._tcp_edit is not None:
+            self._tcp_ifac = {k: self._tcp_edit[k] for k in _TCP_FIELDS[1:]}
         self._tcp_edit = None
         self._settings_page = _SET_MAIN
         self._settings_idx = 1
@@ -4747,9 +4747,9 @@ class UI:
         self._draw_input_line(self.cmd_buf.decode())
 
     def _draw_settings_tcp(self):
-        """Settings > TCP while the link is off: the host, the optional
-        access code group, Connect."""
-        self._draw_row_cached(1, "< TCP Server", BODY_Y, self.NEON_CYAN)
+        """Settings > Backbone: the server host (its own group, the address
+        is the row), the optional access code group, Apply."""
+        self._draw_row_cached(1, "< Backbone", BODY_Y, self.NEON_CYAN)
         if self._tcp_connecting:
             for i in range(1, BODY_ROWS):
                 self._draw_row_cached(i + 1, "", BODY_Y + i * CHAR_H, self.NEON_CYAN)
@@ -4761,11 +4761,12 @@ class UI:
         e = self._tcp_edit
         if e is None:                 # the page set directly, not via the row
             e = self._tcp_seed()
-        rows = [("", "blank"), ("Host   " + _tail(e["host"], COLS - 2 - 7), "text", 0),
+        rows = [("", "blank"), ("Server host", "legend"), _SPACE,
+                (_tail(e["host"], COLS - 3), "text", 0, True), _SPACE,
                 ("", "blank")]
         rows += self._code_rows(e, 1)
         rows.append(("", "blank"))
-        rows.append(("[ Connect ]", "action", _TCP_CONNECT))
+        rows.append(("[ Apply ]", "action", _TCP_CONNECT))
         self._draw_form(rows, self._tcp_field)
         self._draw_settings_bottom_bar()
 
@@ -4806,11 +4807,11 @@ class UI:
         self._cache = [''] * CACHE_ROWS
         self.dirty = True
 
-    def _tcp_connect(self):
-        """The Connect row: parse host:port and hand the link, with the code
-        fields as typed, to the node (async; set_tcp_result reports back).
-        A host that does not parse drops back to Setup, as the old entry
-        page did."""
+    def _tcp_apply(self):
+        """The Apply row: parse host:port and hand it, with the code fields
+        as typed, to the node (it saves, re-dials a link that is up, and
+        reports back through set_tcp_result). A host that does not parse
+        drops back to Setup, as the old entry page did."""
         e = self._tcp_edit
         host, port = None, None
         addr = e["host"].strip()
@@ -4821,11 +4822,11 @@ class UI:
                 port = int(parts[1])
             except:
                 pass
-        if host and port and self.on_tcp_connect:
+        if host and port and self.on_backbone_apply:
             self._tcp_connecting = True
             self._cache = [''] * CACHE_ROWS
             self.dirty = True
-            self.on_tcp_connect(host, port, {k: e[k] for k in _TCP_FIELDS[1:]})
+            self.on_backbone_apply(host, port, {k: e[k] for k in _TCP_FIELDS[1:]})
             return
         self._tcp_edit = None
         self._settings_page = _SET_MAIN

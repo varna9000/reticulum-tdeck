@@ -1063,7 +1063,7 @@ def test_tcp_form_taps():
     check("the legend row is not a target", tap(g, 100, frow(3)) is False and g._tcp_field == 3)
     check("a blank row is not a target", tap(g, 100, hy(3) + ui.CHAR_H) is False)
     got = []
-    g.on_tcp_connect = lambda h, p, i: got.append((h, p, i))
+    g.on_backbone_apply = lambda h, p, i: got.append((h, p, i))
     g._tcp_edit["host"] = "rns.example.org:4242"
     g.draw()
     drawn(g)
@@ -1158,8 +1158,8 @@ def test_form_group_has_air_on_the_pro():
     check("the rail is unbroken from the legend to the last row", all(y in covered for y in want),
           repr(sorted(set(want) - covered)[:5]))
     foot = [(x, y) for x, y, w, h, c in g.tft.rects if x == ui._RAIL_X and w > 2 and h == 2]
-    check("one foot, half a row under IFAC: the rows sit centred in the bracket",
-          foot == [(ui._RAIL_X, ys[3] + ui.CHAR_H + half - 2)], repr(foot))
+    check("two feet (the Server host group's, then half a row under IFAC): the rows sit centred in the bracket",
+          len(foot) == 2 and foot[-1] == (ui._RAIL_X, ys[3] + ui.CHAR_H + half - 2), repr(foot))
     want = range(legend_y + ui.CHAR_H // 2, ys[3] + ui.CHAR_H + half)
     check("the rail reaches the foot", all(y in covered for y in want), repr(sorted(set(want) - covered)[:5]))
     g = mkui(ui.STATE_SETTINGS)

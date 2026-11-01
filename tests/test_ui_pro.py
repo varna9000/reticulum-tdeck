@@ -1198,7 +1198,7 @@ def test_setup_sub_pages_have_a_back_header():
     print("device pass: sub-page headers")
     # Found on the device: the Name page had no header to tap and Backspace
     # deletes the name there, so there was no visible way back.
-    for page, title in ((ui._SET_NODE_NAME, "Node Name"), (ui._SET_TCP_HOST, "TCP Server"),
+    for page, title in ((ui._SET_NODE_NAME, "Node Name"), (ui._SET_TCP_HOST, "Backbone"),
                         (ui._SET_LORA_FREQ, "LoRa Frequency (kHz)"), (ui._SET_RADIO, None), (ui._SET_LORA, None),
                         (ui._SET_WIFI_SCAN, None)):
         g, t = mksetup()

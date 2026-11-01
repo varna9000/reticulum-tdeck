@@ -182,10 +182,10 @@ def test_navigation_stays_within_the_five_rows():
     assert g._tcp_field == 4                   # Connect is the last row
 
 
-def test_connect_passes_host_port_and_code():
+def test_apply_passes_host_port_and_code():
     g = _open_tcp()
     got = []
-    g.on_tcp_connect = lambda host, port, ifac: got.append((host, port, ifac))
+    g.on_backbone_apply = lambda host, port, ifac: got.append((host, port, ifac))
     for _ in range(4):
         g._settings_scroll_down()
     g.handle_key(ENTER)
@@ -193,24 +193,24 @@ def test_connect_passes_host_port_and_code():
     assert g._tcp_connecting
     g.set_tcp_result(True, "h:1")
     assert g._settings_page == ui._SET_MAIN
-    assert g._tcp_enabled and g._tcp_target == "h:1"
+    assert g._tcp_target == "h:1"             # the link's state itself comes through set_backbone_state
     assert g._tcp_ifac == {"networkname": "mymesh", "passphrase": "pw", "ifac_size": 8}
     assert g._tcp_edit is None
 
 
-def test_connect_with_no_code_passes_empty_fields():
+def test_apply_with_no_code_passes_empty_fields():
     g = _open_tcp(saved=("", "", 16))
     got = []
-    g.on_tcp_connect = lambda host, port, ifac: got.append(ifac)
+    g.on_backbone_apply = lambda host, port, ifac: got.append(ifac)
     for _ in range(4):
         g._settings_scroll_down()
     g.handle_key(ENTER)
     assert got == [{"networkname": "", "passphrase": "", "ifac_size": 16}]
 
 
-def test_connect_with_bad_host_goes_back_without_connecting():
+def test_apply_with_bad_host_goes_back_without_dialing():
     g = _open_tcp()
-    g.on_tcp_connect = lambda *a: (_ for _ in ()).throw(AssertionError("must not connect"))
+    g.on_backbone_apply = lambda *a: (_ for _ in ()).throw(AssertionError("must not connect"))
     g._tcp_edit["host"] = "no-port-here"
     for _ in range(4):
         g._settings_scroll_down()
@@ -219,15 +219,18 @@ def test_connect_with_bad_host_goes_back_without_connecting():
     assert not g._tcp_connecting
 
 
-def test_failed_connect_keeps_saved_code():
+def test_failed_apply_still_records_what_was_typed():
+    # Apply writes the typed values before dialing (spec): a wrong code shows
+    # as "no server" and the form, seeded from the saved values, is where it
+    # gets corrected.
     g = _open_tcp()
-    g.on_tcp_connect = lambda *a: None
+    g.on_backbone_apply = lambda *a: None
     g._tcp_edit["networkname"] = "typo"
     for _ in range(4):
         g._settings_scroll_down()
     g.handle_key(ENTER)
     g.set_tcp_result(False, "h:1")
-    assert g._tcp_ifac["networkname"] == "mymesh"
+    assert g._tcp_ifac["networkname"] == "typo"
 
 
 def test_esc_on_form_discards_edits():
@@ -396,7 +399,7 @@ def test_lcd_group_rows_stay_one_row_apart():
     ys = dict((f, y) for y, f in g._form_hits)
     assert ys[2] - ys[1] == ui.CHAR_H and ys[3] - ys[2] == ui.CHAR_H, ys
     foot = [(x, y) for x, y, w, h, c in g.tft.rects if x == ui._RAIL_X and w > 2 and h == 2]
-    assert foot == [(ui._RAIL_X, ys[3] + ui.CHAR_H - 2)], foot    # under IFAC, no air below
+    assert len(foot) == 2 and foot[-1] == (ui._RAIL_X, ys[3] + ui.CHAR_H - 2), foot    # the host group's, then under IFAC, no air below
 
 
 def _run():
@@ -540,6 +543,45 @@ def test_wifi_result_returns_to_setup_without_the_form():
 def test_tcp_toggle_and_reconnect_callbacks_are_gone():
     g = _mkui()
     assert not hasattr(g, "on_tcp_toggle") and not hasattr(g, "on_wifi_reconnect")
+
+
+def test_backbone_form_rows_host_group_then_code_then_apply():
+    g = _open_tcp()
+    drawn = []
+    g._draw_form = lambda rows, sel: drawn.extend(rows)
+    g.draw()
+    kinds = [(r[0], r[1]) for r in drawn if r[1] not in ("blank", "space")]
+    assert kinds[0] == ("Server host", "legend"), kinds
+    host_row = [r for r in drawn if r[0] == "h:1"]
+    assert host_row and host_row[0][1] == "text" and host_row[0][2] == 0 and host_row[0][3] is True, drawn
+    assert kinds[-1] == ("[ Apply ]", "action"), kinds
+    assert not any(r[0].startswith("Host") for r in drawn)
+
+
+def test_form_title_is_backbone():
+    g = _open_tcp()
+    seen = []
+    g._draw_row_cached = lambda i, text, *a: seen.append(text) or True
+    g.draw()
+    assert "< Backbone" in seen, seen
+
+
+def test_apply_result_saves_target_even_when_the_dial_failed():
+    g = _open_tcp()
+    calls = []
+    g.on_backbone_apply = lambda h, p, ifac: calls.append((h, p, ifac))
+    g._tcp_field = ui._TCP_CONNECT
+    g.handle_key(ENTER)
+    assert calls == [("h", 1, {"networkname": "mymesh", "passphrase": "pw", "ifac_size": 8})], calls
+    assert g._tcp_connecting is True
+    g.set_tcp_result(False, "h:1")
+    assert g._tcp_target == "h:1" and g._settings_page == ui._SET_MAIN and g._settings_idx == 1
+    assert g._tcp_enabled is False            # the state setter owns that flag
+    assert g._tcp_ifac == {"networkname": "mymesh", "passphrase": "pw", "ifac_size": 8}
+
+
+def test_on_tcp_connect_is_gone():
+    assert not hasattr(_mkui(), "on_tcp_connect")
 
 
 if __name__ == "__main__":
