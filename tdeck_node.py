@@ -991,6 +991,15 @@ async def _wifi_policy_loop():
         elif _tcp_offline_since is None:
             _tcp_offline_since = now
         offline_ms = 0 if _tcp_offline_since is None else time.ticks_diff(now, _tcp_offline_since)
+        if link and offline_ms >= power.WIFI_GIVEUP_MS:
+            # A link that lost its server for the give-up time is dropped,
+            # lit or dark, so LoRa carries again at once; the station's job
+            # is re-judged below (dark: given up; lit: re-dialed a minute on).
+            _drop_link()
+            _tcp_offline_since = None
+            link = False
+            offline_ms = 0
+            _publish_backbone()
         since_try_ms = power.WIFI_RETRY_MS if _wifi_last_try is None else time.ticks_diff(now, _wifi_last_try)
         # A station that is associated with no link (the first dial failed:
         # DNS not ready, server down, host mistyped) re-dials while the
@@ -1270,6 +1279,39 @@ def _lora_changes(params, cfg):
 _TCP_CFG_IFAC = {k: TCP_CONFIG.get(k) for k in _IFAC_KEYS}
 
 
+def _drop_link():
+    """Take the TCP link down and bring LoRa back, the station untouched:
+    a link that lost its server for WIFI_GIVEUP_MS (the policy loop, lit
+    or dark), or the old link under a new dial. The peers and the
+    nomad/rnsh/rrc caches learned over it go with it: nothing may route
+    over a dead link."""
+    global _tcp_iface, _tcp_task
+    from urns.transport import Transport
+    old = _tcp_iface
+    _tcp_iface = None
+    if _tcp_task is not None:
+        try:
+            _tcp_task.cancel()
+        except Exception:
+            pass
+        _tcp_task = None
+    if old is not None:
+        old.online = False
+        old.enabled = False
+        try:
+            if hasattr(old, 'close'):
+                old.close()
+        except Exception:
+            pass
+        Transport.deregister_interface(old)
+    gui.clear_peers()
+    _lxmf_to_peer.clear()
+    nomad_browser.clear_nodes()
+    rnsh_client.clear_nodes()
+    rrc_client.clear_hubs()
+    _start_lora()
+
+
 def _dial_backbone(host, port, ifac=None):
     """Bring the TCP backbone link up over the station (LoRa stops: one
     interface at a time). A link already up is taken down first (one at a
@@ -1290,23 +1332,7 @@ def _dial_backbone(host, port, ifac=None):
             pass
         _tcp_task = None
     if _tcp_iface is not None:
-        old = _tcp_iface
-        _tcp_iface = None
-        old.online = False
-        old.enabled = False
-        try:
-            if hasattr(old, 'close'):
-                old.close()
-        except Exception:
-            pass
-        Transport.deregister_interface(old)
-        # The session over it is gone whether or not the new dial lands:
-        # nothing may route over the dead link.
-        gui.clear_peers()
-        _lxmf_to_peer.clear()
-        nomad_browser.clear_nodes()
-        rnsh_client.clear_nodes()
-        rrc_client.clear_hubs()
+        _drop_link()                 # one at a time; the session over it is gone either way
     from urns.interfaces.tcp import TCPClientInterface
     iface = None
     try:

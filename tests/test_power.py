@@ -644,8 +644,8 @@ check("the connect task clears its in-flight flag in a finally",
 _td_src = _node_src.split("def _tcp_down", 1)[1].split("\nasync def ", 1)[0]
 check("_tcp_down leaves the shown WiFi state to _wifi_radio_off", "gui._wifi_connected" not in _td_src)
 _tt_src = _node_src.split("def _dial_backbone", 1)[1].split("\ndef ", 1)[0]
-check("a dial over a live link deregisters it first",
-      "deregister_interface" in _tt_src.split("TCPClientInterface(TCP_CONFIG)", 1)[0])
+check("a dial over a live link drops it first (the shared _drop_link)",
+      "_drop_link()" in _tt_src.split("TCPClientInterface(TCP_CONFIG)", 1)[0])
 
 print("backbone_state (one state for the Setup WiFi row)")
 check("station off: off", power.backbone_state(False, False, False, False, False) == "off")
@@ -700,7 +700,8 @@ _sb_src = _node_src.split("async def _start_backbone", 1)[1].split("\nasync def 
 check("the backbone start waits for an association before each try", "_associated()" in _sb_src.split("_dial_backbone(", 1)[0])
 _dial_src = _node_src.split("def _dial_backbone", 1)[1].split("\ndef ", 1)[0]
 check("a torn-down link's peers and caches go with it, before the new dial (a failed dial must not route over the dead link)",
-      "gui.clear_peers()" in _dial_src.split("TCPClientInterface(TCP_CONFIG)", 1)[0])
+      "_drop_link()" in _dial_src.split("TCPClientInterface(TCP_CONFIG)", 1)[0]
+      and "gui.clear_peers()" in _node_src.split("def _drop_link", 1)[1].split("\ndef ", 1)[0])
 check("a dial that raises after the teardown still brings LoRa back",
       "except Exception" in _dial_src and "_start_lora()" in _dial_src.split("except Exception", 1)[1])
 check("the lit re-dial does not spawn over a pending or running start",
@@ -713,6 +714,21 @@ _giveup_src = _node_src.split("def _wifi_give_up", 1)[1].split("\nasync def ", 1
 check("a dark give-up makes the next lit pass retry at once", "_wifi_last_try = None" in _giveup_src)
 _pb_src = _node_src.split("def _publish_backbone", 1)[1].split("\ndef ", 1)[0]
 check("the publisher passes the wish", "wished=" in _pb_src)
+
+print("addendum B: a link that lost its server is dropped after WIFI_GIVEUP_MS, lit or dark")
+_node_src = open(os.path.join(ROOT, "tdeck_node.py")).read()
+_loop_src = _node_src.split("def _wifi_policy_loop", 1)[1].split("async def _low_battery_loop", 1)[0]
+_dl_src = _node_src.split("def _drop_link", 1)[1].split("\ndef ", 1)[0]
+check("_drop_link deregisters, clears the caches and brings LoRa back",
+      "deregister_interface" in _dl_src and "rrc_client.clear_hubs()" in _dl_src and "_start_lora()" in _dl_src)
+_drop_site = _loop_src.split("offline_ms = ", 1)[1].split("since_try_ms = ", 1)[0]
+check("the loop drops a link offline for the give-up time, with no screen condition",
+      "_drop_link()" in _drop_site and "power.WIFI_GIVEUP_MS" in _drop_site and "screen_on" not in _drop_site)
+check("the drop resets the offline clock and publishes", "_tcp_offline_since = None" in _drop_site and "_publish_backbone()" in _drop_site)
+_dial_src = _node_src.split("def _dial_backbone", 1)[1].split("\ndef ", 1)[0]
+check("the dial's teardown is the same helper", "_drop_link()" in _dial_src and "deregister_interface" not in _dial_src)
+check("call sites of the cache clears: _drop_link, the dial's success path, _tcp_down",
+      _node_src.count("rrc_client.clear_hubs()") == 3)
 
 print("LowBattery (cut the pack before the chip browns out)")
 check("threshold above the brownout, below the empty mark", 2.9 < power.LOW_BATTERY_V <= 3.3)
