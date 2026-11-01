@@ -1702,7 +1702,9 @@ def test_drag_holds_the_redraw_until_the_finger_lifts():
     c.service(9000)
     check("the screen going dark drops the hold", g._redraw_hold is None)
     loop = _src("ui.py").split("async def gui_loop(")[1].split("\n    async def ")[0]
-    check("gui_loop asks before the throttled redraw", "not self._redraw_held(now)" in loop)
+    due = _src("ui.py").split("def _redraw_due(")[1].split("\n    def ")[0]
+    check("gui_loop asks before the throttled redraw",
+          "self._redraw_due(now)" in loop and "self._redraw_held(now)" in due)
 
 
 def test_touch_is_sampled_during_a_refresh():
@@ -1762,6 +1764,72 @@ def test_touch_feedback_is_a_setting():
     check("...through the click path", g._haptics is True and seen == [True], repr(seen))
 
 
+def test_background_redraws_coalesce_on_eink():
+    """An announce storm on the e-ink: a redraw nobody asked for waits for
+    BG_REDRAW_MS since the last frame, a user's goes out at once."""
+    print("background redraws")
+    g = with_peers(6)
+    g._last_draw = 1000
+    g.dirty = True                                 # an announce landed
+    check("a background redraw right after a frame is not due", not g._redraw_due(1100))
+    check("it is due once the window has passed", g._redraw_due(1000 + ui.BG_REDRAW_MS))
+    g.note_user_input()                            # the user did something
+    check("a user redraw goes out at once", g._redraw_due(1100))
+    check("...but still not inside the 50 ms frame throttle", not g._redraw_due(1040))
+    g._user_redraw = False
+    g._stroke_down = True                          # a finger is on the panel
+    check("a background redraw waits while a finger is down", not g._redraw_due(9000))
+    g._stroke_down = False
+    check("...and goes out when it lifts", g._redraw_due(9000))
+    g._redraw_hold = 9500
+    check("a drag's hold still wins", not g._redraw_due(9200))
+    g._redraw_hold = None
+    g.dirty = False
+    check("nothing to draw: not due", not g._redraw_due(9000))
+    pro = ui._pro
+    ui._pro = None                                 # the v1's LCD: frames are cheap
+    try:
+        g.dirty = True
+        check("on the v1 a background redraw goes out after the throttle", g._redraw_due(1100))
+    finally:
+        ui._pro = pro
+
+
+def test_controller_tracks_the_stroke():
+    g = with_peers(6)
+    c = touch_ui.Controller(g)
+    c.service(1000)
+    check("no finger: no stroke", not g._stroke_down)
+    c.event((DOWN, 100, nrow_y(2), 1100))
+    check("a DOWN marks the stroke", g._stroke_down)
+    c.event((MOVE, 100, nrow_y(2) + 3, 1150))
+    check("...through its MOVEs", g._stroke_down)
+    c.event((UP, 100, nrow_y(2) + 3, 1200))
+    check("an UP ends it", not g._stroke_down)
+    c.event((DOWN, 100, nrow_y(2), 1300))
+    g._screen_on = False
+    c.service(1400)
+    check("a dark screen ends it too", not g._stroke_down)
+
+
+def test_pending_tap_brings_the_frame_forward():
+    """A tap aimed at a row the model has moved under (an eviction while the
+    list loads) is dropped, as before -- and now asks for the frame at once,
+    so the user sees the list as it is instead of waiting out the
+    background window."""
+    g = with_peers(40)
+    c = touch_ui.Controller(g)
+    c.service(1000)
+    g.add_peer(b"\x77" * 16, "late", hops=2)    # at the cap: the list shifts
+    check("the announce set a background redraw", g.dirty and not g._user_redraw)
+    c.service(1100)
+    c.event((DOWN, 100, nrow_y(3), 1200))
+    c.event((UP, 100, nrow_y(3), 1300))
+    settle(g)
+    check("the tap did not act", g.selected_idx == 0, str(g.selected_idx))
+    check("but it brought the frame forward", g._user_redraw)
+
+
 if __name__ == "__main__":
     test_touch_feedback_is_a_setting()
     test_a_rightward_swipe_is_back_where_it_means_nothing_else()
@@ -1818,6 +1886,9 @@ if __name__ == "__main__":
     test_setup_guards()
     test_rrc_review()
     test_shell_menu_review()
+    test_background_redraws_coalesce_on_eink()
+    test_controller_tracks_the_stroke()
+    test_pending_tap_brings_the_frame_forward()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

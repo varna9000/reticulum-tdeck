@@ -10,7 +10,7 @@
 import time
 
 import ui as _u
-from touch_gestures import Recognizer, UP, TAP, LONG, DRAG, FLICK, SWIPE, BACK
+from touch_gestures import Recognizer, DOWN, UP, TAP, LONG, DRAG, FLICK, SWIPE, BACK
 
 _FOOT_REACH = 8          # px above the hint row that still count as the footer
 _FOOT_SNAP = 8           # a footer tap this close to a hint goes to it
@@ -793,6 +793,7 @@ class Controller:
     def _fail(self, e):
         self.rec.cancel()
         self.ui._redraw_hold = None
+        self.ui._stroke_down = False
         if self._report is not None:
             try:
                 self._report("touch", e)
@@ -811,6 +812,7 @@ class Controller:
         if not ui._screen_on:
             self.rec.cancel()
             ui._redraw_hold = None
+            ui._stroke_down = False
             self._key = None          # re-stamp when the screen comes back
             return
         k = layout_key(ui)
@@ -835,16 +837,24 @@ class Controller:
 
     def event(self, ev):
         try:
+            if ev[0] == DOWN:
+                self.ui._stroke_down = True    # gui_loop holds background frames until the lift
             for g in self.rec.feed(ev):
                 self._act(g)
             if ev[0] == UP:
+                self.ui._stroke_down = False
                 self.ui._redraw_hold = None    # the stroke is over: draw where it ended
         except Exception as e:
             self._fail(e)
 
     def _act(self, g):
         if self._pending and g[0] != DRAG and g[0] != FLICK:
-            return                    # aimed at a frame that is being replaced
+            # Aimed at a frame that is being replaced. The press is dropped,
+            # and it asks for the new frame now: on e-ink a background change
+            # may otherwise wait out ui.BG_REDRAW_MS before the user sees the
+            # list they are tapping on.
+            self.ui.note_user_input()
+            return
         try:
             ok = handle(self.ui, g, self._changed)
         except Exception as e:

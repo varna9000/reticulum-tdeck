@@ -18,6 +18,14 @@ STATE_SHELL    = 6
 STATE_RRC_ROOMS = 7
 STATE_RRC_CHAT  = 8
 
+# E-ink only: the least time between two redraws nobody asked for. Every
+# announce marks the UI dirty, and on a backbone they come several a second
+# while the node list fills; each frame whose rows differ is a ~700 ms panel
+# refresh that freezes the event loop, touch included. A frame the user caused
+# (a key, a tap, a drag) is never held by this: it goes out on the 50 ms
+# throttle as before, and carries whatever changed in the background with it.
+BG_REDRAW_MS = 2500
+
 # Node-screen tabs
 TAB_MSG = 0
 TAB_NET = 1
@@ -663,6 +671,10 @@ class UI:
         # The touch layer sets it while a stroke is young: on e-ink a frame
         # started mid-flick costs ~750 ms and is stale when it lands.
         self._redraw_hold = None
+        # True from a touch DOWN to its UP (touch_ui keeps it). A background
+        # redraw waits for the lift: a refresh started under a finger would
+        # land the tap or the first drag step ~700 ms late.
+        self._stroke_down = False
         # Footer hints name the gesture the board has: CLICK with a ball,
         # ENT without one (the Pro's keyboard; Enter mirrors the click).
         self._has_trackball = trackball
@@ -1138,6 +1150,25 @@ class UI:
         if time.ticks_diff(now, h) >= 0:
             self._redraw_hold = None
             return False
+        return True
+
+    def _redraw_due(self, now):
+        """Should gui_loop draw the pending full redraw on this pass?
+
+        The 50 ms frame throttle (120 in the shell) and the touch layer's
+        hold apply to every redraw. On the Pro a redraw the user did not
+        cause -- an announce, a received message, the clock -- also waits
+        BG_REDRAW_MS since the last frame and for any finger to lift, so an
+        announce storm costs one refresh every few seconds, not one each.
+        The model is live throughout; only the panel is lazy.
+        """
+        if not self.dirty or self._redraw_held(now):
+            return False
+        since = time.ticks_diff(now, self._last_draw)
+        if since <= (120 if self.state == STATE_SHELL else 50):
+            return False
+        if _pro is not None and not self._user_redraw:
+            return not self._stroke_down and since >= BG_REDRAW_MS
         return True
 
     def wake_screen(self, force=False, why=None):
@@ -5877,13 +5908,11 @@ class UI:
                 spi_release_display()
                 self._progress_dirty = False
 
-            # Redraw: immediate for input line, throttled for full redraws.
-            # draw_input() is the chat input renderer; settings text pages
-            # (WiFi pass / node name / TCP host) redraw via their own draw().
-            # The shell throttles harder: a repaint composites up to 2560
-            # glyphs, and every arriving stdout chunk marks it dirty. At LoRa
-            # data rates coalescing a burst into one repaint is invisible.
-            _throttle = 120 if self.state == STATE_SHELL else 50
+            # Redraw: immediate for input line, throttled for full redraws
+            # (see _redraw_due: the shell throttles harder, and e-ink holds
+            # background redraws back). draw_input() is the chat input
+            # renderer; settings text pages (WiFi pass / node name / TCP
+            # host) redraw via their own draw().
             if self._input_dirty and not self.dirty:
                 spi_acquire_display()
                 if self.state == STATE_CHAT:
@@ -5893,15 +5922,17 @@ class UI:
                 self._flush()
                 spi_release_display()
                 self._input_dirty = False
-            elif (self.dirty and time.ticks_diff(now, self._last_draw) > _throttle
-                    and not self._redraw_held(now)):
+            elif self._redraw_due(now):
                 spi_acquire_display()
                 self.draw()
                 self._flush()
                 spi_release_display()
                 self._last_draw = now
 
-            await asyncio.sleep_ms(10 if self.dirty or self._input_dirty else 100)
+            # A background redraw waiting out BG_REDRAW_MS is not worth a
+            # 10 ms spin; the idle cadence serves it within 100 ms of due.
+            await asyncio.sleep_ms(10 if (self._input_dirty or (self.dirty and (
+                self._user_redraw or _pro is None))) else 100)
 
     async def battery_loop(self, spi_acquire_display, spi_release_display):
         """Update battery reading every 10s, only redraw if changed."""
