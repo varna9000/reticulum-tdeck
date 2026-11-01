@@ -136,6 +136,13 @@ BODY_ROWS = (SEP_Y - 4 - BODY_Y) // CHAR_H
 # Setup's last row index. A 32-hex hash plus its label is exactly 40 columns,
 # so a narrower panel (the Pro) gives Addr and Id two rows each.
 _SET_MAIN_LAST = 13 if COLS >= 40 else 15
+# The Setup rows in the order shown (indices as the Enter handlers know
+# them): the two transports, each as "switch, then its settings", the
+# sound/feel toggles, then what the deck does on its own, then who you
+# are, with the read-only Id last (2026-11-01 UX review). The Pro inserts
+# Touch feedback after Keyboard light (ui_pro.SETUP_IDX); its Id is 14
+# because the hashes take two rows in 30 columns.
+SETUP_ORDER = (0, 1, 3, 10, 9, 4, 5, 6, 7, 8, 11, 2, 12, 13 if COLS >= 40 else 14)
 _ADDR_ROWS = 1 if COLS >= 40 else 2      # Setup rows 12.. that are the address
 # Touch feedback (the Pro's motor click). Past the last row either layout
 # numbers, so the v1 cannot reach it; ui_pro.SETUP_IDX places it.
@@ -4281,13 +4288,13 @@ class UI:
         else:
             wifi_status = "connecting..." if self._wifi_connecting else "not connected"
         wifi_line = "WiFi: " + wifi_status
-        tcp_line = "TCP:  " + (self._tcp_target if self._tcp_enabled else "OFF")
+        tcp_line = "Backbone: " + (self._tcp_target or self._tcp_default)
         name_line = "Name: " + self.node_name
         lora_line = "LoRa: " + ("Online" if self.lora_online else "OFFLINE (click=reset)")
 
         vol_bar = "#" * self._volume + "." * (10 - self._volume)
         vol_line = "Vol:  [" + vol_bar + "] " + str(self._volume)
-        kbbl_line = "KbBL: " + ("ON" if self._kbd_bl else "OFF")
+        kbbl_line = "Kbd light: " + ("ON" if self._kbd_bl else "OFF")
         anc_line = "Announce: " + ("AUTO" if self._auto_announce else "manual")
         sleep_line = "Sleep: " + self._timeout_label()
         wake_line = "Wake: " + self._wake_label()
@@ -4305,21 +4312,26 @@ class UI:
                  loracfg_line, tz_line] + tail
         # Rows whose click opens a sub-page get a small > marker: WiFi (the
         # scan list, only while disconnected -- connected, a click drops it),
-        # TCP (the host entry, only while off), Name, Radio stats, LoRa cfg,
-        # Addr (its QR code).
+        # Backbone (its form), Name, Radio stats, LoRa cfg, Addr (its QR code).
         subpage = (not self._wifi_connected,
-                   self._wifi_connected and not self._tcp_enabled,
+                   True,
                    True, False, False, False, False, False, False, True, True,
                    False, bool(self.my_lxma_uri)) + (False,) * (len(tail) - 1)
+        # items/subpage are by index; the rows are shown in SETUP_ORDER.
         # More rows than the v1 body holds: scroll with the selection.
         rows = BODY_ROWS - 1
-        top = max(0, self._settings_idx - rows + 1)
+        try:
+            pos = SETUP_ORDER.index(self._settings_idx)
+        except ValueError:
+            pos = 0
+        top = max(0, pos - rows + 1)
         for i in range(rows):
             y = BODY_Y + (i + 1) * CHAR_H
-            if top + i < len(items):
-                line = "  " + items[top + i]
-                sub = subpage[top + i]
-                sel = top + i == self._settings_idx
+            if top + i < len(SETUP_ORDER):
+                idx = SETUP_ORDER[top + i]
+                line = "  " + items[idx]
+                sub = subpage[idx]
+                sel = idx == self._settings_idx
                 cache_key = ('\x01' if sel else '') + ('\x02' if sub else '') + line
                 if self._cache[i + 2] == cache_key:
                     continue
@@ -5182,12 +5194,22 @@ class UI:
             # see the matching comment in _scroll_up.
             pass
 
+    def _setup_step(self, d):
+        """Move the Setup selection one row along SETUP_ORDER (clamped)."""
+        try:
+            r = SETUP_ORDER.index(self._settings_idx)
+        except ValueError:
+            r = 0
+        if 0 <= r + d < len(SETUP_ORDER):
+            r += d
+        self._settings_idx = SETUP_ORDER[r]
+
     def _settings_scroll_up(self):
         if self._settings_page == _SET_MAIN:
             if _pro is not None:
                 _pro.setup_step(self, -1)
-            elif self._settings_idx > 0:
-                self._settings_idx -= 1
+            else:
+                self._setup_step(-1)
         elif self._settings_page == _SET_WIFI_SCAN:
             if self._settings_idx > 0:
                 self._settings_idx -= 1
@@ -5207,12 +5229,10 @@ class UI:
 
     def _settings_scroll_down(self):
         if self._settings_page == _SET_MAIN:
-            # WiFi TCP Name LoRa Vol KbBL Announce Sleep Wake Radio LoRaCfg
-            # TimeZone Addr Id
             if _pro is not None:
                 _pro.setup_step(self, 1)
-            elif self._settings_idx < _SET_MAIN_LAST:
-                self._settings_idx += 1
+            else:
+                self._setup_step(1)
         elif self._settings_page == _SET_WIFI_SCAN:
             if self._settings_idx < len(self._wifi_networks) - 1:
                 self._settings_idx += 1

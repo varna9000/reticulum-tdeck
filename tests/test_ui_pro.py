@@ -1020,17 +1020,22 @@ def test_setup_items():
     g, t = mksetup()
     it = P.setup_items(g)
     check("fifteen rows, one per shown idx", len(it) == 15 == len(P.SETUP_IDX)
-          and P.SETUP_IDX == (0, 1, 2, 3, 4, 5, ui._SET_HAPTICS, 6, 7, 8, 9, 10, 11, 12, 14))
-    check("labels", [x[0] for x in it] == ["WiFi", "TCP", "Name", "LoRa", "Volume", "Keyboard light", "Touch feedback", "Announce",
-                                           "Sleep", "Wake", "Radio stats", "LoRa cfg", "Time zone", "Addr", "Id"], repr([x[0] for x in it]))
+          and P.SETUP_IDX == (0, 1, 3, 10, 9, 4, 5, ui._SET_HAPTICS, 6, 7, 8, 11, 2, 12, 14))
+    check("labels (transports, feel, behaviour, identity)",
+          [x[0] for x in it] == ["WiFi", "Backbone", "LoRa", "LoRa cfg", "Radio stats", "Volume", "Keyboard light",
+                                 "Touch feedback", "Announce", "Sleep", "Wake", "Time zone", "Name", "Addr", "Id"],
+          repr([x[0] for x in it]))
     check("offline WiFi: says so and opens the scan", it[0][1] == "not connected" and it[0][2] is True, repr(it[0]))
-    check("TCP off without WiFi: no sub-page", it[1][1] == "OFF" and not it[1][2])
-    check("name and its marker", it[2][1] == "Pro" and it[2][2])
-    check("LoRa online", it[3][1] == "Online" and not it[3][2])
-    check("volume bar", it[4][1] == "[" + "#" * g._volume + "." * (10 - g._volume) + "] " + str(g._volume))
-    check("sleep / wake / tz come from ui's own labels", it[8][1] == g._timeout_label() and it[9][1] == g._wake_label()
-          and it[12][1] == ui._tz_label(g._tz_min))
-    check("radio stats and LoRa cfg open pages", it[10][2] and it[11][2] and "SF" in it[11][1])
+    g._tcp_default = "d.example:4242"
+    it = P.setup_items(g)
+    check("Backbone shows the saved host, else the default, and always opens its form",
+          it[1][1] == "d.example:4242" and it[1][2] is True, repr(it[1]))
+    check("name and its marker", it[12][1] == "Pro" and it[12][2])
+    check("LoRa online", it[2][1] == "Online" and not it[2][2])
+    check("volume bar", it[5][1] == "[" + "#" * g._volume + "." * (10 - g._volume) + "] " + str(g._volume))
+    check("sleep / wake / tz come from ui's own labels", it[9][1] == g._timeout_label() and it[10][1] == g._wake_label()
+          and it[11][1] == ui._tz_label(g._tz_min))
+    check("radio stats and LoRa cfg open pages", it[4][2] and it[3][2] and "SF" in it[3][1])
     check("the hashes are whole and small", it[13][1] == g.my_address and it[13][3] and it[14][1] == g.my_identity_hash and it[14][3])
     check("Addr opens its QR when there is a contact URI", it[13][2] is True and not it[14][2])
     g._wifi_connected = True
@@ -1040,8 +1045,8 @@ def test_setup_items():
     g.my_lxma_uri = None
     it = P.setup_items(g)
     check("connected WiFi: ssid [ip], no marker (a click disconnects)", it[0][1] == "home [10.0.0.7]" and not it[0][2], repr(it[0]))
-    check("TCP then offers its host page", it[1][2] is True)
-    check("LoRa offline says what selecting does", it[3][1].startswith("OFFLINE") and "reset" in it[3][1])
+    check("Backbone still offers its form", it[1][2] is True)
+    check("LoRa offline says what selecting does", it[2][1].startswith("OFFLINE") and "reset" in it[2][1])
     check("no URI, no QR", not it[13][2])
 
 
@@ -1077,14 +1082,16 @@ def test_setup_draw():
     check("a rule closes the band", any(c[0] == "rect" and c[2] == 41 and c[3] == 240 and c[4] == 1 for c in t.calls))
     check("no second rule under the last row's own (two lines 2 px apart looked like a mistake)",
           not any(c[0] == "rect" and c[2] == 299 and c[5] != g.BG_DARK for c in t.calls))
-    lab = [c for c in texts(t, "small") if c[1] in ("WiFi", "TCP", "Name", "LoRa", "Volume", "Keyboard light", "Touch feedback", "Announce")]
+    lab = [c for c in texts(t, "small") if c[1] in ("WiFi", "Backbone", "LoRa", "LoRa cfg", "Radio stats", "Volume", "Keyboard light", "Touch feedback")]
     check("eight labels in the small font, one per 32 px row", [(c[2], c[3]) for c in lab] == [(16, srow_y(i) + 3) for i in range(8)], repr(lab[:2]))
-    v = find(t, "text", "Pro")
+    v = find(t, "text", "Online")
     check("the value under its label in the main font", v is not None and v[2] == 16 and v[3] == srow_y(2) + 15, repr(v))
     sel = [c for c in texts(t) if c[1].startswith("[#")]
-    check("the selected row is inverted", len(sel) == 1 and sel[0][4] == g.BG_DARK and sel[0][5] == g.SEL_BG and sel[0][3] == srow_y(4) + 15, repr(sel))
+    check("the selected row is inverted", len(sel) == 1 and sel[0][4] == g.BG_DARK and sel[0][5] == g.SEL_BG and sel[0][3] == srow_y(5) + 15, repr(sel))
     marks = sorted(c[3] // 1 for c in t.calls if c[0] == "icon" and c[1] is ui._SUBPAGE)
-    check("sub-page markers on WiFi (offline) and Name", len(marks) == 2 and srow_y(0) < marks[0] < srow_y(1) and srow_y(2) < marks[1] < srow_y(3), repr(marks))
+    check("sub-page markers on WiFi (offline), Backbone, LoRa cfg and Radio stats",
+          len(marks) == 4 and srow_y(0) < marks[0] < srow_y(1) and srow_y(1) < marks[1] < srow_y(2)
+          and srow_y(3) < marks[2] < srow_y(4) and srow_y(4) < marks[3] < srow_y(5), repr(marks))
     rules = sorted(c[2] for c in t.calls if c[0] == "rect" and c[4] == 1 and c[3] == ui.SBAR_X)
     check("a rule under every row", rules == [srow_y(i) + 31 for i in range(8)], repr(rules))
     check("a scroll thumb", any(c[0] == "rect" and c[1] == ui.SBAR_X and c[5] == g.DIM_CYAN and c[4] > 1 for c in t.calls))
@@ -1099,7 +1106,7 @@ def test_setup_draw():
     g._volume = (g._volume + 1) % 10
     g.draw_settings()
     ys = set(c[3] for c in texts(t)) | set(c[3] for c in texts(t, "small"))
-    check("a changed value redraws only its row", ys and all(srow_y(4) <= y < srow_y(5) for y in ys), repr(sorted(ys)))
+    check("a changed value redraws only its row", ys and all(srow_y(5) <= y < srow_y(6) for y in ys), repr(sorted(ys)))
 
 
 def test_setup_window_and_hashes():
@@ -1113,7 +1120,7 @@ def test_setup_window_and_hashes():
     check("both hashes whole, on one small-font line each", a is not None and i is not None and a[3] == srow_y(6) + 17 and i[3] == srow_y(7) + 17
           and a[2] + 32 * P.SW <= 216, repr((a, i)))
     check("the Id row is the selected one", i[4] == g.BG_DARK and i[5] == g.SEL_BG)
-    g._settings_idx = 2
+    g._settings_idx = 3                  # LoRa, row 2
     g._settings_scroll = 6
     g.draw_settings()
     check("a selection above the window pulls it up", g._settings_scroll == 2, str(g._settings_scroll))
@@ -1161,15 +1168,15 @@ def test_setup_review_gaps():
     g.draw_settings()
     check("...and draw", find(t, "small", "?") is not None)
     g, t = mksetup()
-    g._settings_idx = 9
+    g._settings_idx = 11                 # Time zone, row 11
     g._settings_scroll = 14              # what a scrolled Radio stats page leaves behind
     g.draw_settings()
     check("an inherited scroll past the end is clamped", g._settings_scroll == 7, str(g._settings_scroll))
     g, t = mksetup()
-    g._settings_idx = 2
+    g._settings_idx = 3                  # LoRa, row 2
     g.draw_settings()
     del t.calls[:]
-    g._settings_idx = 3
+    g._settings_idx = 10                 # LoRa cfg, row 3
     g.draw_settings()
     inv = sorted(c[2] for c in t.calls if c[0] == "rect" and c[4] == 31)
     check("moving the selection inside the window repaints the two rows involved", inv == [srow_y(2), srow_y(3)], repr(inv))
@@ -1180,10 +1187,10 @@ def test_setup_review_gaps():
     g._kbd_bl = True
     g._auto_announce = True
     it = P.setup_items(g)
-    check("TCP target, light and announce follow the state", it[1][1] == "rns.example.org:4242" and not it[1][2]
-          and it[5][1] == "ON" and it[7][1] == "AUTO", repr(it[1:8]))
+    check("Backbone host, light and announce follow the state", it[1][1] == "rns.example.org:4242" and it[1][2]
+          and it[6][1] == "ON" and it[8][1] == "AUTO", repr(it[1:9]))
     c = g._lora_cfg
-    check("LoRa cfg shows frequency, SF and bandwidth", it[11][1] == "%dk SF%d BW%s" % (c["freq_khz"], c["sf"], c["bw"]))
+    check("LoRa cfg shows frequency, SF and bandwidth", it[3][1] == "%dk SF%d BW%s" % (c["freq_khz"], c["sf"], c["bw"]))
 
 
 def test_setup_sub_pages_have_a_back_header():

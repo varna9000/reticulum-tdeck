@@ -494,5 +494,32 @@ def test_failed_reconnect_from_the_tcp_row_returns_to_setup_not_the_scan_page():
     assert g._settings_page == ui._SET_WIFI_SCAN
 
 
+def test_setup_order_is_the_agreed_one():
+    assert ui.SETUP_ORDER == (0, 1, 3, 10, 9, 4, 5, 6, 7, 8, 11, 2, 12, 13)   # v1 geometry in this suite
+    g = _mkui()
+    seen = [g._settings_idx]
+    for _ in range(13):
+        g._settings_scroll_down()
+        seen.append(g._settings_idx)
+    assert seen == list(ui.SETUP_ORDER), seen
+    g._settings_scroll_down()
+    assert g._settings_idx == 13          # clamps at Id
+    for _ in range(13):
+        g._settings_scroll_up()
+    assert g._settings_idx == 0
+
+
+def test_v1_setup_draws_rows_in_setup_order():
+    g = _mkui()
+    g._tcp_target = "h:1"
+    drawn = []
+    g.tft.text = lambda font, s, x, y, *a: drawn.append((s.decode("latin-1") if isinstance(s, (bytes, bytearray)) else s).strip())
+    g._draw_settings_main()
+    rows = [s for s in drawn if s and s != "Setup"]
+    assert rows[0].startswith("WiFi:") and rows[1].startswith("Backbone: h:1") and rows[2].startswith("LoRa:"), rows[:3]
+    assert rows[3].startswith("LoRa cfg:") and rows[4] == "Radio stats" and rows[5].startswith("Vol:"), rows[3:6]
+    assert rows[6].startswith("Kbd light:"), rows[6]
+
+
 if __name__ == "__main__":
     sys.exit(1 if _run() else 0)

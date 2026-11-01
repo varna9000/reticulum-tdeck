@@ -633,8 +633,15 @@ def test_setup():
     print("setup (Pro layout)")
     g = mksetup()
     seen = keys_pressed(g)
-    check("tap row 4 is accepted", tap(g, 100, srow(4)) is True)
-    check("it selects at once", g._settings_idx == 4, str(g._settings_idx))
+    check("the Pro's rows are in the agreed order",
+          ui._pro.SETUP_IDX == (0, 1, 3, 10, 9, 4, 5, ui._SET_HAPTICS, 6, 7, 8, 11, 2, 12, 14), repr(ui._pro.SETUP_IDX))
+    check("tap row 5 is accepted", tap(g, 100, srow(5)) is True)
+    check("it selects at once (Volume, idx 4)", g._settings_idx == 4, str(g._settings_idx))
+    g2 = mksetup()
+    tap(g2, 100, srow(3))
+    check("row 3 is LoRa cfg (idx 10)", g2._settings_idx == 10, str(g2._settings_idx))
+    tap(g2, 100, srow(2))
+    check("row 2 is LoRa (idx 3)", g2._settings_idx == 3, str(g2._settings_idx))
     settle(g)
     check("and acts, with one tap (Enter)", seen == [b'\r'], repr(seen))
     g = mksetup(idx=12, scroll=7)
@@ -664,16 +671,16 @@ def test_setup():
     adj = []
     g._settings_adjust = lambda d: adj.append(d)
     check("swipe right on the selected row steps it up",
-          touch_ui.handle(g, (SWIPE, 60, srow(4), 1, 200000), 0) is True and adj == [1], repr(adj))
+          touch_ui.handle(g, (SWIPE, 60, srow(5), 1, 200000), 0) is True and adj == [1], repr(adj))
     check("a swipe on another row does nothing",
           touch_ui.handle(g, (SWIPE, 60, srow(6), 1, 200000), 0) is False and adj == [1])
-    g = mksetup(idx=2)
+    g = mksetup(idx=3)
     touch_ui.handle(g, (DRAG, 100, 100, 2, 300000), 0)
     settle(g)
-    check("finger down at the top of Setup: nothing moves", g._settings_idx == 2 and g._settings_scroll == 0)
+    check("finger down at the top of Setup: nothing moves", g._settings_idx == 3 and g._settings_scroll == 0)
     touch_ui.handle(g, (DRAG, 100, 100, -1, 300000), 0)
     settle(g)
-    check("a drag of one 16 px step is half a row: nothing yet", g._settings_idx == 2, str(g._settings_idx))
+    check("a drag of one 16 px step is half a row: nothing yet", g._settings_idx == 3, str(g._settings_idx))
     touch_ui.handle(g, (DRAG, 100, 100, -1, 300000), 0)
     settle(g)
     check("the second step scrolls one row, the highlight keeps its screen row",
@@ -1188,7 +1195,7 @@ def test_lora_and_radio_pages_drag():
     g._settings_adjust = lambda d: adj.append(d)
     seen = keys_pressed(g)
     check("Setup: an edge swipe that starts on the selected row steps its value",
-          touch_ui.handle(g, (BACK, 5, srow(4), 0, 200000), 0) is True and adj == [1] and seen == [], "%r %r" % (adj, seen))
+          touch_ui.handle(g, (BACK, 5, srow(5), 0, 200000), 0) is True and adj == [1] and seen == [], "%r %r" % (adj, seen))
     check("Setup: an edge swipe elsewhere is back",
           touch_ui.handle(g, (BACK, 5, srow(6), 0, 200000), 0) is True and seen == [b'\x1b'], repr(seen))
 
@@ -1463,15 +1470,15 @@ def test_setup_guards():
     g = mksetup(idx=5)
     g.lora_online = True
     seen = keys_pressed(g)
-    tap(g, 100, srow(3))
+    tap(g, 100, srow(2))
     settle(g)
-    tap(g, 100, srow(3), t=300000)
+    tap(g, 100, srow(2), t=300000)
     settle(g)
     check("LoRa while online: a tap selects and never resets a healthy radio", g._settings_idx == 3 and seen == [], repr(seen))
     g = mksetup(idx=5)
     g.lora_online = False
     seen = keys_pressed(g)
-    tap(g, 100, srow(3))
+    tap(g, 100, srow(2))
     settle(g)
     check("LoRa while offline: one tap resets", seen == [b'\r'], repr(seen))
     g = mksetup(idx=5)
@@ -1501,8 +1508,8 @@ def test_setup_guards():
     g = mksetup(idx=11, scroll=7)
     adj = []
     g._settings_adjust = lambda d: adj.append(d)
-    check("a swipe finds the selected row in a scrolled window (Time zone at row 5)",
-          touch_ui.handle(g, (SWIPE, 60, srow(5), -1, 200000), 0) is True and adj == [-1], repr(adj))
+    check("a swipe finds the selected row in a scrolled window (Time zone at row 4)",
+          touch_ui.handle(g, (SWIPE, 60, srow(4), -1, 200000), 0) is True and adj == [-1], repr(adj))
 
 
 def test_rrc_review():

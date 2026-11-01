@@ -859,9 +859,10 @@ def draw_recording(ui):
 # rows 13 and 15 on the second halves of the two hashes, which this layout
 # shows whole on one small-font line, so those two are never selected here.
 
-# Touch feedback (ui._SET_HAPTICS) exists only here; it sits under the keyboard
-# light, out of numeric order.
-SETUP_IDX = (0, 1, 2, 3, 4, 5, _u._SET_HAPTICS, 6, 7, 8, 9, 10, 11, 12, 14)
+# ui.SETUP_ORDER with Touch feedback (ui._SET_HAPTICS, this deck only) after
+# the keyboard light: screen 1 is the two transports and the feel toggles,
+# screen 2 what the deck does on its own and who you are.
+SETUP_IDX = (0, 1, 3, 10, 9, 4, 5, _u._SET_HAPTICS, 6, 7, 8, 11, 2, 12, 14)
 SETUP_ROWS = 8
 
 
@@ -896,19 +897,18 @@ def setup_items(ui):
     c = ui._lora_cfg
     return (
         ("WiFi", wifi, not ui._wifi_connected, False),
-        ("TCP", ui._tcp_target if ui._tcp_enabled else "OFF",
-         bool(ui._wifi_connected and not ui._tcp_enabled), False),
-        ("Name", ui.node_name, True, False),
+        ("Backbone", ui._tcp_target or ui._tcp_default, True, False),
         ("LoRa", "Online" if ui.lora_online else "OFFLINE - select to reset", False, False),
+        ("LoRa cfg", "%dk SF%d BW%s" % (c["freq_khz"], c["sf"], c["bw"]), True, False),
+        ("Radio stats", "view", True, False),
         ("Volume", "[" + "#" * v + "." * (10 - v) + "] " + str(v), False, False),
         ("Keyboard light", "ON" if ui._kbd_bl else "OFF", False, False),
         ("Touch feedback", "ON" if ui._haptics else "OFF", False, False),
         ("Announce", "AUTO" if ui._auto_announce else "manual", False, False),
         ("Sleep", ui._timeout_label(), False, False),
         ("Wake", ui._wake_label(), False, False),
-        ("Radio stats", "view", True, False),
-        ("LoRa cfg", "%dk SF%d BW%s" % (c["freq_khz"], c["sf"], c["bw"]), True, False),
         ("Time zone", _u._tz_label(ui._tz_min), False, False),
+        ("Name", ui.node_name, True, False),
         ("Addr", ui.my_address or "?", bool(ui.my_lxma_uri), True),
         ("Id", ui.my_identity_hash or "?", False, True),
     )
