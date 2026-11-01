@@ -848,6 +848,7 @@ class UI:
         # Settings state
         self._settings_page = _SET_MAIN
         self._settings_idx = 0
+        self._backbone = "off"       # the WiFi row's one state (power.backbone_state), set by the node
         self._wifi_networks = []     # [(ssid, rssi), ...]
         self._wifi_scanning = False
         self._wifi_ssid = ""         # selected SSID for password entry
@@ -4281,13 +4282,7 @@ class UI:
             return _pro.draw_setup(self)
         self._draw_row_cached(1, "Setup", BODY_Y, self.NEON_CYAN)
 
-        if self._wifi_connected:
-            wifi_status = self._wifi_ssid_current
-            if self._wifi_ip:
-                wifi_status += " [" + self._wifi_ip + "]"
-        else:
-            wifi_status = "connecting..." if self._wifi_connecting else "not connected"
-        wifi_line = "WiFi: " + wifi_status
+        wifi_line = "WiFi: " + ("connecting..." if self._wifi_connecting else self._wifi_value())
         tcp_line = "Backbone: " + (self._tcp_target or self._tcp_default)
         name_line = "Name: " + self.node_name
         lora_line = "LoRa: " + ("Online" if self.lora_online else "OFFLINE (click=reset)")
@@ -4313,7 +4308,7 @@ class UI:
         # Rows whose click opens a sub-page get a small > marker: WiFi (the
         # scan list, only while disconnected -- connected, a click drops it),
         # Backbone (its form), Name, Radio stats, LoRa cfg, Addr (its QR code).
-        subpage = (not self._wifi_connected,
+        subpage = (self._backbone == "off",
                    True,
                    True, False, False, False, False, False, False, True, True,
                    False, bool(self.my_lxma_uri)) + (False,) * (len(tail) - 1)
@@ -4688,6 +4683,35 @@ class UI:
         self._wifi_scanning = False
         self._cache = [''] * CACHE_ROWS
         self.dirty = True
+
+    def set_backbone_state(self, state, ssid, ip):
+        """The node's one state for the WiFi row (power.backbone_state):
+        off / connecting / no_network / no_server / up. The older flags are
+        derived from it; Setup repaints when it is up."""
+        self._backbone = state
+        self._wifi_ssid_current = ssid or ""
+        self._wifi_ip = ip or ""
+        self._wifi_connected = state in ("up", "no_server")
+        self._tcp_enabled = state == "up"
+        if self.state == STATE_SETTINGS and self._settings_page == _SET_MAIN:
+            self._cache = [''] * CACHE_ROWS
+            self.dirty = True
+
+    def _wifi_value(self, ip=True):
+        """The WiFi row's value for the state (ip=False on the Pro's narrow row)."""
+        st = self._backbone
+        if st == "off":
+            return "off"
+        if st == "connecting":
+            return "connecting..."
+        name = self._wifi_ssid_current
+        if st == "no_server":
+            return name + ", no server"
+        if st == "no_network":
+            return name + ", no network"
+        if ip and self._wifi_ip:
+            return name + " [" + self._wifi_ip + "]"
+        return name
 
     def set_wifi_result(self, ip):
         """Async WiFi connect finished — ip string on success, None on fail."""

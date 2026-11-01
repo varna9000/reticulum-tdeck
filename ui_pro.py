@@ -889,14 +889,11 @@ def setup_step(ui, d):
 def setup_items(ui):
     """(label, value, opens a sub-page, value in the small font), in
     SETUP_IDX order. The values are ui._draw_settings_main's."""
-    if ui._wifi_connected:
-        wifi = ui._wifi_ssid_current + (" [" + ui._wifi_ip + "]" if ui._wifi_ip else "")
-    else:
-        wifi = "not connected"
+    wifi = "connecting..." if ui._wifi_connecting else ui._wifi_value(ip=False)
     v = ui._volume
     c = ui._lora_cfg
     return (
-        ("WiFi", wifi, not ui._wifi_connected, False),
+        ("WiFi", wifi, ui._backbone == "off", False),
         ("Backbone", ui._tcp_target or ui._tcp_default, True, False),
         ("LoRa", "Online" if ui.lora_online else "OFFLINE - select to reset", False, False),
         ("LoRa cfg", "%dk SF%d BW%s" % (c["freq_khz"], c["sf"], c["bw"]), True, False),

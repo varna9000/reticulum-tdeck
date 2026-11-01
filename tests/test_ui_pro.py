@@ -1025,7 +1025,7 @@ def test_setup_items():
           [x[0] for x in it] == ["WiFi", "Backbone", "LoRa", "LoRa cfg", "Radio stats", "Volume", "Keyboard light",
                                  "Touch feedback", "Announce", "Sleep", "Wake", "Time zone", "Name", "Addr", "Id"],
           repr([x[0] for x in it]))
-    check("offline WiFi: says so and opens the scan", it[0][1] == "not connected" and it[0][2] is True, repr(it[0]))
+    check("offline WiFi: 'off' and opens the scan", it[0][1] == "off" and it[0][2] is True, repr(it[0]))
     g._tcp_default = "d.example:4242"
     it = P.setup_items(g)
     check("Backbone shows the saved host, else the default, and always opens its form",
@@ -1038,13 +1038,14 @@ def test_setup_items():
     check("radio stats and LoRa cfg open pages", it[4][2] and it[3][2] and "SF" in it[3][1])
     check("the hashes are whole and small", it[13][1] == g.my_address and it[13][3] and it[14][1] == g.my_identity_hash and it[14][3])
     check("Addr opens its QR when there is a contact URI", it[13][2] is True and not it[14][2])
-    g._wifi_connected = True
-    g._wifi_ssid_current = "home"
-    g._wifi_ip = "10.0.0.7"
+    g.set_backbone_state("up", "home", "10.0.0.7")
     g.lora_online = False
     g.my_lxma_uri = None
     it = P.setup_items(g)
-    check("connected WiFi: ssid [ip], no marker (a click disconnects)", it[0][1] == "home [10.0.0.7]" and not it[0][2], repr(it[0]))
+    check("backbone up: the name alone (no ip on 30 columns), no marker (a tap disconnects)", it[0][1] == "home" and not it[0][2], repr(it[0]))
+    g.set_backbone_state("no_network", "home", "")
+    it = P.setup_items(g)
+    check("AP lost under the link: 'no network', still no marker (the tap is the disconnect)", it[0][1] == "home, no network" and not it[0][2], repr(it[0]))
     check("Backbone still offers its form", it[1][2] is True)
     check("LoRa offline says what selecting does", it[2][1].startswith("OFFLINE") and "reset" in it[2][1])
     check("no URI, no QR", not it[13][2])

@@ -521,5 +521,33 @@ def test_v1_setup_draws_rows_in_setup_order():
     assert rows[6].startswith("Kbd light:"), rows[6]
 
 
+def test_wifi_row_values_follow_the_backbone_state():
+    g = _mkui()
+    for state, ssid, ip, want in (("up", "home", "10.0.0.2", "home [10.0.0.2]"),
+                                  ("no_server", "home", "10.0.0.2", "home, no server"),
+                                  ("no_network", "home", "", "home, no network"),
+                                  ("connecting", "", "", "connecting..."),
+                                  ("off", "", "", "off")):
+        g.set_backbone_state(state, ssid, ip)
+        assert g._wifi_value() == want, (state, g._wifi_value())
+    g.set_backbone_state("up", "home", "10.0.0.2")
+    assert g._wifi_connected is True and g._tcp_enabled is True
+    g.set_backbone_state("no_server", "home", "10.0.0.2")
+    assert g._wifi_connected is True and g._tcp_enabled is False
+    g.set_backbone_state("no_network", "home", "")
+    assert g._wifi_connected is False and g._tcp_enabled is False
+
+
+def test_backbone_state_change_repaints_setup():
+    g = _mkui()
+    g.dirty = False
+    g.set_backbone_state("no_server", "home", "1.2.3.4")
+    assert g.dirty is True
+    g.state = ui.STATE_NODES
+    g.dirty = False
+    g.set_backbone_state("up", "home", "1.2.3.4")
+    assert g.dirty is False
+
+
 if __name__ == "__main__":
     sys.exit(1 if _run() else 0)
