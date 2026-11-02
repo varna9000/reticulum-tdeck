@@ -430,10 +430,13 @@ def _fmt_time(ts):
 
 
 def _age(ts):
-    """Compact age: now / 5m / 2h / 3d."""
+    """Compact age: now / 5m / 2h / 3d. Blank for a time ahead of the clock
+    (the clock jumped) or older than ten years (an unset clock)."""
     if not ts:
         return "?"
     d = int(time.time() - ts)
+    if d < 0 or d > 315360000:
+        return ""
     if d < 60:
         return "now"
     if d < 3600:
@@ -442,6 +445,13 @@ def _age(ts):
         return str(d // 3600) + "h"
     return str(d // 86400) + "d"
 
+
+_NEW = b"+"        # the "+ New" row: a key in every tab's key list, never in its table
+_NEW_ROWS = ("+ New chat", "+ New node", "+ New shell", "+ New hub")   # by TAB_*
+_EMPTY = (("No chats yet.", "Pick someone heard, or", "wait for a message."),
+          ("No nodes yet.", "Pick one heard, or", "add one by hash."),
+          ("No shells yet.", "Pick one heard, or", "add one by hash."),
+          ("No hubs yet.", "Pick one heard, or", "add one by hash."))
 
 _HEX = "0123456789abcdef"
 
@@ -765,6 +775,7 @@ class UI:
         #                            "hops": int|None, "via": str|None, "seen": ts}
         self.peers = {}
         self._peer_keys = []  # ordered list of dest_hash_bytes
+        self._heard = (set(), set(), set(), set())   # newly heard addresses, by TAB_*
         self.selected_idx = 0
         self.node_scroll = 0
         self._route_cache = ''   # footer route/ping line cache (node list)
@@ -1609,53 +1620,81 @@ class UI:
         if not self._find:
             self.tft.fill_rect(0, line, SCREEN_W, 1, self.DIM_CYAN)
 
-    def _draw_list_rows(self, keys, table, scroll, sel_idx, show_unread, empty_lines):
-        """Shared list body for both tabs: 11 rows below the tab bar."""
-        _rows = BODY_ROWS - 1
-        if not keys:
-            _mid = _rows // 2 - 1
-            for i in range(_rows):
-                y = BODY_Y + (i + 1) * CHAR_H
-                if i == _mid:
-                    self._draw_row_cached(i + 2, empty_lines[0].center(COLS), y, self.NEON_CYAN)
-                elif i == _mid + 1:
-                    self._draw_row_cached(i + 2, empty_lines[1].center(COLS), y, self.DIM_CYAN)
-                else:
-                    self._draw_row_cached(i + 2, "", y, self.NEON_CYAN)
-            return
-        visible = keys[scroll:scroll + _rows]
+    def _new_row_label(self):
+        n = len(self._heard[self.node_tab])
+        if not n:
+            return "search or add by hash"
+        return ("99+" if n >= 100 else str(n)) + " newly heard"
+
+    def _chat_cols(self, key):
+        """(name, preview, age) of a chat row."""
+        e = self.peers[key]
+        name = _ascii(e.get("name") or "?")
+        if name == "?":
+            name = "? " + key.hex()[:8]
+        hist = self.chat_history.get(key)
+        if not hist:
+            return name, "", ""
+        m = hist[-1]
+        t = ("[image] " if m[4] else "[voice] " if m[5] else "") + _ascii(m[1]).replace("\n", " ")
+        t = t.rstrip()
+        return name, ("me: " + t if m[0] else t), _age(m[2])
+
+    def _draw_list_rows(self, keys, table, scroll, sel_idx):
+        """Every tab's list body, 11 rows below the tab bar: name, unread
+        pill (MSG) and age; the hash and hops live in the footer."""
         sw = self.SW
-        hash_x = SCREEN_W - 8 - 8 * sw          # small-font hash, 8px right margin
-        for i in range(_rows):
+        age_r = SCREEN_W - 8
+        msg = self.node_tab == TAB_MSG
+        empty = len(keys) == 0 or (len(keys) == 1 and keys[0] == _NEW)
+        for i in range(BODY_ROWS - 1):
             y = BODY_Y + (i + 1) * CHAR_H
             ci = i + 2
-            if i < len(visible):
-                key = visible[i]
-                entry = table[key]
-                name = _ascii(entry.get("name") or "?")
-                fav = entry.get("fav") == True
-                hsh = key.hex()[:8]
-                uc = self.unread.get(key, 0) if show_unread else 0
-                pw = (self._pill_w(uc) + 6) if uc else 0
-                name = name[:(hash_x - 6 - pw - 2 * CHAR_W) // CHAR_W]
-                sel = scroll + i == sel_idx
-                cache_key = ('\x01' if sel else '') + name + '\x00' + hsh + str(uc) + ('*' if fav else '')
-                if self._cache[ci] == cache_key:
-                    continue
-                self._cache[ci] = cache_key
-                bg = self.SEL_BG if sel else self.BG_DARK
-                self._row("  " + name, y, self.YELLOW if sel else self.NEON_CYAN, bg)
-                self._stext(hsh, hash_x, y, self.YELLOW if sel else self.DIM_CYAN, bg)
-                if uc:
-                    self._pill(uc, hash_x - 6, y, bg)
-                if fav:
-                    # small orange star in the left slot
-                    self._bitmap(_STAR, 3, y + (CHAR_H - _STAR[1]) // 2, self.ORANGE)
-                elif sel:
-                    # Accent bar in the blank left margin
-                    self.tft.fill_rect(0, y, 3, CHAR_H, self.NEON_MAG)
+            idx = scroll + i
+            if idx >= len(keys):
+                if empty and i in (4, 5, 6):
+                    t = _EMPTY[self.node_tab][i - 4]
+                    self._draw_row_cached(ci, t.center(COLS), y, self.NEON_CYAN if i == 4 else self.DIM_CYAN)
+                else:
+                    self._draw_row_cached(ci, "", y, self.NEON_CYAN)
+                continue
+            key = keys[idx]
+            sel = idx == sel_idx
+            bg = self.SEL_BG if sel else self.BG_DARK
+            if key == _NEW:
+                t = self._new_row_label()
+                ck = "+" + ("\x01" if sel else "") + str(self.node_tab) + t
+                if self._cache[ci] != ck:
+                    self._cache[ci] = ck
+                    self._row("  " + _NEW_ROWS[self.node_tab], y, self.YELLOW if sel else self.NEON_GREEN, bg)
+                    self._stext(t, age_r - len(t) * sw, y, self.YELLOW if sel else self.DIM_CYAN, bg)
+                    if sel:
+                        self.tft.fill_rect(0, y, 3, CHAR_H, self.NEON_MAG)
+                continue
+            e = table[key]
+            if msg:
+                name, _, age = self._chat_cols(key)
             else:
-                self._draw_row_cached(ci, "", y, self.NEON_CYAN)
+                name = _ascii(e.get("name") or "?")
+                age = _age(e.get("seen"))
+            fav = e.get("fav") == True
+            uc = self.unread.get(key, 0) if msg else 0
+            tx = age_r - 5 * sw
+            # Names stop at the unread column on every row, pill or not.
+            name = name[:(tx - 14 - self._pill_w(10) - 4 - 16) // CHAR_W]
+            ck = ("\x01" if sel else "") + name + "\x00" + age + str(uc) + ("*" if fav else "")
+            if self._cache[ci] == ck:
+                continue
+            self._cache[ci] = ck
+            self._row("  " + name, y, self.YELLOW if sel else self.NEON_CYAN, bg)
+            if age:
+                self._stext(age, age_r - len(age) * sw, y, self.YELLOW if sel else self.DIM_CYAN, bg)
+            if uc:
+                self._pill(uc, tx - 14, y, bg)
+            if fav:
+                self._bitmap(_STAR, 3, y + (CHAR_H - _STAR[1]) // 2, self.ORANGE)
+            if sel:
+                self.tft.fill_rect(0, y, 3, CHAR_H, self.NEON_MAG)
 
     def draw_node_list(self):
         if _pro is not None:
@@ -1666,29 +1705,16 @@ class UI:
             self._draw_find()
             return
         if self.node_tab == TAB_MSG:
-            self._draw_list_rows(self._peer_keys, self.peers, self.node_scroll,
-                                 self.selected_idx, True,
-                                 ("No peers yet.", "Waiting for announces..."))
-            _total = len(self._peer_keys)
-            _scroll = self.node_scroll
+            keys, table, scroll, idx = self._peer_keys, self.peers, self.node_scroll, self.selected_idx
         elif self.node_tab == TAB_NET:
-            self._draw_list_rows(self._node_keys, self.nomad_nodes, self.net_scroll,
-                                 self.net_idx, False,
-                                 ("No nodes yet.", "Waiting for node announces..."))
-            _total = len(self._node_keys)
-            _scroll = self.net_scroll
+            keys, table, scroll, idx = self._node_keys, self.nomad_nodes, self.net_scroll, self.net_idx
         elif self.node_tab == TAB_RRC:
-            self._draw_list_rows(self._rrc_keys, self.rrc_hubs, self._rrc_scroll,
-                                 self._rrc_idx, False,
-                                 ("No RRC hubs.", "(m) to find or add one"))
-            _total = len(self._rrc_keys)
-            _scroll = self._rrc_scroll
+            keys, table, scroll, idx = self._rrc_keys, self.rrc_hubs, self._rrc_scroll, self._rrc_idx
         else:  # TAB_SSH
-            self._draw_list_rows(self._shell_keys, self.shell_nodes, self.ssh_scroll,
-                                 self.ssh_idx, False,
-                                 ("No rnsh nodes.", "(m) to find or add one"))
-            _total = len(self._shell_keys)
-            _scroll = self.ssh_scroll
+            keys, table, scroll, idx = self._shell_keys, self.shell_nodes, self.ssh_scroll, self.ssh_idx
+        self._draw_list_rows(keys, table, scroll, idx)
+        _total = len(keys)
+        _scroll = scroll
 
         # Scroll indicator on right edge (below the tab bar)
         _track_h = _rows * CHAR_H
@@ -1707,43 +1733,25 @@ class UI:
             # One footer for every tab; hotkeys in the main font, capitals.
             # (P)ing and (D)el still work on MSG but go unadvertised: only
             # urns nodes answer probes, so ping times out on Sideband/MeshChat.
-            x = self._draw_hints((("A", "nnc"), ("S", "etup"), ("F", "av"), ("M", "hash")))
+            x = self._draw_hints((("A", "nnc"), ("S", "etup"), ("F", "av"), ("M", "new")))
             self._foot_x = x - CHAR_W
             self._route_cache = ''
 
         # Dynamic footer info in the small font, right-aligned with a one-char
-        # margin, clear of the hints: transient ping result, else the selected
-        # entry's hops, RSSI (peers) and last-seen, e.g. "2 hops -87dB 5min".
-        # Too long for the room left by the hotkeys: drop "dB", then the RSSI.
+        # margin, clear of the hints: transient ping result (MSG), else the
+        # selected entry's hash and hops, e.g. "a1b2c3d4 2 hops". The rows
+        # carry no hash, so this is where it is read.
         info = ""
-        entry = None
-        if self.node_tab == TAB_MSG:
-            if self.ping_status:
-                info = self.ping_status
-            elif self._peer_keys and self.selected_idx < len(self._peer_keys):
-                entry = self.peers.get(self._peer_keys[self.selected_idx])
-        elif self.node_tab == TAB_NET:
-            if self._node_keys and self.net_idx < len(self._node_keys):
-                entry = self.nomad_nodes.get(self._node_keys[self.net_idx])
-        elif self.node_tab == TAB_RRC:
-            if self._rrc_keys and self._rrc_idx < len(self._rrc_keys):
-                entry = self.rrc_hubs.get(self._rrc_keys[self._rrc_idx])
-        else:  # TAB_SSH
-            if self._shell_keys and self.ssh_idx < len(self._shell_keys):
-                entry = self.shell_nodes.get(self._shell_keys[self.ssh_idx])
+        if self.node_tab == TAB_MSG and self.ping_status:
+            info = self.ping_status
+        elif idx < len(keys):
+            entry = table.get(keys[idx])
+            if entry:
+                info = (keys[idx].hex()[:8] + " "
+                        + (_hops(entry["hops"]) if entry.get("hops") else "")).rstrip()
         sw = self.SW
         x0 = getattr(self, "_foot_x", 0) + sw
         room = (SCREEN_W - sw - x0) // sw
-        if entry:
-            hops = _hops(entry["hops"]) + " " if entry.get("hops") else ""
-            age = _age(entry.get("seen"))
-            rs = entry.get("rssi")
-            info = hops + age
-            if rs is not None:
-                for cand in (hops + str(rs) + "dB " + age, hops + str(rs) + " " + age):
-                    if len(cand) <= room:
-                        info = cand
-                        break
         info = info[:room]
         if self._route_cache != info:
             self._route_cache = info

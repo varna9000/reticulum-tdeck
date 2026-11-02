@@ -584,7 +584,7 @@ def test_other_tab_footers_read_fav_hash():
     g = _mkui()
     g._switch_tab(ui.TAB_NET)
     foot = _draw(g).at_y(ui.INPUT_Y)
-    for word in ("nnc", "etup", "av", "hash"):
+    for word in ("nnc", "etup", "av", "new"):
         assert word in foot, foot
 
 
@@ -604,23 +604,22 @@ def test_unread_count_is_a_pill_on_the_right_of_the_row():
     assert any(r[:4] == (0, y, 3, ui.CHAR_H) and r[4] == g.NEON_MAG for r in t.rects)
 
 
-def test_footer_spells_out_hops_and_minutes():
+def test_footer_shows_hash_and_spells_out_hops():
     g = _mkui()
+    g.SW = 6            # the device's small font; the bare test UI has none
     g.add_peer(ALICE, "nomad-alice", rssi=-87, hops=2)
-    g.peers[ALICE]["seen"] = _time.time() - 300
     foot = _draw(g).at_y(ui.INPUT_Y)
-    # hotkeys in the main font leave ~12 small chars: RSSI goes first
-    assert "2 hops 5min" in foot, foot
+    assert ALICE.hex()[:8] + " 2 hops" in foot, foot     # the rows carry no hash
     g.peers[ALICE]["hops"] = None
     g._route_cache = ''
     foot = _draw(g).at_y(ui.INPUT_Y)
-    assert "-87dB 5min" in foot, foot          # direct peer: signal fits
+    assert ALICE.hex()[:8] in foot and "hop" not in foot, foot
 
 
 def test_msg_footer_matches_the_other_tabs():
     g = _mkui()
     foot = _draw(g).at_y(ui.INPUT_Y)
-    for word in ("nnc", "etup", "av", "hash"):
+    for word in ("nnc", "etup", "av", "new"):
         assert word in foot, foot
     assert "ing" not in foot and ")el" not in foot, foot   # both keys still work
 

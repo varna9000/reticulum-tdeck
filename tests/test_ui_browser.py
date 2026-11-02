@@ -354,6 +354,7 @@ def test_marker_span_metadata():
 
 def test_footer_hops_label():
     g, tft = _mkui()
+    g.SW = 6            # the device's small font; the bare test UI has none
     g.add_peer(b"\x01" * 16, "p", rssi=-80, hops=3)
     g.draw()
     texts = [c[1].decode() if isinstance(c[1], (bytes, bytearray)) else c[1]

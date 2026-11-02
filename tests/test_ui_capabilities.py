@@ -286,6 +286,99 @@ def test_image_viewer_dithers_on_a_mono_panel():
     finally:
         del sys.modules["tjpgd_fast_xtensawin"]
 
+A = b"\xaa" * 16
+
+
+def mk_with_chat(key, name, text="hi", hops=None):
+    g = ui.UI(FakeTFT(), object(), lambda: b"\x00", node_name="t", trackball=False)
+    g._screen_on = True
+    g.SW = 6                # the device's small font; the bare test UI has none
+    g.add_peer(key, name, hops=hops)
+    g.add_chat_message(key, False, text)
+    g.drawn = []            # (text, y) of everything drawn, either font
+
+    def text(font, t, x, y, fg, bg=None):
+        g.drawn.append((t if isinstance(t, str) else bytes(t).decode("latin-1"), y))
+    g.tft.text = text
+    g._stext = lambda t, x, y, fg, bg=None: g.drawn.append((t, y))
+    return g
+
+
+def drawn_list_text(g):
+    """The list rows only: the footer line is drawn below INPUT_Y."""
+    return "\n".join(t for t, y in g.drawn if y < ui.INPUT_Y)
+
+
+def drawn_footer_text(g):
+    return "\n".join(t for t, y in g.drawn if y >= ui.INPUT_Y)
+
+
+def test_v1_row_has_no_hash_and_no_preview():
+    print("v1 row has no hash and no preview")
+    g = mk_with_chat(b"\xaa" * 16, "low_tide", text="are you on the mesh")
+    g.draw_node_list()
+    t = drawn_list_text(g)
+    check("no hash in the row", "aaaaaaaa" not in t, t)
+    check("no message text", "are you on the mesh" not in t)
+
+
+def test_v1_long_name_cut_at_28_on_every_row():
+    print("v1 long names are cut at 28")
+    g = mk_with_chat(b"\xbb" * 16, "x" * 40)
+    g.draw_node_list()
+    t = drawn_list_text(g)
+    check("28 shown, not 29", ("x" * 28) in t and ("x" * 29) not in t, t)
+
+
+def test_v1_footer_shows_hash_and_hops():
+    print("v1 footer shows hash and hops")
+    g = mk_with_chat(b"\xaa" * 16, "low_tide", hops=3)
+    g.draw_node_list()
+    check("hash and hops", "aaaaaaaa 3 hops" in drawn_footer_text(g), drawn_footer_text(g))
+
+
+def test_v1_footer_new_hint_and_ping_precedence():
+    print("v1 footer hint and ping precedence")
+    g = mk_with_chat(b"\xaa" * 16, "low_tide", hops=3)
+    g.ping_status = "ping 1.2s"
+    g.draw_node_list()
+    t = drawn_footer_text(g)
+    check("ping result wins", "ping 1.2s" in t and "aaaaaaaa 3 hops" not in t, t)
+    check("(M)new hint", ")new" in t.split("\n") and ")hash" not in t.split("\n"), t)
+
+
+def test_new_row_is_drawn_and_has_no_footer_entry():
+    print("the + New sentinel draws")
+    g = mk_with_chat(A, "bob")
+    g._peer_keys.insert(0, ui._NEW)
+    g.draw_node_list()
+    check("label", "  + New chat" in drawn_list_text(g), drawn_list_text(g))
+    check("hint when nothing heard", "search or add by hash" in drawn_list_text(g))
+    g._heard[ui.TAB_MSG].update((1, 2))
+    check("heard label", g._new_row_label() == "2 newly heard", g._new_row_label())
+
+
+def test_age_guards():
+    print("_age guards")
+    check("future is blank", ui._age(_time.time() + 500) == "")
+    check("over ten years is blank", ui._age(_time.time() - 10 * 366 * 86400) == "")
+    check("5 minutes", ui._age(_time.time() - 300) == "5min")
+
+
+def test_unnamed_peer_shows_its_hash_as_name():
+    print("unnamed peer")
+    g = mk_with_chat(b"\xc0" * 16, None)
+    check("? hash", g._chat_cols(b"\xc0" * 16)[0] == "? c0c0c0c0", g._chat_cols(b"\xc0" * 16)[0])
+
+
+def test_preview_marks_attachments():
+    print("preview marks attachments")
+    g = mk_with_chat(A, "a")
+    g.add_chat_message(A, True, "look", image=b"x")
+    check("mine with image", g._chat_cols(A)[1] == "me: [image] look", g._chat_cols(A)[1])
+    g.add_chat_message(A, False, "", audio=b"x", audio_mode=0)
+    check("voice only", g._chat_cols(A)[1] == "[voice]", g._chat_cols(A)[1])
+
 
 if __name__ == "__main__":
     test_hint_hidden_without_mic()
@@ -298,6 +391,14 @@ if __name__ == "__main__":
     test_active_tab_is_marked_on_the_colour_bar()
     test_selected_rows_invert_on_mono()
     test_image_viewer_dithers_on_a_mono_panel()
+    test_v1_row_has_no_hash_and_no_preview()
+    test_v1_long_name_cut_at_28_on_every_row()
+    test_v1_footer_shows_hash_and_hops()
+    test_v1_footer_new_hint_and_ping_precedence()
+    test_new_row_is_drawn_and_has_no_footer_entry()
+    test_age_guards()
+    test_unnamed_peer_shows_its_hash_as_name()
+    test_preview_marks_attachments()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))
