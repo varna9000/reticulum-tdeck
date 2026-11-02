@@ -406,6 +406,24 @@ def test_new_row():
     check("the NET tab says + New node", find(t, "text", "+ New node") is not None)
 
 
+def test_one_real_row_has_no_empty_lines():
+    for tab in range(4):
+        g, t = mkui()
+        peers(g, 1, tab)
+        if tab == ui.TAB_NET:
+            g.add_nomad_node(b"\x09" * 16, name="nodeA", hops=1)
+        elif tab == ui.TAB_SSH:
+            g.add_shell_node(b"\x07" * 16, name="box", hops=1)
+        elif tab == ui.TAB_RRC:
+            g._rrc_keys = [b"\x05" * 16]
+            g.rrc_hubs[b"\x05" * 16] = {"name": "hub", "hops": 1}
+        g._cache = [''] * ui.CACHE_ROWS
+        ui_pro.draw_rows(g)
+        got = " ".join(c[1] for c in texts(t))
+        check("tab %d: one real row draws no empty-tab lines" % tab,
+              not any(l in got for l in ui._EMPTY[tab]), repr(got))
+
+
 def test_only_new_row_draws_the_empty_lines():
     g, t = mkui()
     g._peer_keys = [ui._NEW]
@@ -2203,6 +2221,7 @@ if __name__ == "__main__":
     test_sheet_row_shows_ping_result()
     test_new_row()
     test_only_new_row_draws_the_empty_lines()
+    test_one_real_row_has_no_empty_lines()
     test_draw_node_list_uses_the_pro_rows()
     test_tab_bar()
     test_toolbar()

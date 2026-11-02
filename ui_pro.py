@@ -133,7 +133,7 @@ def draw_rows(ui, limit=LIST_ROWS):
         ci = i + 2
         idx = scroll + i
         if idx >= len(keys):
-            if len(keys) <= 1 and i in (2, 3):
+            if (len(keys) == 0 or (len(keys) == 1 and keys[0] == _u._NEW)) and i in (2, 3):
                 # Nothing but the + New row (or not even that): the three
                 # empty-tab lines, centred across rows 2 and 3.
                 ck = "E" + str(i) + str(ui.node_tab)
