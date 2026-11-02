@@ -393,11 +393,11 @@ def _tap_footer(ui, x):
 def _tap_header(ui, x):
     st = ui.state
     if st == _u.STATE_NODES:
-        if ui._find:
-            return False
         tab = x * _u.N_TABS // _u.SCREEN_W
         if tab == ui.node_tab:
             return False
+        if ui._find:
+            ui._find_close()          # also frees the snapshot, which _switch_tab would keep
         ui._switch_tab(tab)
         return True
     if st in (_u.STATE_RRC_ROOMS, _u.STATE_RRC_CHAT):
@@ -593,7 +593,9 @@ def _tap(ui, x, y):
         # Navbar + first body row. On the node list the navbar's right third
         # is the clock (Setup); everything else up here is the header row,
         # which makes the tab bar a 42 px target.
-        if st == _u.STATE_NODES and not ui._find and y < _u.NAV_H and x >= _u.SCREEN_W * 2 // 3:
+        if st == _u.STATE_NODES and y < _u.NAV_H and x >= _u.SCREEN_W * 2 // 3:
+            if ui._find:
+                return False          # Setup would open over a half-open Lookup
             ui.handle_key(b's')
             return True
         return _tap_header(ui, x)

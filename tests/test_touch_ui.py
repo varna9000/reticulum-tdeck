@@ -739,7 +739,7 @@ def test_find():
     touch_ui.handle(g, (DRAG, 100, 150, -1, 500000), 0)
     settle(g)
     check("finger up 32 px scrolls one row", g._find_scroll == 1 and g._find_sel == 1, "%d %d" % (g._find_scroll, g._find_sel))
-    check("the tab bar is inert while Find is open", tap(g, 200, ui.BODY_Y + 4) is False and g.node_tab == ui.TAB_MSG)
+    check("Find's own tab is inert while Find is open", tap(g, 20, ui.BODY_Y + 4) is False and g._find is True and g.node_tab == ui.TAB_MSG)
     check("edge swipe closes Find", touch_ui.handle(g, (BACK, 5, 150, 0, 200000), 0) is True and g._find is False)
 
 
@@ -1205,6 +1205,36 @@ def test_lora_and_radio_pages_drag():
           touch_ui.handle(g, (BACK, 5, srow(5), 0, 200000), 0) is True and adj == [1] and seen == [], "%r %r" % (adj, seen))
     check("Setup: an edge swipe elsewhere is back",
           touch_ui.handle(g, (BACK, 5, srow(6), 0, 200000), 0) is True and seen == [b'\x1b'], repr(seen))
+
+
+def test_tab_tap_leaves_find():
+    print("a tab tap leaves Lookup")
+    def lookup(q=""):
+        g = with_peers(3)
+        g._find = True
+        g._find_snap = [(b"x" * 16, "n", 0)]
+        g._find_res = list(g._find_snap)
+        g._find_sel = g._find_scroll = 0
+        g._find_q = q
+        g._cache = ["kept"] * len(g._cache)
+        return g
+    tab_y = 30
+    g = lookup()
+    check("a tap on another tab switches to it", tap(g, 100, tab_y) is True and g.node_tab == ui.TAB_NET, str(g.node_tab))
+    check("...and Lookup is closed", g._find is False)
+    check("...its snapshot freed", g._find_snap == [] and g._find_res == [])
+    check("...and the screen repainted", g.dirty is True and g._cache[2] == "")
+    g = lookup("6335")
+    check("a typed query does not block the tab", tap(g, 200, tab_y) is True and g.node_tab == ui.TAB_RRC and g._find is False, str(g.node_tab))
+    g = lookup("6335")
+    check("a tap on Lookup's own tab does nothing", tap(g, 20, tab_y) is False and g._find is True and g._find_q == "6335")
+    g = lookup()
+    check("listening for an address: a tab tap ends it too",
+          [setattr(g, "_find_listen", "on"), tap(g, 100, tab_y)][1] is True and g._find is False and g._find_listen is None, repr(g._find_listen))
+    g = lookup()
+    seen = keys_pressed(g)
+    check("the clock does not open Setup over Lookup, or change tab",
+          tap(g, 200, 5) is False and g._find is True and g.node_tab == ui.TAB_MSG and seen == [], repr(seen))
 
 
 def test_find_back_keeps_a_typed_query():
@@ -1871,6 +1901,7 @@ if __name__ == "__main__":
     test_tcp_form_taps()
     test_lora_editor_taps()
     test_form_group_has_air_on_the_pro()
+    test_tab_tap_leaves_find()
     test_find_back_keeps_a_typed_query()
     test_untested_lists_follow_their_scroll()
     test_controller_guard_cannot_wedge()
