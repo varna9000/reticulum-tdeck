@@ -957,7 +957,7 @@ def test_a_nameless_pick_still_takes_its_name_from_the_announce():
 
 def test_add_contact_route_news_do_not_count_as_heard():
     g = mk_find(ui.TAB_MSG, [(RATS, "kay", 0)])
-    g.on_add_contact = lambda h: g.heard(g.node_tab, h, hops=2, via=None)
+    g.on_add_contact = lambda h: g.set_route(g.node_tab, h, 2, None)
     g._find_pick()
     assert len(g._heard[ui.TAB_MSG]) == 0 and g.peers[RATS]["hops"] == 2
 

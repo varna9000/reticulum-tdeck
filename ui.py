@@ -446,6 +446,12 @@ def _age(ts):
     return str(d // 86400) + "d"
 
 
+def _seen_age(e):
+    """A row's age: blank until something was really heard from it. Lookup,
+    where a time can simply be unknown, says "?" through _age."""
+    return _age(e["seen"]) if e.get("seen") else ""
+
+
 _ATTACH_MARKS = ("[image", "[voice", "[audio")   # how tdeck_node's markers start
 _NEW = b"+"        # the "+ New" row: a key in every tab's key list, never in its table
 _NEW_ROWS = ("+ New chat", "+ New node", "+ New shell", "+ New hub")   # by TAB_*
@@ -1690,7 +1696,7 @@ class UI:
                 name, _, age = self._chat_cols(key)
             else:
                 name = _ascii(e.get("name") or "?")
-                age = _age(e.get("seen"))
+                age = _seen_age(e)
             fav = e.get("fav") == True
             uc = self.unread.get(key, 0) if msg else 0
             tx = age_r - 5 * sw
@@ -2415,15 +2421,17 @@ class UI:
         return False
 
     def _favorite_add_entity(self, key, entity, type=None):
+        """seen=0: nothing has been heard from it this boot, and a pin that
+        counts up from the boot would make a dead node look alive."""
         if "peer" == type:
-            self.add_peer(key, name=entity.get("name"), fav=True)
+            self.add_peer(key, name=entity.get("name"), seen=0, fav=True)
         elif "node" == type:
-            self.add_nomad_node(key, entity.get("name"), fav=True)
+            self.add_nomad_node(key, entity.get("name"), seen=0, fav=True)
         elif "hub" == type:
-            self.add_rrc_hub(key, entity.get("name"), fav=True)
+            self.add_rrc_hub(key, entity.get("name"), seen=0, fav=True)
         elif "shell" == type:
             name = entity.get("name")   # an older pick saved Lookup's "?" here
-            self.add_shell_node(key, None if name == "?" else name, fav=True)
+            self.add_shell_node(key, None if name == "?" else name, seen=0, fav=True)
         else:
             return False # Unknown favorite usecase
         return True
@@ -3029,25 +3037,25 @@ class UI:
         if self._find_listen:
             return
         if self._find_res:
-            dest, name = self._find_res[self._find_sel][:2]
+            dest, name, ts = self._find_res[self._find_sel]
             if name == "?":        # Lookup's word for no name: a shell's row then shows its hash
                 name = None
         else:
             q = self._find_q.lower()
             if len(q) != 32 or not all(c in _HEX for c in q):
                 return
-            dest, name = bytes.fromhex(q), None
+            dest, name, ts = bytes.fromhex(q), None, 0
         keys, table = self._tab_list()
         new = dest not in table
         if new:
             if self.node_tab == TAB_MSG:
-                self.add_peer(dest, name)
+                self.add_peer(dest, name, seen=ts)
             elif self.node_tab == TAB_NET:
-                self.add_nomad_node(dest, name)
+                self.add_nomad_node(dest, name, seen=ts)
             elif self.node_tab == TAB_RRC:
-                self.add_rrc_hub(dest, name=name)
+                self.add_rrc_hub(dest, name=name, seen=ts)
             else:
-                self.add_shell_node(dest, name=name)
+                self.add_shell_node(dest, name=name, seen=ts)
         if new and self.on_add_contact:
             try:
                 self.on_add_contact(dest)
@@ -3241,21 +3249,22 @@ class UI:
 
     # --- RRC (Reticulum Relay Chat) GUI API, called by rrc_client ---------
 
-    def add_rrc_hub(self, dest_hash, name=None, hops=None, fav=False):
+    def add_rrc_hub(self, dest_hash, name=None, hops=None, seen=None, fav=False):
         """Add or update a hub's row (RRC tab): a Lookup pick or a favourite.
         The cursor stays on its hub across an eviction: the next click must
         not open a different one."""
         entry = self.rrc_hubs.get(dest_hash)
         if entry is None:
             self._evict(TAB_RRC)
-            self.rrc_hubs[dest_hash] = {"name": name, "hops": hops, "seen": time.time(), "fav": fav}
+            self.rrc_hubs[dest_hash] = {"name": name, "hops": hops,
+                                        "seen": time.time() if seen is None else seen, "fav": fav}
             self._place(TAB_RRC, dest_hash)
         else:
             if name:
                 entry["name"] = name
             if hops is not None:
                 entry["hops"] = hops
-            entry["seen"] = time.time()
+            entry["seen"] = time.time() if seen is None else max(entry.get("seen", 0), seen)
             if fav is True:
                 entry["fav"] = fav
         self.dirty = True
@@ -5544,9 +5553,11 @@ class UI:
             if len(self._heard[tab]) < 100:
                 self._heard[tab].add(dest[:4])
             return False
-        if name and name != e.get("name"):
-            e["name"] = name
+        # The first announce is also what a blank age was waiting for.
+        if not e.get("seen") or (name and name != e.get("name")):
             self.dirty = True
+        if name:
+            e["name"] = name
         if rssi is not None:
             e["rssi"] = rssi
         if hops is not None:
@@ -5555,6 +5566,15 @@ class UI:
         e["seen"] = time.time()
         self._route_cache = ''
         return True
+
+    def set_route(self, tab, dest, hops, via):
+        """The path table already knows a route to a row just added. That is
+        no announce, so the row's age stands."""
+        e = self._tab_list(tab)[1].get(dest)
+        if e is not None:
+            e["hops"] = hops
+            e["via"] = via
+            self._route_cache = ''
 
     def message_row(self, key, name, hops=None, via=None):
         """A message arrived: give its sender a chat row if it has none. An
@@ -5587,7 +5607,7 @@ class UI:
                 cache.pop(k, None)
         self._image_cache_order = [ck for ck in self._image_cache_order if ck[0] != key]
 
-    def add_peer(self, dest_hash, name, rssi=None, hops=None, via=None, fav=False):
+    def add_peer(self, dest_hash, name, rssi=None, hops=None, via=None, seen=None, fav=False):
         """Add or update a chat row: a message, a Lookup pick or a favourite."""
         e = self.peers.get(dest_hash)
         if e is None:
@@ -5596,7 +5616,8 @@ class UI:
             fav = fav or e.get("fav", False)
             name = name or e.get("name")
         self.peers[dest_hash] = {"name": name or "?", "rssi": rssi,
-                                 "hops": hops, "via": via, "seen": time.time(), "fav": fav}
+                                 "hops": hops, "via": via,
+                                 "seen": time.time() if seen is None else seen, "fav": fav}
         if e is None:
             self._place(TAB_MSG, dest_hash)
         self._route_cache = ''  # selected-peer footer may show new route info

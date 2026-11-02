@@ -79,7 +79,7 @@ def _sd(ui, s, x, y, fg, bg):
 def _info(entry):
     """Hops, RSSI and last-seen: what the old footer showed for the selection."""
     hops = _u._hops(entry["hops"]) + " " if entry.get("hops") else ""
-    age = _u._age(entry.get("seen"))
+    age = _u._seen_age(entry)
     rs = entry.get("rssi")
     if rs is not None:
         long = hops + str(rs) + "dB " + age
@@ -164,7 +164,7 @@ def draw_rows(ui, limit=LIST_ROWS):
         else:
             name = _u._ascii(e.get("name") or "?")
             pv = _u._hops(e["hops"]) if e.get("hops") else ""
-            age = _u._age(e.get("seen"))
+            age = _u._seen_age(e)
         uc = ui.unread.get(key, 0) if msg else 0
         fav = e.get("fav") == True
         if sel and ping:

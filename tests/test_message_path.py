@@ -499,6 +499,18 @@ def test_a_lookup_add_by_hash_with_a_known_path_gets_its_route():
         assert e["hops"] == 2, tab
 
 
+def test_a_route_from_the_path_table_is_not_an_announce():
+    """The age stays the snapshot's: add_contact fills in the route, and a row
+    added by hash still has no age to show."""
+    for tab in LOOKUP_TABS:
+        n = Node()
+        n.path(S, 3)
+        assert _lookup_add(n, tab)["seen"] == 1, tab
+        n = Node()
+        n.path(S, 2)
+        assert _lookup_add(n, tab, S.hex())["seen"] == 0, tab
+
+
 def test_a_lookup_add_with_no_path_asks_for_one():
     for tab in LOOKUP_TABS:
         n = Node()

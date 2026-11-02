@@ -177,6 +177,32 @@ def row_y(i):
     return ui_pro.LIST_Y + i * ui_pro.ROW_H
 
 
+def test_a_row_with_no_announce_shows_no_age():
+    print("no announce, no age")
+    g, t = mkui()
+    key = b"\xaa\xcf\x70\x98" + b"\x01" * 12
+    g.add_nomad_node(key, name="nodeA", hops=3, seen=0)
+    g.node_tab = ui.TAB_NET
+    g.net_idx = g._node_keys.index(key)
+    g._cache = [''] * ui.CACHE_ROWS
+    ui_pro.draw_rows(g)
+    small = [c[1] for c in texts(t, "small")]
+    check("nothing where the age goes", not [s for s in small if s in ("?", "now")], repr(small))
+    t.calls.clear()
+    g._sheet = ui.TAB_NET
+    g._cache = [''] * ui.CACHE_ROWS
+    ui_pro.draw_rows(g)
+    small = [c[1] for c in texts(t, "small")]
+    line = [s for s in small if s.startswith("aacf7098")]
+    check("the sheet's line has hash and hops only", [s.rstrip() for s in line] == ["aacf7098  3 hops"], repr(line))
+    g.heard(ui.TAB_NET, key)
+    t.calls.clear()
+    g._sheet = None
+    g._cache = [''] * ui.CACHE_ROWS
+    ui_pro.draw_rows(g)
+    check("the announce brings it", "now" in [c[1] for c in texts(t, "small")])
+
+
 def test_rows_are_two_lines_at_32px():
     print("rows")
     g, t = mkui()
@@ -2290,6 +2316,7 @@ if __name__ == "__main__":
     test_shell_menu()
     test_lists_review()
     test_find_count_row_fits()
+    test_a_row_with_no_announce_shows_no_age()
     print()
     if _failures:
         print("%d FAILED: %s" % (len(_failures), ", ".join(_failures)))

@@ -1743,7 +1743,7 @@ def add_contact(dest_hash):
     from urns.transport import Transport
     hops, via = _route_to(dest_hash)
     if hops is not None:
-        gui.heard(gui.node_tab, dest_hash, hops=hops, via=via)
+        gui.set_route(gui.node_tab, dest_hash, hops, via)
     if not Transport.has_path(dest_hash):
         Transport.request_path(dest_hash)
 

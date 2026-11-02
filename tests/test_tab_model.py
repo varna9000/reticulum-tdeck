@@ -1019,6 +1019,108 @@ def test_lookup_pick_selects_the_row_it_added():
         assert keys(g, tab)[cursor(g, tab)] == C, tab
 
 
+# --- age is the last announce -----------------------------------------------
+
+def _ages(g, tab):
+    """The small text the v1 draws in the list body: the top row's label aside,
+    those are the ages (the footer's hash is below the body)."""
+    drawn = []
+    g.node_tab = tab
+    g.SW = 6
+    g._stext = lambda s, x, y, fg, bg=None: drawn.append((s, y))
+    g._cache = [""] * ui.CACHE_ROWS
+    g.draw_node_list()
+    return [t for t, y in drawn if t != g._new_row_label() and y < ui.BODY_Y + ui.BODY_ROWS * ui.CHAR_H]
+
+
+def _booted_with_a_pin(tab):
+    g = mk()
+    add(g, tab, A, "a")
+    _pin_in_order(g, tab, (A,))
+    booted = mk(g.store)
+    booted.load_favorites()
+    return booted
+
+
+def test_a_favourite_shows_no_age_until_an_announce():
+    real = _time.time
+    for tab in TABS:
+        g = _booted_with_a_pin(tab)
+        assert not table(g, tab)[A]["seen"], tab
+        if tab != ui.TAB_MSG:                  # a chat's age is its last message
+            assert _ages(g, tab) == [], (tab, _ages(g, tab))
+            start = real()
+            _time.time = lambda: start + 125   # a dead node must not count up
+            try:
+                assert _ages(g, tab) == [], (tab, _ages(g, tab))
+            finally:
+                _time.time = real
+
+        g.dirty = False
+        assert g.heard(tab, A) is True, tab
+        assert table(g, tab)[A]["seen"] > 0, tab
+        assert g.dirty is True, "the age has to appear: this announce is what it waited for"
+        if tab != ui.TAB_MSG:
+            assert _ages(g, tab) == ["now"], (tab, _ages(g, tab))
+        g.dirty = False
+        g.heard(tab, A)
+        assert g.dirty is False, "only the first announce repaints"
+
+
+def test_a_lookup_pick_shows_when_it_was_really_heard():
+    for tab in TABS:
+        g = mk()
+        g.node_tab = tab
+        then = _time.time() - 300
+        g.on_contact_snapshot = lambda t: [(A, "a", then)]
+        g.handle_key(b"m")
+        g.handle_key(b"\r")
+        assert table(g, tab)[A]["seen"] == then, tab
+        if tab != ui.TAB_MSG:
+            g.state = ui.STATE_NODES
+            assert _ages(g, tab) == ["5min"], (tab, _ages(g, tab))
+
+
+def test_a_row_added_by_hash_shows_no_age():
+    for tab in TABS:
+        g = mk()
+        g.node_tab = tab
+        g.on_contact_snapshot = lambda t: []
+        g.handle_key(b"m")
+        for ch in A.hex():
+            g.handle_key(ch.encode())
+        g.handle_key(b"\r")
+        assert table(g, tab)[A]["seen"] == 0, tab
+        if tab != ui.TAB_MSG:
+            assert _ages(g, tab) == [], (tab, _ages(g, tab))
+
+
+def test_add_rrc_hub_takes_a_seen_like_the_other_two():
+    g = mk()
+    g.add_rrc_hub(A, "a", seen=50)
+    assert g.rrc_hubs[A]["seen"] == 50
+    g.add_rrc_hub(A, "a", seen=20)
+    assert g.rrc_hubs[A]["seen"] == 50, "a stale time never replaces a fresher one"
+    g.add_rrc_hub(A, "a", seen=60)
+    assert g.rrc_hubs[A]["seen"] == 60
+    before = _time.time()
+    g.add_rrc_hub(B, "b")
+    assert g.rrc_hubs[B]["seen"] >= before
+
+
+def test_a_row_never_heard_goes_first_at_the_cap_but_a_pin_stays():
+    for tab in TABS:
+        g = mk_at_cap(tab)
+        for i in range(cap(tab)):
+            table(g, tab)[key_n(i)]["seen"] = 1000 + i
+        table(g, tab)[key_n(4)]["seen"] = 0
+        table(g, tab)[key_n(5)]["seen"] = 0
+        table(g, tab)[key_n(5)]["fav"] = True
+        add_one_more(g, tab)
+        assert key_n(4) not in table(g, tab), tab
+        assert key_n(5) in table(g, tab) and key_n(0) in table(g, tab), tab
+
+
 def _run():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

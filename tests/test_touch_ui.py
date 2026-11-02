@@ -1285,7 +1285,7 @@ def test_untested_lists_follow_their_scroll():
     g = with_peers(2)
     g._find = True
     g._find_q = ""
-    g._find_res = [("n%d" % i, bytes([i]) * 16) for i in range(30)]
+    g._find_res = [(bytes([i]) * 16, "n%d" % i, 0) for i in range(30)]
     g._find_scroll = 4
     g._find_sel = 4
     fy = ui.BODY_Y + 2 * ui.CHAR_H + ui.CHAR_H // 2
