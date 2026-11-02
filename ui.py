@@ -5539,11 +5539,11 @@ class UI:
         self._route_cache = ''
         return True
 
-    def message_row(self, key, name):
+    def message_row(self, key, name, hops=None, via=None):
         """A message arrived: give its sender a chat row if it has none. An
-        existing row keeps its name; only an announce renames."""
+        existing row keeps its name and route; only an announce changes them."""
         if key not in self.peers:
-            self.add_peer(key, name)
+            self.add_peer(key, name, hops=hops, via=via)
 
     def forget_routes(self):
         """The link changed. Routes and heard counts die with it; rows, chats,

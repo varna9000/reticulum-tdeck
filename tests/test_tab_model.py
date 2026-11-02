@@ -812,6 +812,14 @@ def test_message_row_keeps_the_route_and_star_of_a_known_row():
     g.add_peer(S, "alex", hops=4, via="ab12", fav=True)
     g.message_row(S, None)
     assert g.peers[S]["hops"] == 4 and g.peers[S]["via"] == "ab12" and g.peers[S]["fav"] is True
+    g.message_row(S, None, hops=1)
+    assert g.peers[S]["hops"] == 4, "only an announce changes a known row's route"
+
+
+def test_message_row_gives_a_new_row_its_route():
+    g = mk()
+    g.message_row(S, None, hops=3, via="ab12")
+    assert g.peers[S]["hops"] == 3 and g.peers[S]["via"] == "ab12"
 
 
 def test_a_message_at_the_cap_evicts_the_oldest_read_chat():

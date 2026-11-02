@@ -79,6 +79,15 @@ class Identity:
 
 class Transport:
     path_table = CountingTable()
+    requested = []
+
+    @staticmethod
+    def has_path(dest):
+        return dest in Transport.path_table
+
+    @staticmethod
+    def request_path(dest):
+        Transport.requested.append(dest)
 
 
 _urns = types.ModuleType("urns")
@@ -101,11 +110,11 @@ class LXMRouter:
 
 
 def _lifted():
-    """tdeck_node's two receive functions, compiled from its source as they
-    stand, with nothing else from that file."""
+    """tdeck_node's receive functions and Lookup's add, compiled from its
+    source as they stand, with nothing else from that file."""
     with open(os.path.join(ROOT, "tdeck_node.py")) as f:
         tree = ast.parse(f.read())
-    want = ("on_announce", "_on_message_inner")
+    want = ("on_announce", "_on_message_inner", "add_contact", "_route_to")
     nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in want]
     assert sorted(n.name for n in nodes) == sorted(want)
     return compile(ast.Module(body=nodes, type_ignores=[]), "tdeck_node.py", "exec")
@@ -127,6 +136,7 @@ class Node:
         self.not_lxmf = set()
         Identity.known_destinations = {}
         Transport.path_table = CountingTable()
+        Transport.requested = []
         self.g = {
             "gui": self.gui,
             "time": _time,
@@ -413,6 +423,89 @@ def test_an_open_chat_takes_the_message_without_unread():
     n.gui.state = ui.STATE_CHAT
     n.message(A)
     assert A not in n.gui.unread and n.gui.chat_history[A][-1][1] == "hi"
+
+
+def test_a_stranger_first_message_takes_the_known_route():
+    n = Node()
+    n.path(S, 3)
+    n.message(S)
+    e = n.gui.peers[S]
+    assert (e["hops"], e["via"]) == (3, "abcd")
+
+
+def test_a_stranger_first_message_on_a_direct_path_shows_no_relay():
+    n = Node()
+    n.path(S, 1)
+    n.message(S)
+    e = n.gui.peers[S]
+    assert (e["hops"], e["via"]) == (1, None)
+
+
+def test_a_first_message_with_no_path_has_no_route():
+    n = Node()
+    n.message(S)
+    e = n.gui.peers[S]
+    assert (e["hops"], e["via"]) == (None, None)
+
+
+def test_a_broken_path_entry_does_not_lose_the_message():
+    n = Node()
+    Transport.path_table[S] = [3]      # no next hop
+    n.message(S)
+    assert n.gui.chat_history[S][-1][1] == "hi" and n.gui.unread[S] == 1
+    assert n.gui.peers[S]["via"] is None
+
+
+def test_a_message_on_a_known_row_leaves_its_route():
+    n = Node()
+    n.gui.add_peer(S, "s", hops=5, via="ffff")
+    n.path(S, 2)
+    n.message(S)
+    e = n.gui.peers[S]
+    assert (e["hops"], e["via"]) == (5, "ffff")
+
+
+# --- a Lookup add -----------------------------------------------------------
+
+def _lookup_add(n, tab, q=None):
+    n.gui.node_tab = tab
+    n.gui.on_add_contact = n.g["add_contact"]
+    n.gui.on_contact_snapshot = lambda t: [] if q else [(S, "s", 1)]
+    n.gui.handle_key(b"m")
+    for ch in q or "":
+        n.gui.handle_key(ch.encode())
+    n.gui.handle_key(b"\r")
+    return n.gui._tab_list(tab)[1][S]
+
+
+LOOKUP_TABS = (ui.TAB_MSG, ui.TAB_NET, ui.TAB_SSH, ui.TAB_RRC)
+
+
+def test_a_lookup_add_with_a_known_path_gets_its_route():
+    for tab in LOOKUP_TABS:
+        n = Node()
+        n.path(S, 3)
+        e = _lookup_add(n, tab)
+        assert (e["hops"], e["via"]) == (3, "abcd"), tab
+        assert Transport.requested == [], tab
+        assert not any(n.gui._heard), "a row just added is no stranger"
+
+
+def test_a_lookup_add_by_hash_with_a_known_path_gets_its_route():
+    for tab in LOOKUP_TABS:
+        n = Node()
+        n.path(S, 2)
+        e = _lookup_add(n, tab, S.hex())
+        assert e["hops"] == 2, tab
+
+
+def test_a_lookup_add_with_no_path_asks_for_one():
+    for tab in LOOKUP_TABS:
+        n = Node()
+        e = _lookup_add(n, tab)
+        assert e.get("hops") is None, tab
+        assert Transport.requested == [S], tab
+        assert not any(n.gui._heard), tab
 
 
 def test_the_debug_prints_still_run():

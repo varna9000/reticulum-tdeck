@@ -458,11 +458,14 @@ def _on_message_inner(message):
         print("[RX] from", source_hash.hex()[:8], "-> peer", peer_key.hex()[:8])
 
     # Ensure peer exists in GUI: named from the identity cache if an announce
-    # was ever heard, else the row shows its short hash
+    # was ever heard, else the row shows its short hash. The route too, since
+    # the announce that brought it counted without looking it up.
     if peer_key not in gui.peers:
         from urns.identity import Identity
         v = Identity.known_destinations.get(peer_key)
-        gui.message_row(peer_key, LXMRouter.display_name_from_app_data(v[3]) if v and v[3] else None)
+        hops, via = _route_to(peer_key)
+        gui.message_row(peer_key, LXMRouter.display_name_from_app_data(v[3]) if v and v[3] else None,
+                        hops=hops, via=via)
     if DEBUG >= 1:
         print("[RX] peer ok")
 
@@ -490,6 +493,24 @@ def _on_message_inner(message):
     gc.collect()
     if DEBUG >= 1:
         print("[RX] done, mem:", gc.mem_free())
+
+
+def _route_to(dest_hash):
+    """(hops, via) from the transport path table: the next-hop relay if there
+    is one, (None, None) with no path. Never raises: the receive path calls it."""
+    hops = None
+    via = None
+    try:
+        from urns.transport import Transport
+        from urns import const as _uc
+        entry = Transport.path_table.get(dest_hash)
+        if entry:
+            hops = entry[_uc.IDX_PT_HOPS]
+            if hops and hops > 1:
+                via = entry[_uc.IDX_PT_NEXT_HOP].hex()[:4]
+    except Exception:
+        pass
+    return hops, via
 
 
 def on_announce(destination_hash, display_name):
@@ -537,21 +558,8 @@ def on_announce(destination_hash, display_name):
         elif existing:
             del _lxmf_to_peer[lxmf_hash]
 
-    # Route info from the transport path table (hops + next-hop relay), for a
-    # row to show; a stranger has none to show it on
-    hops = None
-    via = None
-    if destination_hash in gui.peers:
-        try:
-            from urns.transport import Transport
-            from urns import const as _uc
-            entry = Transport.path_table.get(destination_hash)
-            if entry:
-                hops = entry[_uc.IDX_PT_HOPS]
-                if hops and hops > 1:
-                    via = entry[_uc.IDX_PT_NEXT_HOP].hex()[:4]
-        except Exception:
-            pass
+    # Route info for a row to show; a stranger has none to show it on
+    hops, via = _route_to(destination_hash) if destination_hash in gui.peers else (None, None)
 
     # heard() repaints only for a new name: a known row's route and age show at
     # the next redraw and a stranger only counts, so an announce storm on a
@@ -1728,10 +1736,14 @@ def contact_snapshot(tab):
 
 
 def add_contact(dest_hash):
-    """GUI Find added an entry to a tab: go find a path now, so its announce
-    (and with it the name of a "?" entry) arrives in seconds instead of
-    whenever it next announces on its own."""
+    """GUI Find added an entry to a tab. A path we already hold gives the row
+    its route now: no announce is coming to bring it. Without one, go find a
+    path, so its announce (and with it the name of a "?" entry) arrives in
+    seconds instead of whenever it next announces on its own."""
     from urns.transport import Transport
+    hops, via = _route_to(dest_hash)
+    if hops is not None:
+        gui.heard(gui.node_tab, dest_hash, hops=hops, via=via)
     if not Transport.has_path(dest_hash):
         Transport.request_path(dest_hash)
 
