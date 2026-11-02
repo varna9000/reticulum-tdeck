@@ -94,26 +94,13 @@ def _painted(calls):
     return " ".join(parts)
 
 
-def test_tab_bar_fits_forty_columns():
+def test_tab_counts_include_the_hubs():
     g = make_ui()
-    g.node_tab = U.TAB_RRC
-    labels = g._tab_labels()
-    assert sum(len(x) for x in labels) <= U.COLS, labels
-    assert len(labels) == U.N_TABS == 4
-    print("ok test_tab_bar_fits_forty_columns")
-
-
-def test_tab_bar_compresses_on_a_narrow_panel():
-    g = make_ui()
-    saved = U.COLS
-    try:
-        U.COLS = 30
-        labels = g._tab_labels()
-        assert sum(len(x) for x in labels) <= 30, labels
-        assert "RNSH" not in "".join(labels), labels
-    finally:
-        U.COLS = saved
-    print("ok test_tab_bar_compresses_on_a_narrow_panel")
+    g.add_rrc_hub(b"\x01" * 16, name="hub", hops=1)
+    counts = g._tab_counts()
+    assert len(counts) == U.N_TABS == 4
+    assert counts[U.TAB_RRC] == "1", counts
+    print("ok test_tab_counts_include_the_hubs")
 
 
 def test_hub_list_holds_sixteen_and_drops_the_oldest():

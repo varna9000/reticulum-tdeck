@@ -535,12 +535,14 @@ def test_selected_tab_is_teal_and_evenly_spaced():
     t = _draw(g)
     ly = ui.BODY_Y - 2
     labels = [c for c in t.colors if c[2] == ly]
-    tab = [c for c in labels if "MSG" in c[0]][0]
-    assert tab[3] == g.NEON_GREEN and tab[4] == g.TAB_BG, tab
     sw = ui.SCREEN_W // 4
-    for i, c in enumerate(sorted(labels, key=lambda c: c[1])):
-        centre = c[1] + len(c[0]) * ui.CHAR_W // 2
-        assert abs(centre - (i * sw + sw // 2)) <= ui.CHAR_W, (c, i)
+    labels = sorted(labels, key=lambda c: c[1])
+    assert len(labels) == 4, labels
+    tab = labels[0]
+    assert tab[3] == g.NEON_GREEN and tab[4] == g.TAB_BG, tab
+    for i, c in enumerate(labels):
+        # each count sits in its own cell, after its icon
+        assert c[1] // sw == i, (c, i)
     fill = [r for r in t.rects if r[4] == g.TAB_BG and r[0] == 0 and r[2] == sw]
     assert fill and fill[0][1] == ui.NAV_H + 1, fill       # up to the top rail
 

@@ -206,53 +206,34 @@ def _shim_ink(c):
     return lum > 60
 
 
-def test_active_tab_is_distinguishable_on_mono():
-    """The colour tab bar marks the active tab with TAB_BG + NEON_GREEN
-    against BG_DARK + DIM_CYAN. On the 1-bit shim both backgrounds are
-    paper and both foregrounds are ink, so nothing told the Pro's user
-    which tab they were on. The active tab must render inverted there."""
-    print("active tab is legible on a 1-bit panel")
+def test_tab_icons_share_a_height():
+    check("all four tab icons are 14 px tall", [ic[1] for ic in ui._TAB_ICONS] == [14, 14, 14, 14])
 
-    class MonoTFT(FakeTFT):
-        mono = True
 
-        def __init__(self):
-            FakeTFT.__init__(self)
-            self.colors = []
+def test_tab_counts():
+    g = ui.UI(FakeTFT(), object(), lambda: b"\x00", node_name="t", trackball=False)
+    g.peers[b"a" * 16] = {"name": "a"}
+    g.unread[b"a" * 16] = 2
+    check("counts come from the tables, * for unread",
+          g._tab_counts() == ("1*", "0", "0", "0"), str(g._tab_counts()))
 
-        def text(self, font, s, x, y, fg, bg=None):
-            FakeTFT.text(self, font, s, x, y, fg, bg)
-            self.colors.append((self.texts[-1].strip(), fg, bg))
 
-    g = ui.UI(MonoTFT(), object(), lambda: b"\x00", node_name="t",
-              trackball=False)
+def test_active_tab_is_marked_on_the_colour_bar():
+    """The v1 bar marks the active cell with TAB_BG + NEON_GREEN against
+    BG_DARK + DIM_CYAN. (A 1-bit panel is always the Pro, whose own bar,
+    ui_pro.draw_tab_bar, inverts the active tab; test_ui_pro covers it.)"""
+    print("active tab is marked on the colour tab bar")
+    g = ui.UI(FakeTFT(), object(), lambda: b"\x00", node_name="t", trackball=False)
+    g.tft.colors = []
+    g.tft.text = lambda font, s, x, y, fg, bg=None: g.tft.colors.append((fg, bg))
     g._screen_on = True
     g.node_tab = ui.TAB_NET
     g._draw_tab_bar()
-    labels = [l.strip() for l in g._tab_labels()]
-    polarity = {}
-    for s, fg, bg in g.tft.colors:
-        if s in labels:
-            polarity[s] = (_shim_ink(fg), _shim_ink(bg))
-    active = labels[ui.TAB_NET]
-    others = [l for l in labels if l != active]
-    check("every tab label was drawn", set(polarity) == set(labels), str(polarity))
-    check("active tab is paper on ink", polarity.get(active) == (False, True),
-          str(polarity.get(active)))
-    check("inactive tabs are ink on paper",
-          all(polarity.get(l) == (True, False) for l in others), str(polarity))
-
-    colour = ui.UI(FakeTFT(), object(), lambda: b"\x00", node_name="t",
-                   trackball=False)
-    colour.tft.colors = []
-    colour.tft.text = lambda font, s, x, y, fg, bg=None: colour.tft.colors.append(
-        ((s if isinstance(s, str) else bytes(s).decode("latin-1")).strip(), fg, bg))
-    colour._screen_on = True
-    colour.node_tab = ui.TAB_NET
-    colour._draw_tab_bar()
-    got = [(fg, bg) for s, fg, bg in colour.tft.colors if s == active]
-    check("colour panel keeps the teal tab", got == [(colour.NEON_GREEN, colour.TAB_BG)],
-          str(got))
+    check("four counts drawn", len(g.tft.colors) == 4, str(g.tft.colors))
+    check("the active tab is teal, the rest dim",
+          g.tft.colors == [(g.DIM_CYAN, g.BG_DARK), (g.NEON_GREEN, g.TAB_BG),
+                           (g.DIM_CYAN, g.BG_DARK), (g.DIM_CYAN, g.BG_DARK)],
+          str(g.tft.colors))
 
 
 def test_selected_rows_invert_on_mono():
@@ -312,7 +293,9 @@ if __name__ == "__main__":
     test_recording_state_refuses_without_mic()
     test_battery_reads_through_the_board()
     test_unlit_battery_segments_are_visible_on_mono()
-    test_active_tab_is_distinguishable_on_mono()
+    test_tab_icons_share_a_height()
+    test_tab_counts()
+    test_active_tab_is_marked_on_the_colour_bar()
     test_selected_rows_invert_on_mono()
     test_image_viewer_dithers_on_a_mono_panel()
     print()

@@ -622,8 +622,8 @@ def test_icons_have_the_designs_proportions():
     print("review: icons")
     # The canvas draws tab icons in a 14 px square and toolbar / sheet icons
     # in an 11..13 px square. Hand-drawn 7 px tall ones looked squashed.
-    for ic in ui_pro._TAB_ICONS:
-        check("tab icon %dx%d fills its square" % ic[:2], 13 <= ic[0] <= 14 and 11 <= ic[1] <= 14)
+    for ic in ui._TAB_ICONS:
+        check("tab icon %dx%d fills its square" % ic[:2], 12 <= ic[0] <= 14 and 11 <= ic[1] <= 14)
     for ic, label, key in ui_pro._TOOLS:
         check("%s icon %dx%d is square" % ((label,) + ic[:2]), ic[0] == 11 and 10 <= ic[1] <= 11)
     check("the row's star is 12x12", ui_pro._STAR[:2] == (12, 12))

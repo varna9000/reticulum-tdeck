@@ -92,7 +92,7 @@ def test_tabbed_node_list_draws():
     g.add_peer(b"\x01" * 16, "peer-one", rssi=-80, hops=1)
     g.add_nomad_node(b"\x02" * 16, "node-two", hops=2)
     g.draw()                      # MSG tab
-    assert any("MSG(1)" in str(c[1]) for c in tft.calls if c[0] == "text")
+    assert any(c[1] == "1" and c[3] == ui.BODY_Y - 2 for c in tft.calls if c[0] == "text")
     g._switch_tab(1)
     g.draw()                      # NET tab
     assert any("node-two" in str(c[1]) for c in tft.calls if c[0] == "text")

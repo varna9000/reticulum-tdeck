@@ -175,24 +175,8 @@ def _scrollbar(ui):
 
 
 # Icons, pixel for pixel. The canvas draws them in squares -- 14 px on the tab
-# bar, 11 px on the toolbar and the sheet, a 12 px star in the row margin --
-# so these fill those squares rather than a 7 px strip.
-_BUBBLE = _u._icon((
-    ".############.", "#............#", "#............#", "#..########..#", "#............#",
-    "#............#", "#..#####.....#", "#............#", "#............#", ".############.",
-    "...###........", "..###.........", ".###..........", ".#............"))
-_GLOBE = _u._icon((
-    "....#####....", "..##..#..##..", ".#...###...#.", ".#..#.#.#..#.", "#...#.#.#...#",
-    "#..#..#..#..#", "#############", "#..#..#..#..#", "#...#.#.#...#", ".#..#.#.#..#.",
-    ".#...###...#.", "..##..#..##..", "....#####...."))
-_TERM = _u._icon((
-    ".############.", "#............#", "#............#", "#..#.........#", "#...#........#",
-    "#....#.......#", "#...#........#", "#..#..#####..#", "#............#", "#............#",
-    ".############."))
-_PEOPLE = _u._icon((
-    "...####.......", "..#....#......", "..#....#.###..", "..#....##...#.", "...####.#...#.",
-    ".........###..", "..######......", ".#......#.###.", "#........#...#", "#........#...#",
-    "#........#...#"))
+# bar (shared with the v1: ui._TAB_ICONS), 11 px on the toolbar and the sheet,
+# a 12 px star in the row margin.
 _GEAR = _u._icon((
     "....###....", ".#..###..#.", "..#######..", "..##...##..", "###.....###", "###.....###",
     "###.....###", "..##...##..", "..#######..", ".#..###..#.", "....###...."))
@@ -213,17 +197,12 @@ _STAR = _u._icon((
     ".##########.", "..########..", "...######...", "..########..", "..###..###..",
     ".###....###.", ".#........#."))
 
-_TAB_ICONS = (_BUBBLE, _GLOBE, _TERM, _PEOPLE)          # MSG, NET, SSH, RRC
 _TOOLS = ((_u._ANTENNA, "Annc", b'a'), (_GEAR, "Setup", b's'),
           (_FAV, "Fav", b'f'), (_LENS, "Lookup", b'l'))
 
 
 def draw_tab_bar(ui):
-    un = 0
-    for v in ui.unread.values():
-        un += v
-    counts = (str(len(ui._peer_keys)) + ("*" if un else ""), str(len(ui._node_keys)),
-              str(len(ui._shell_keys)), str(len(ui._rrc_keys)))
+    counts = ui._tab_counts()
     ck = "P" + str(ui.node_tab) + ("F" if ui._find else "") + "/".join(counts)
     if ui._cache[1] == ck:
         return
@@ -239,7 +218,7 @@ def draw_tab_bar(ui):
         x = i * cw
         if act:
             tft.fill_rect(x, TAB_Y + 1, cw, TAB_H - 2, bg)
-        ic = _TAB_ICONS[i]
+        ic = _u._TAB_ICONS[i]
         s = counts[i]
         tx = x + (cw - (ic[0] + 4 + len(s) * _u.CHAR_W)) // 2
         ui._bitmap(ic, tx, TAB_Y + (TAB_H - ic[1]) // 2, fg)
@@ -413,7 +392,7 @@ _OPEN = {0: "Open chat", 1: "Open page", 2: "Open shell", 3: "Open hub"}   # by 
 
 def sheet_items(ui):
     """(label, key label, key bytes or None for the click, icon), top to bottom."""
-    items = [(_OPEN[ui.node_tab], "Enter", None, _TAB_ICONS[ui.node_tab]),
+    items = [(_OPEN[ui.node_tab], "Enter", None, _u._TAB_ICONS[ui.node_tab]),
              ("Favorite", "F", b'f', _FAV)]
     if ui.node_tab == _u.TAB_MSG:
         items.append(("Ping", "P", b'p', _PING))

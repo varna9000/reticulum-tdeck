@@ -467,11 +467,25 @@ def _icon(rows):
     return len(rows[0]), len(rows), tuple(runs)
 
 
+# Tab icons, shared by both boards (the Pro's bar and sheet use them too): MSG, NET, RNSH, RRC.
+_TAB_ICONS = (
+    _icon((".############.", "#............#", "#............#", "#..########..#", "#............#",
+           "#............#", "#..#####.....#", "#............#", "#............#", ".############.",
+           "...###........", "..###.........", ".###..........", ".#............")),
+    _icon(("#########...", "#.......##..", "#.......#.#.", "#.......####", "#..........#", "#..#####...#", "#..........#",
+           "#..#######.#", "#..........#", "#..#######.#", "#..........#", "#..#####...#", "#..........#", "############")),
+    _icon((".############.", "#............#", "#............#", "#..#.........#", "#...#........#",
+           "#....#.......#", "#.....#......#", "#....#.......#", "#...#........#", "#..#...#####.#",
+           "#............#", "#............#", "#............#", ".############.")),
+    _icon(("...####.......", "..#....#......", "..#....#.###..", "..#....##...#.", "..#....##...#.",
+           "...####.#...#.", ".........###..", "..######......", ".#......#.###.", "#........#...#",
+           "#........#...#", "#........#...#", "#........#...#", "#........#...#")),
+)
+
+
 _SUBPAGE = _icon(("#...", "##..", "###.", "####", "###.", "##..", "#..."))
 _STAR = _icon(("....#....", "....#....", "...###...", "#########", ".#######.",
                "..#####..", "..##.##..", ".##...##.", ".#.....#."))
-_GLOBE = _icon(("..#####..", ".#.#.#.#.", "#..#.#..#", "#..#.#..#", "#########",
-                "#..#.#..#", "#..#.#..#", ".#.#.#.#.", "..#####.."))
 _ANTENNA = _icon((".#.......#.", "#..#...#..#", "#.#..#..#.#", "#.#.###.#.#",
                   "#..#.#.#..#", ".#...#...#.", ".....#.....", "....###....",
                   "...#.#.#...", "..#..#..#.."))
@@ -1579,66 +1593,43 @@ class UI:
 
     # --- Node list screen ---
 
-    def _tab_labels(self):
-        """Tab labels sized to the panel.
-
-        The wide, padded form (" MSG(n) NET(n) RNSH(n) RRC(n) ") is 33
-        columns at the widest single-digit counts and still only 38 at two
-        digits, so the v1's 40 columns always fit it. The Pro's panel is
-        only 30 columns wide, which the wide form never fits, so narrow
-        panels fall back to a compact form that drops the padding, the
-        parentheses and the longer "RNSH" name. COLS is read here rather
-        than captured, since the Pro sets a different screen geometry at
-        import.
-        """
+    def _tab_counts(self):
+        """The four tab counts, counted from the tables (so a sentinel row in
+        a key list never inflates them); MSG carries a * when anything is
+        unread."""
         un = 0
         for v in self.unread.values():
             un += v
-        counts = (str(len(self._peer_keys)) + ("*" if un else ""),
-                  str(len(self._node_keys)),
-                  str(len(self._shell_keys)),
-                  str(len(self._rrc_keys)))
-        wide = (" MSG(" + counts[0] + ") ", " NET(" + counts[1] + ") ",
-                " RNSH(" + counts[2] + ") ", " RRC(" + counts[3] + ") ")
-        if sum(len(x) for x in wide) <= COLS:
-            return wide
-        return (" MSG" + counts[0], " NET" + counts[1],
-                " SSH" + counts[2], " RRC" + counts[3] + " ")
+        return (str(len(self.peers)) + ("*" if un else ""),
+                str(len(self.nomad_nodes)),
+                str(len(self.shell_nodes)),
+                str(len(self.rrc_hubs)))
 
     def _draw_tab_bar(self):
-        """MSG/NET/RNSH/RRC tab bar — first body row of the node screen."""
+        """The tab bar: an icon and a count in each of four cells, as on the Pro."""
         if _pro is not None:
             return _pro.draw_tab_bar(self)
-        tabs = self._tab_labels()
-        cache_key = str(self.node_tab) + ("F" if self._find else "") + "".join(tabs)
-        if self._cache[1] == cache_key:
+        counts = self._tab_counts()
+        ck = str(self.node_tab) + ("F" if self._find else "") + "/".join(counts)
+        if self._cache[1] == ck:
             return
-        self._cache[1] = cache_key
+        self._cache[1] = ck
         bg = self.BG_DARK
-        top = NAV_H + 1                  # just under the frame's top rail
+        top = NAV_H + 1
         line = BODY_Y + CHAR_H - 1
-        ly = BODY_Y - 2                  # labels centred in top..line
-        sw = SCREEN_W // len(tabs)
+        cw = SCREEN_W // 4
         self.tft.fill_rect(0, top, SCREEN_W, line - top + 1, bg)
-        for i, label in enumerate(tabs):
-            label = label.strip()
-            x = i * sw
-            tx = x + (sw - len(label) * CHAR_W) // 2
-            if i == self.node_tab:
-                # In Find the tab runs straight into the band below it.
-                h = line - top + (1 if self._find else 0)
-                if self._mono:
-                    # The 1-bit shim renders TAB_BG and BG_DARK both as paper
-                    # and NEON_GREEN and DIM_CYAN both as ink, so the colour
-                    # scheme below leaves every tab looking the same there.
-                    # Invert the active one instead: paper text on an ink block.
-                    self.tft.fill_rect(x, top, sw, h, self.NEON_CYAN)
-                    self.tft.text(self.font, label, tx, ly, self.BG_DARK, self.NEON_CYAN)
-                else:
-                    self.tft.fill_rect(x, top, sw, h, self.TAB_BG)
-                    self.tft.text(self.font, label, tx, ly, self.NEON_GREEN, self.TAB_BG)
-            else:
-                self.tft.text(self.font, label, tx, ly, self.DIM_CYAN, bg)
+        for i in range(4):
+            act = i == self.node_tab
+            x = i * cw
+            if act:
+                self.tft.fill_rect(x, top, cw, line - top + (1 if self._find else 0), self.TAB_BG)
+            fg = self.NEON_GREEN if act else self.DIM_CYAN
+            ic = _TAB_ICONS[i]
+            s = counts[i]
+            tx = x + (cw - (ic[0] + 4 + len(s) * CHAR_W)) // 2
+            self._bitmap(ic, tx, top + (line - top - ic[1]) // 2, fg)
+            self.tft.text(self.font, s, tx + ic[0] + 4, BODY_Y - 2, fg, self.TAB_BG if act else bg)
         if not self._find:
             self.tft.fill_rect(0, line, SCREEN_W, 1, self.DIM_CYAN)
 
