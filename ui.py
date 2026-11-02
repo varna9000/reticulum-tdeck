@@ -2440,12 +2440,16 @@ class UI:
         if type not in ["peer", "node", "hub", "shell"]:
             return False # Unknown favorite usecase
         favs = self._get_favorites(type)
+        loaded = []     # (key, entity) of the filled slots, in slot order
+        hole = False
         for i in range(MAX_FAVORITES):
             try:
                 entity = favs.get(type + "_" + str(i))
                 if None != entity:
                     ek = favs.get(type + "Key_" + str(i))
                     if None != ek:
+                        hole = hole or len(loaded) != i
+                        loaded.append((ek, entity))
                         if self._favorite_key_exists(bytes.fromhex(ek), type):
                             continue # Entity already exists
                         self._favorite_add_entity(bytes.fromhex(ek), entity, type)
@@ -2458,6 +2462,15 @@ class UI:
                     continue # Slot empty
             except Exception as e:
                 return
+        if hole:
+            # The old code filled slots from the end; a new pin takes the first
+            # free one, so it would load ahead of them after a reboot. The
+            # load order is the pin order from here on.
+            for i in range(MAX_FAVORITES):
+                ek, entity = loaded[i] if i < len(loaded) else (None, None)
+                favs[type + "Key_" + str(i)] = ek
+                favs[type + "_" + str(i)] = entity
+            self._save_favorites(favs, type)
 
     def load_favorites(self):
         for type in ["peer", "node", "hub", "shell"]:

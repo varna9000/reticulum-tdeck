@@ -1121,6 +1121,105 @@ def test_a_row_never_heard_goes_first_at_the_cap_but_a_pin_stays():
         assert key_n(5) in table(g, tab) and key_n(0) in table(g, tab), tab
 
 
+# --- favourites files the old code wrote -------------------------------------
+
+def _file(tab, slots):
+    """A favourites file with these {slot: key} filled. The old code took the
+    last free slot, so its files have holes at the front."""
+    t = ui._FAV_TYPES[tab]
+    d = {}
+    for i, k in slots.items():
+        d[t + "Key_" + str(i)] = k.hex()
+        d[t + "_" + str(i)] = {"name": "n"}
+    return t, json.dumps(d)
+
+
+def _counting(store):
+    g = mk(store)
+    g.saves = 0
+    save = g._save_favorites
+
+    def counted(d, t=None):
+        g.saves += 1
+        return save(d, t)
+    g._save_favorites = counted
+    return g
+
+
+def test_a_new_pin_stays_last_across_a_boot_on_a_legacy_file():
+    for tab in TABS:
+        t, text = _file(tab, {3: A, 4: B})
+        g = mk({t: text})
+        g.load_favorites()
+        assert keys(g, tab) == [ui._NEW, A, B], tab
+        add(g, tab, C)
+        _pin_in_order(g, tab, (C,))
+        assert keys(g, tab)[1:4] == [A, B, C], tab
+        for _ in range(2):
+            booted = mk(g.store)
+            booted.load_favorites()
+            assert keys(booted, tab) == [ui._NEW, A, B, C], (tab, keys(booted, tab))
+        saved = json.loads(g.store[t])
+        assert [saved.get(t + "Key_" + str(i)) for i in range(ui.MAX_FAVORITES)] \
+            == [A.hex(), B.hex(), C.hex(), None, None], (tab, saved)
+        assert saved[t + "_0"]["name"] == "n" and saved.get(t + "_3") is None, tab
+
+
+def test_a_hole_in_the_middle_is_closed_too():
+    for tab in TABS:
+        t, text = _file(tab, {0: A, 2: B})
+        g = _counting({t: text})
+        g.load_favorites()
+        assert keys(g, tab) == [ui._NEW, A, B], tab
+        assert g.saves == 1, tab
+        assert json.loads(g.store[t])[t + "Key_1"] == B.hex(), tab
+
+
+def test_a_file_with_no_hole_is_not_rewritten():
+    for tab in TABS:
+        t, text = _file(tab, {0: A, 1: B})
+        g = _counting({t: text})
+        g.load_favorites()
+        assert keys(g, tab) == [ui._NEW, A, B], tab
+        assert g.saves == 0 and g.store[t] == text, tab
+
+
+def test_a_missing_or_corrupt_file_is_not_rewritten():
+    for tab in TABS:
+        t = ui._FAV_TYPES[tab]
+        g = _counting({})                      # no file
+        g.load_favorites()
+        assert g.saves == 0 and keys(g, tab) == [ui._NEW], tab
+
+        bad = json.dumps({t + "Key_1": "not hex", t + "_1": {"name": "n"},
+                          t + "Key_3": A.hex(), t + "_3": {"name": "n"}})
+        g = _counting({t: bad})                # the load stops at the bad slot, as ever
+        g.load_favorites()
+        assert g.saves == 0 and g.store[t] == bad and keys(g, tab) == [ui._NEW], tab
+
+        bad = json.dumps({t + "Key_1": A.hex(), t + "_1": {"name": "n"},
+                          t + "Key_2": "not hex", t + "_2": {"name": "n"}})
+        g = _counting({t: bad})
+        g.load_favorites()
+        assert g.saves == 0 and g.store[t] == bad and keys(g, tab) == [ui._NEW, A], tab
+
+        g = _counting({t: "[]"})               # valid JSON, wrong shape
+        g.load_favorites()
+        assert g.saves == 0 and keys(g, tab) == [ui._NEW], tab
+
+
+def test_a_slot_with_no_key_is_discarded_and_the_gap_closed():
+    for tab in TABS:
+        t, text = _file(tab, {1: A})
+        d = json.loads(text)
+        d[t + "_0"] = {"name": "keyless"}
+        g = mk({t: json.dumps(d)})
+        g.load_favorites()
+        assert keys(g, tab) == [ui._NEW, A], tab
+        saved = json.loads(g.store[t])
+        assert saved[t + "Key_0"] == A.hex() and saved.get(t + "_1") is None, (tab, saved)
+
+
 def _run():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
