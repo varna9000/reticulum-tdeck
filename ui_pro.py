@@ -100,45 +100,79 @@ def _pill(ui, n, y, fg, bg):
     _sd(ui, s, x + pad, y, bg, fg)
 
 
+def _draw_new_row(ui, y, sel):
+    """The "+ New ..." row: label over a count of what was heard since the
+    last look. No dots, pill or star: it opens Find, it is not a node."""
+    paper = ui.BG_DARK
+    bg = ui.SEL_BG if sel else paper
+    n = len(ui._heard[ui.node_tab])
+    t = ("search, or add by hash" if not n else
+         ("99+" if n >= 100 else str(n)) + " heard since last look")
+    ui.tft.fill_rect(0, y, _u.SBAR_X, ROW_H - 1, bg)
+    ui.tft.fill_rect(0, y + ROW_H - 1, _u.SBAR_X, 1, ui.DIM_CYAN)
+    ui.tft.text(ui.font, _u._NEW_ROWS[ui.node_tab], MARGIN, y, paper if sel else ui.NEON_CYAN, bg)
+    _sd(ui, t, MARGIN, y + 17, paper if sel else ui.DIM_CYAN, bg)
+
+
 def draw_rows(ui, limit=LIST_ROWS):
     """The eight two-line rows (or the first `limit` of them, when the sheet
-    covers the rest). Each row is redrawn only when its cache key changes."""
-    ia, sa, keys, table, show_unread, empty = cur(ui)
+    covers the rest). Line 1 is the name, with the age at the right; line 2
+    is the last message on MSG and the hops elsewhere. A selected row's
+    ping result, or its open sheet's address and route, replaces line 2.
+    Each row is redrawn only when its cache key changes."""
+    ia, sa, keys, table, _, _ = cur(ui)
+    msg = ui.node_tab == _u.TAB_MSG
     tft = ui.tft
     paper = ui.BG_DARK
     width = _u.SBAR_X
-    if not keys:
-        ck = "E" + empty[0]
-        if ui._cache[2] != ck:
-            ui._cache[2] = ck
-            for i in range(3, 2 + LIST_ROWS):
-                ui._cache[i] = "E"
-            tft.fill_rect(0, LIST_Y, width, LIST_ROWS * ROW_H, paper)
-            y = LIST_Y + 3 * ROW_H
-            tft.text(ui.font, ui._tb(empty[0].center(_u.COLS)), 0, y, ui.NEON_CYAN, paper)
-            tft.text(ui.font, ui._tb(empty[1].center(_u.COLS)), 0, y + _u.CHAR_H, ui.DIM_CYAN, paper)
-        return
     scroll = getattr(ui, sa)
     sel_idx = getattr(ui, ia)
-    ping = ui.ping_status if ui.node_tab == _u.TAB_MSG else None
+    ping = ui.ping_status if msg else None
     for i in range(limit):
         y = LIST_Y + i * ROW_H
         ci = i + 2
         idx = scroll + i
         if idx >= len(keys):
-            if ui._cache[ci] != "-":
+            if len(keys) <= 1 and i in (2, 3):
+                # Nothing but the + New row (or not even that): the three
+                # empty-tab lines, centred across rows 2 and 3.
+                ck = "E" + str(i) + str(ui.node_tab)
+                if ui._cache[ci] != ck:
+                    ui._cache[ci] = ck
+                    tft.fill_rect(0, y, width, ROW_H, paper)
+                    L = _u._EMPTY[ui.node_tab]
+                    if i == 2:
+                        tft.text(ui.font, ui._tb(L[0].center(_u.COLS)), 0, y + 8, ui.NEON_CYAN, paper)
+                    else:
+                        tft.text(ui.font, ui._tb(L[1].center(_u.COLS)), 0, y - 8, ui.DIM_CYAN, paper)
+                        tft.text(ui.font, ui._tb(L[2].center(_u.COLS)), 0, y + 8, ui.DIM_CYAN, paper)
+            elif ui._cache[ci] != "-":
                 ui._cache[ci] = "-"
                 tft.fill_rect(0, y, width, ROW_H, paper)
             continue
         key = keys[idx]
-        e = table[key]
         sel = idx == sel_idx
-        name = _u._ascii(e.get("name") or "?")[:NAME_COLS]
-        hsh = key.hex()[:8]
-        uc = ui.unread.get(key, 0) if show_unread else 0
+        if key == _u._NEW:
+            ck = "+" + str(ui.node_tab) + ("\x01" if sel else "") + str(min(len(ui._heard[ui.node_tab]), 100))
+            if ui._cache[ci] != ck:
+                ui._cache[ci] = ck
+                _draw_new_row(ui, y, sel)
+            continue
+        e = table[key]
+        if msg:
+            name, pv, age = ui._chat_cols(key)
+        else:
+            name = _u._ascii(e.get("name") or "?")
+            pv = _u._hops(e["hops"]) if e.get("hops") else ""
+            age = _u._age(e.get("seen"))
+        uc = ui.unread.get(key, 0) if msg else 0
         fav = e.get("fav") == True
-        info = (ping if (sel and ping) else _info(e))[:INFO_COLS]
-        ck = ("\x01" if sel else "") + name + "\x00" + hsh + "\x00" + info + "\x00" + str(uc) + ("*" if fav else "")
+        if sel and ping:
+            pv = ping
+        elif sel and ui._sheet is not None:
+            pv = key.hex()[:8] + "  " + _info(e)
+        name = name[:20 if age else NAME_COLS]
+        ck = ("\x01" if sel else "") + name + "\x00" + pv[:32] + "\x00" + age + "\x00" + str(uc) + ("*" if fav else "")
         if ui._cache[ci] == ck:
             continue
         ui._cache[ci] = ck
@@ -148,9 +182,10 @@ def draw_rows(ui, limit=LIST_ROWS):
         tft.fill_rect(0, y, width, ROW_H - 1, bg)
         tft.fill_rect(0, y + ROW_H - 1, width, 1, ui.DIM_CYAN)
         tft.text(ui.font, ui._tb(name), MARGIN, y, fg, bg)
-        _sd(ui, hsh, MARGIN, y + 17, dim, bg)
-        if info:
-            _sd(ui, info, INFO_R - len(info) * SW, y + 17, dim, bg)
+        if age:
+            _sd(ui, age, INFO_R - len(age) * SW, y + 2, dim, bg)
+        if pv:
+            _sd(ui, pv[:32], MARGIN, y + 17, dim, bg)
         for k in range(3):
             tft.fill_rect(DOTS_X + 4 + k * 5, y + 14, 3, 3, fg)
         if uc:

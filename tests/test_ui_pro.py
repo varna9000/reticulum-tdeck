@@ -181,16 +181,22 @@ def test_rows_are_two_lines_at_32px():
     print("rows")
     g, t = mkui()
     peers(g, 3)
+    for i in range(3):
+        g.add_chat_message(bytes([i + 1]) * 16, False, "msg %d" % i)
+    g._cache = [''] * ui.CACHE_ROWS
     g.selected_idx = 1
     ui_pro.draw_rows(g)
-    for i in range(3):
+    order = [k[0] - 1 for k in g._peer_keys]
+    for r, i in enumerate(order):
         c = find(t, "text", "peer%02d" % i)
-        check("row %d name at x 16, y %d" % (i, row_y(i)), c is not None and c[2] == 16 and c[3] == row_y(i), repr(c))
-        h = find(t, "small", (bytes([i + 1]) * 16).hex()[:8])
-        check("row %d hash on the second line" % i, h is not None and h[2] == 16 and h[3] == row_y(i) + 17, repr(h))
-    info = [c for c in texts(t, "small") if "hop" in c[1]]
-    check("hops / last-seen right-aligned, ending at x 212",
-          len(info) == 3 and all(c[2] + len(c[1]) * ui_pro.SW == ui_pro.INFO_R for c in info), repr(info[:1]))
+        check("row %d name at x 16, y %d" % (i, row_y(r)), c is not None and c[2] == 16 and c[3] == row_y(r), repr(c))
+        h = find(t, "small", "msg %d" % i)
+        check("row %d last message on the second line, left" % i, h is not None, repr(h))
+    l2 = [c for c in texts(t, "small") if c[1].startswith("msg ")]
+    check("line 2 starts at x 16 on every row",
+          sorted(c[3] for c in l2) == [row_y(i) + 17 for i in range(3)] and all(c[2] == 16 for c in l2), repr(l2))
+    check("the hash is no longer on a row",
+          not any(c[1] == (bytes([i + 1]) * 16).hex()[:8] for c in texts(t, "small") for i in range(3)))
     dots = [c for c in t.calls if c[0] == "rect" and c[3] == 3 and c[4] == 3]
     check("three dots per row in the ... column", len(dots) == 9 and all(c[1] >= ui_pro.DOTS_X for c in dots), str(len(dots)))
 
@@ -269,19 +275,33 @@ def test_short_list_blanks_the_rest():
 def test_ping_status_on_the_selected_row():
     g, t = mkui()
     peers(g, 2)
+    g.add_chat_message(b"\x02" * 16, False, "hello there")
+    g.selected_idx = g._peer_keys.index(b"\x01" * 16)
+    g._cache = [''] * ui.CACHE_ROWS
     g.ping_status = "ping 1.2s"
     ui_pro.draw_rows(g)
     c = find(t, "small", "ping 1.2s")
-    check("ping result replaces the selected row's right-hand text", c is not None and c[3] == row_y(0) + 17, repr(c))
-    check("the other row still shows its hops", any("hop" in x[1] and x[3] == row_y(1) + 17 for x in texts(t, "small")))
+    check("ping result replaces the selected row's second line", c is not None and c[2] == 16 and c[3] == row_y(g.selected_idx) + 17, repr(c))
+    check("the other row still shows its message", any(x[1] == "hello there" for x in texts(t, "small")))
 
 
 def test_empty_list_and_other_tabs():
-    g, t = mkui()
-    g.node_tab = ui.TAB_NET
-    ui_pro.draw_rows(g)
-    check("empty NET tab shows its two lines",
-          any("No nodes yet." in c[1] for c in texts(t)) and any("Waiting" in c[1] for c in texts(t)))
+    for tab in range(4):
+        g, t = mkui()
+        g.node_tab = tab
+        g._cache = [''] * ui.CACHE_ROWS
+        ui_pro.draw_rows(g)
+        L = ui._EMPTY[tab]
+        got = [c[1].strip() for c in texts(t)]
+        check("empty tab %d draws its three _EMPTY lines" % tab, got == list(L), repr(got))
+        g, t = mkui()
+        g.node_tab = tab
+        g._peer_keys, g._node_keys, g._rrc_keys, g._shell_keys = ([ui._NEW],) * 4
+        g._cache = [''] * ui.CACHE_ROWS
+        ui_pro.draw_rows(g)
+        got = [c[1].strip() for c in texts(t)]
+        check("tab %d: _EMPTY lines under the + New row" % tab,
+              got == [ui._NEW_ROWS[tab]] + list(L), repr(got))
     g, t = mkui()
     g.add_shell_node(b"\x07" * 16, name="box", hops=1)
     g.node_tab = ui.TAB_SSH
@@ -289,6 +309,113 @@ def test_empty_list_and_other_tabs():
     g._cache = [''] * ui.CACHE_ROWS
     ui_pro.draw_rows(g)
     check("the SSH tab draws its own list", find(t, "text", "box") is not None)
+    check("SSH line 2 is the hops", find(t, "small", "1 hop") is not None)
+
+
+def test_msg_line_two_is_the_last_message():
+    g, t = mkui()
+    peers(g, 2)
+    k = b"\x01" * 16
+    g.add_chat_message(k, False, "see you at nine")
+    g.unread[k] = 2
+    g._cache = [''] * ui.CACHE_ROWS
+    ui_pro.draw_rows(g)
+    c = find(t, "small", "see you at nine")
+    check("MSG line 2 is the last message", c is not None and c[2] == 16 and c[3] == row_y(0) + 17, repr(c))
+    check("...and not the hash", find(t, "small", k.hex()[:8]) is None)
+    ry = find(t, "text", "peer01")[3]
+    check("the peer with no history has a blank line 2",
+          not [c for c in texts(t, "small") if c[3] == ry + 17], repr((ry, texts(t, "small"))))
+    check("the age sits on the name line, right-aligned to x 212",
+          any(c[3] == row_y(0) + 2 and c[1] == "now" and c[2] + 3 * ui_pro.SW == ui_pro.INFO_R for c in texts(t, "small")),
+          repr(texts(t, "small")))
+
+
+def test_net_line_two_is_hops():
+    g, t = mkui()
+    g.add_nomad_node(b"\x09" * 16, name="nodeA", hops=3)
+    g.node_tab = ui.TAB_NET
+    g.net_idx = 0
+    g._cache = [''] * ui.CACHE_ROWS
+    ui_pro.draw_rows(g)
+    check("NET line 2 is 3 hops", find(t, "small", "3 hops") is not None)
+
+
+def test_open_sheet_shows_hash_and_route():
+    g, t = mkui()
+    g.add_nomad_node(b"\xaa\xcf\x70\x98" + b"\x01" * 12, name="nodeA", hops=3)
+    g.nomad_nodes[g._node_keys[0]]["seen"] = _time.time() - 660
+    g.node_tab = ui.TAB_NET
+    g.net_idx = 0
+    g._sheet = ui.TAB_NET
+    g._cache = [''] * ui.CACHE_ROWS
+    ui_pro.draw_rows(g)
+    c = find(t, "small", "aacf7098  3 hops 11min")
+    check("an open sheet shows hash and route on line 2", c is not None, repr(texts(t, "small")))
+
+
+def test_sheet_row_shows_ping_result():
+    g, t = mkui()
+    peers(g, 1)
+    g.ping_status = "ping 1.2s"
+    g._sheet = ui.TAB_MSG
+    g._cache = [''] * ui.CACHE_ROWS
+    ui_pro.draw_rows(g)
+    check("ping beats the sheet line", find(t, "small", "ping 1.2s") is not None)
+
+
+def test_new_row():
+    g, t = mkui()
+    peers(g, 2)
+    g._peer_keys = [ui._NEW] + list(g._peer_keys)
+    g._heard[ui.TAB_MSG].update(range(21))
+    g.unread[g._peer_keys[1]] = 3
+    g._cache = [''] * ui.CACHE_ROWS
+    ui_pro.draw_rows(g)
+    c = find(t, "text", "+ New chat")
+    check("the + New row draws its label", c is not None and c[2] == 16 and c[3] == row_y(0), repr(c))
+    check("...and the count", find(t, "small", "21 heard since last look") is not None)
+    row0 = [c for c in t.calls if len(c) > 3 and c[0] in ("rect", "icon", "small", "text") and row_y(0) <= c[3 if c[0] != "rect" else 2] < row_y(1)]
+    dots = [c for c in row0 if c[0] == "rect" and c[3] == 3 and c[4] == 3]
+    check("no dots on the + New row", not dots, repr(dots))
+    check("no pill or star on the + New row", not [c for c in row0 if c[0] == "icon"])
+    check("the next row is a real peer", find(t, "text", "peer00") is not None and find(t, "text", "peer00")[3] == row_y(1))
+    g._heard[ui.TAB_MSG].clear()
+    del t.calls[:]
+    ui_pro.draw_rows(g)
+    check("with nothing heard it offers search or add",
+          find(t, "small", "search, or add by hash") is not None)
+    g._heard[ui.TAB_MSG].update(range(150))
+    del t.calls[:]
+    ui_pro.draw_rows(g)
+    check("the count caps at 99+", find(t, "small", "99+ heard since last look") is not None)
+    g.selected_idx = 0
+    g._cache = [''] * ui.CACHE_ROWS
+    del t.calls[:]
+    ui_pro.draw_rows(g)
+    c = find(t, "text", "+ New chat")
+    check("selected + New is inverted", c[4] == g.BG_DARK and c[5] == g.SEL_BG, repr(c))
+    del t.calls[:]
+    ui_pro.draw_rows(g)
+    check("an unchanged + New row is not redrawn", t.calls == [])
+    g.node_tab = ui.TAB_NET
+    g._node_keys = [ui._NEW]
+    g._cache = [''] * ui.CACHE_ROWS
+    del t.calls[:]
+    ui_pro.draw_rows(g)
+    check("the NET tab says + New node", find(t, "text", "+ New node") is not None)
+
+
+def test_only_new_row_draws_the_empty_lines():
+    g, t = mkui()
+    g._peer_keys = [ui._NEW]
+    g.node_tab = ui.TAB_MSG
+    g._cache = [''] * ui.CACHE_ROWS
+    ui_pro.draw_rows(g)
+    L = ui._EMPTY[ui.TAB_MSG]
+    check("the empty lines show under the + New row",
+          all(any(c[1].strip() == s for c in texts(t)) for s in L), repr([c[1] for c in texts(t)]))
+    check("+ New is still drawn", find(t, "text", "+ New chat") is not None)
 
 
 def test_draw_node_list_uses_the_pro_rows():
@@ -628,10 +755,9 @@ def test_small_text_is_ui_pros_own_6x12():
     ui_pro.draw_node_list(g)
     check("nothing in ui_pro goes through ui._sdraw", texts(t, "big") == [], repr(texts(t, "big")[:2]))
     sm = texts(t, "small")
-    hsh = find(t, "small", k[0].hex()[:8])
-    info = [c for c in sm if "hops" in c[1] and c[3] == row_y(0) + 17]
-    check("the longest info line starts right of the hash",
-          hsh is not None and len(info) >= 1 and info[0][2] > hsh[2] + 8 * ui_pro.SW, repr(info))
+    info = [c for c in sm if k[0].hex()[:8] in c[1] and c[3] == row_y(0) + 17]
+    check("the longest sheet line (hash + route) still ends left of the dots",
+          len(info) == 1 and len(info[0][1]) == 30 and info[0][2] + 30 * ui_pro.SW <= ui_pro.INFO_R, repr(info))
     line2 = [c for c in sm if ui_pro.LIST_Y <= c[3] < ui_pro.TOOL_Y and (c[3] - ui_pro.LIST_Y) % 32 == 17]
     check("the second line ends above the row's rule",
           len(line2) > 0 and all((c[3] - ui_pro.LIST_Y) % 32 + ui_pro.SH <= 31 for c in line2))
@@ -2071,6 +2197,12 @@ if __name__ == "__main__":
     test_short_list_blanks_the_rest()
     test_ping_status_on_the_selected_row()
     test_empty_list_and_other_tabs()
+    test_msg_line_two_is_the_last_message()
+    test_net_line_two_is_hops()
+    test_open_sheet_shows_hash_and_route()
+    test_sheet_row_shows_ping_result()
+    test_new_row()
+    test_only_new_row_draws_the_empty_lines()
     test_draw_node_list_uses_the_pro_rows()
     test_tab_bar()
     test_toolbar()
