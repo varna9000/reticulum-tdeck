@@ -2874,19 +2874,23 @@ class UI:
     def _evict(self, tab):
         """At the tab's cap, drop one entry: the oldest, never a favourite. On
         MSG also never the open chat, and unread only if nothing else is left;
-        its age there is its last message. Walks the table, which the top row
-        is not in. With nothing to drop (the pins are all there is) it leaves
-        the table over the cap rather than take down the receive path."""
+        its age there is its last message. The row under the cursor goes last
+        of all: an open Pro sheet acts on it, and Delete must not land on its
+        neighbour. Walks the table, which the top row is not in. With nothing
+        to drop (the pins are all there is) it leaves the table over the cap
+        rather than take down the receive path."""
         keys, table = self._tab_list(tab)
         if len(table) < (MAX_RRC_HUBS if tab == TAB_RRC else MAX_PEERS):
             return
         msg = tab == TAB_MSG
+        idx = getattr(self, _TAB_ATTRS[tab][0])
+        cur = keys[idx] if 0 <= idx < len(keys) else None
         best = None
         bt = 0
-        for unread_too in (False, True) if msg else (True,):
+        for spare, unread_too in ((cur, False), (cur, True), (None, True)) if msg else ((cur, True), (None, True)):
             for k, e in table.items():
-                if e.get("fav") or (msg and (k == self.selected_peer
-                                             or (k in self.unread and not unread_too))):
+                if e.get("fav") or k == spare or (msg and (k == self.selected_peer
+                                                           or (k in self.unread and not unread_too))):
                     continue
                 h = self.chat_history.get(k) if msg else None
                 t = h[-1][2] if h else e.get("seen", 0)
@@ -2897,8 +2901,6 @@ class UI:
                 break
         if best is None:
             return
-        idx = getattr(self, _TAB_ATTRS[tab][0])
-        cur = keys[idx] if 0 <= idx < len(keys) else None
         keys.remove(best)
         del table[best]
         if msg:

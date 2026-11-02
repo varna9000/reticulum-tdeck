@@ -491,15 +491,69 @@ def test_eviction_keeps_the_cursor_on_its_entry():
         assert keys(g, tab)[cursor(g, tab)] == sel, tab
 
 
-def test_evicting_the_row_under_the_cursor_leaves_a_valid_cursor():
+def test_the_row_under_the_cursor_is_spared_while_another_can_go():
+    """An open Pro sheet acts on the cursor's row: if that row went, Delete
+    would land on its neighbour."""
     for tab in TABS:
         g = mk_at_cap(tab)
         for i in range(cap(tab)):
             table(g, tab)[key_n(i)]["seen"] = 1000 + i
         select(g, tab, keys(g, tab).index(key_n(0)))    # last row, the oldest
         add_one_more(g, tab)
+        assert key_n(0) in table(g, tab), tab
+        assert key_n(1) not in table(g, tab), tab
+        assert keys(g, tab)[cursor(g, tab)] == key_n(0), tab
+        g.draw_node_list()
+
+
+def test_the_cursor_only_spares_its_row_on_its_own_tab():
+    for tab in TABS:
+        g = mk_at_cap(tab)
+        for i in range(cap(tab)):
+            table(g, tab)[key_n(i)]["seen"] = 1000 + i
+        other = TABS[(TABS.index(tab) + 1) % 4]
+        add(g, other, key_n(0))
+        select(g, other, keys(g, other).index(key_n(0)))
+        g.node_tab = tab
+        add_one_more(g, tab)
+        assert key_n(0) not in table(g, tab), tab
+        assert key_n(0) in table(g, other), tab
+
+
+def test_an_unread_chat_goes_before_the_row_under_the_cursor():
+    g = mk_at_cap(ui.TAB_MSG)
+    for i in range(cap(ui.TAB_MSG)):
+        g.peers[key_n(i)]["seen"] = 1000 + i
+        if i:
+            g.unread[key_n(i)] = 1
+    select(g, ui.TAB_MSG, keys(g, ui.TAB_MSG).index(key_n(0)))
+    add_one_more(g, ui.TAB_MSG)
+    assert key_n(0) in g.peers and key_n(1) not in g.peers
+
+
+def test_the_row_under_the_cursor_goes_when_nothing_else_can():
+    for tab in TABS:
+        g = mk_at_cap(tab)
+        for e in table(g, tab).values():
+            e["fav"] = True
+        table(g, tab)[key_n(0)]["fav"] = False
+        select(g, tab, keys(g, tab).index(key_n(0)))
+        add_one_more(g, tab)
+        assert key_n(0) not in table(g, tab), tab
+        assert len(table(g, tab)) == cap(tab), "the cap holds"
         assert 0 <= cursor(g, tab) < len(keys(g, tab)), tab
         g.draw_node_list()
+
+
+def test_the_open_chat_is_never_the_last_resort():
+    g = mk_at_cap(ui.TAB_MSG)
+    for e in g.peers.values():
+        e["fav"] = True
+    g.peers[key_n(0)]["fav"] = False
+    g.selected_peer = key_n(0)
+    select(g, ui.TAB_MSG, g._peer_keys.index(key_n(0)))
+    add_one_more(g, ui.TAB_MSG)
+    assert key_n(0) in g.peers
 
 
 def test_a_cap_of_nothing_but_pins_does_not_raise():
