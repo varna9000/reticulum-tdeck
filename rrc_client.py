@@ -22,6 +22,7 @@ import rrc_proto as P
 MAX_HUBS = 16
 
 _gui = None
+TAB = 3            # ui.TAB_RRC (pinned by test_tab_model; no ui import on the announce path)
 _my_identity = None
 
 
@@ -98,35 +99,35 @@ def hub_name(app_data):
 
 
 def _on_announce(dest_hash, app_data, packet):
-    """Transport announce observer -- collect "rrc.hub" announces.
+    """Transport announce observer: an "rrc.hub" announce updates that hub's
+    row, or counts toward the RRC tab's top row if it has none.
 
     The hub's app_data is CBOR {"proto":"rrc","v":1,"hub":<name>}; a hub
     that sends none, or sends something we cannot read, is still a hub
-    and still gets listed, just without a display name."""
+    and still counts, just without a display name."""
     if _hub_hash(dest_hash) != dest_hash:
         return
     if _gui is not None:
-        _gui.add_rrc_hub(dest_hash, name=hub_name(app_data), hops=_node_hops(dest_hash))
+        _gui.heard(TAB, dest_hash, hub_name(app_data), hops=_node_hops(dest_hash))
         if _gui._wake_mode == 1:      # announces wake only under Wake: all
             _gui.wake_screen()
 
 
-# The RRC tab is session-scoped and deliberately NOT seeded from
-# Identity.known_destinations, for the same reason the SSH tab isn't: a
-# hub recorded days ago says nothing about whether it is reachable now.
+# The RRC tab is deliberately NOT seeded from Identity.known_destinations,
+# for the same reason the SSH tab isn't: a hub recorded days ago says nothing
+# about whether it is reachable now. Lookup reads that store when you ask.
 
 
 def clear_hubs():
-    """Interface switched -- reachability changed, start over.
+    """Interface switched: the session over the old link goes. The rows stay;
+    gui.forget_routes() takes their routes.
 
-    Disconnects first, the way rnsh_client.clear_nodes() does. Clearing
-    only the GUI list left the link alive on an interface that no longer
-    exists: say() still believed it was JOINED and reported "send failed"
-    once per message, and the hub held the session open paying keepalive
-    airtime against a client that could never answer."""
+    Disconnects the way rnsh_client.clear_nodes() does. A link left alive
+    on an interface that no longer exists had say() still believing it was
+    JOINED and reporting "send failed" once per message, and the hub held
+    the session open paying keepalive airtime against a client that could
+    never answer."""
     disconnect()
-    if _gui is not None:
-        _gui.clear_rrc_hubs()
 
 
 def _status(text):

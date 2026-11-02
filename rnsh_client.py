@@ -35,6 +35,7 @@ RUNNING    = 2
 CLOSED     = 3
 
 _gui = None
+TAB = 2            # ui.TAB_SSH (pinned by test_tab_model; no ui import on the announce path)
 _my_identity = None     # node identity we identify to the listener with
 _link = None
 _channel = None
@@ -89,11 +90,13 @@ def _node_hops(dest_hash):
 
 
 def _on_announce(dest_hash, app_data, packet):
-    """Transport announce observer — collect 'rnsh' listener announces."""
+    """Transport announce observer: an 'rnsh' announce updates that listener's
+    row, or counts toward the SSH tab's top row if it has none. rnsh announces
+    carry no name."""
     if _rnsh_hash(dest_hash) != dest_hash:
         return
     if _gui is not None:
-        _gui.add_shell_node(dest_hash, hops=_node_hops(dest_hash))
+        _gui.heard(TAB, dest_hash, hops=_node_hops(dest_hash))
         if _gui._wake_mode == 1:  # announces wake only under Wake: all
             _gui.wake_screen()
 
@@ -104,17 +107,15 @@ def _on_announce(dest_hash, app_data, packet):
 # validate announces, so it must survive a reboot), but a listener recorded in
 # it days ago says nothing about whether it is reachable now. Seeding from it
 # filled the tab with stale hashes that had to be tried before they could be
-# discovered dead. The list is therefore session-scoped: it starts empty on
-# boot and holds exactly the listeners announced since. Live announces are
-# added straight to the GUI by the announce handler above, so nothing is lost
-# by not seeding — including announces heard before the tab is first opened.
+# discovered dead. The list therefore starts with the favourites on boot and
+# holds what you picked since. Lookup reads that store when you ask, so nothing
+# heard is out of reach -- including announces heard before the tab is opened.
 
 
 def clear_nodes():
-    """Interface switched — reachability changed, start over."""
+    """Interface switched: the session over the old link goes. The rows stay;
+    gui.forget_routes() takes their routes."""
     disconnect()
-    if _gui is not None:
-        _gui.clear_shell_nodes()
 
 
 # --- helpers ----------------------------------------------------------------

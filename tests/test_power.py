@@ -702,9 +702,9 @@ check("apply dials only when associated (a dial with no AP blocks the deck for t
 _sb_src = _node_src.split("async def _start_backbone", 1)[1].split("\nasync def ", 1)[0]
 check("the backbone start waits for an association before each try", "_associated()" in _sb_src.split("_dial_backbone(", 1)[0])
 _dial_src = _node_src.split("def _dial_backbone", 1)[1].split("\ndef ", 1)[0]
-check("a torn-down link's peers and caches go with it, before the new dial (a failed dial must not route over the dead link)",
+check("a torn-down link's routes and caches go with it, before the new dial (a failed dial must not route over the dead link)",
       "_drop_link(" in _dial_src.split("TCPClientInterface(TCP_CONFIG)", 1)[0]
-      and "gui.clear_peers()" in _node_src.split("def _drop_link", 1)[1].split("\ndef ", 1)[0])
+      and "gui.forget_routes()" in _node_src.split("def _drop_link", 1)[1].split("\ndef ", 1)[0])
 check("a dial that raises after the teardown still brings LoRa back",
       "except Exception" in _dial_src and "_start_lora()" in _dial_src.split("except Exception", 1)[1])
 check("the lit re-dial does not spawn over a pending or running start",

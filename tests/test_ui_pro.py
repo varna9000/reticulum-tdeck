@@ -794,11 +794,14 @@ def test_top_row_has_no_sheet():
         g.node_tab = tab
         check("empty tab %d: nothing to open a sheet on" % tab, ui_pro.sheet_open(g) is False and g._sheet is None)
     g, t = mkui()
-    peers(g, 2)
+    peers(g, 1)
     check("cursor on + New: no sheet", ui_pro.sheet_open(g) is False and g._sheet is None)
     g.selected_idx = 1
     check("cursor on a peer: the sheet opens", ui_pro.sheet_open(g) is True and g._sheet == ui.TAB_MSG)
-    g.clear_peers()                        # an interface switch, under the open sheet
+    g.forget_routes()                      # an interface switch, under the open sheet
+    ui_pro.draw_node_list(g)
+    check("a link change leaves the row, so the sheet stays up", g._sheet == ui.TAB_MSG)
+    g.delete_selected()
     ui_pro.draw_node_list(g)
     check("the list emptying under an open sheet closes it", g._sheet is None)
 

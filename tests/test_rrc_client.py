@@ -25,17 +25,16 @@ import rrc_client
 class FakeGui:
     def __init__(self):
         self.hubs = []
-        self.cleared = 0
+        self.heard_tabs = []
         self.status = []
         self._wake_mode = 0
         self.members = []           # rrc_members() snapshots, newest last
         self.rooms = []             # rrc_rooms() snapshots, newest last
 
-    def add_rrc_hub(self, dest_hash, name=None, hops=None):
+    def heard(self, tab, dest_hash, name=None, rssi=None, hops=None, via=None):
+        self.heard_tabs.append(tab)
         self.hubs.append((dest_hash, name, hops))
-
-    def clear_rrc_hubs(self):
-        self.cleared += 1
+        return False
 
     def rrc_status(self, text):
         self.status.append(text)
@@ -67,19 +66,20 @@ def _reset():
     return g
 
 
-def test_announce_with_hub_name_is_listed():
+def test_announce_with_hub_name_is_counted():
     g = _reset()
     app_data = C.dumps({"proto": "rrc", "v": 1, "hub": "Varna Hub"})
     rrc_client._on_announce(b"\x42" * 16, app_data, None)
     assert g.hubs == [(b"\x42" * 16, "Varna Hub", 2)], g.hubs
-    print("ok test_announce_with_hub_name_is_listed")
+    assert g.heard_tabs == [rrc_client.TAB], g.heard_tabs
+    print("ok test_announce_with_hub_name_is_counted")
 
 
-def test_announce_without_app_data_still_lists_the_hub():
+def test_announce_without_app_data_still_counts_the_hub():
     g = _reset()
     rrc_client._on_announce(b"\x43" * 16, None, None)
     assert g.hubs == [(b"\x43" * 16, None, 2)], g.hubs
-    print("ok test_announce_without_app_data_still_lists_the_hub")
+    print("ok test_announce_without_app_data_still_counts_the_hub")
 
 
 def test_announce_with_junk_app_data_does_not_raise():
@@ -1208,32 +1208,35 @@ def test_disconnect_after_the_link_goes_active_leaves_no_live_link():
     print("ok test_disconnect_after_the_link_goes_active_spends_no_hello")
 
 
-def test_every_interface_switch_clears_the_hub_list():
+def test_every_interface_switch_disconnects_the_hub_session():
     # Important 8: clear_hubs() existed with the docstring "Interface
-    # switched -- reachability changed, start over", and ui.clear_rrc_hubs()
-    # existed to serve it, but neither interface-switch path in
-    # tdeck_node.py called it. After a LoRa<->TCP switch the RRC tab kept
-    # unreachable hubs, and clicking one cost a path request plus a 30 s
-    # wait. tdeck_node.py cannot be imported on the host (machine, board,
-    # the radio), so this pins the wiring at the source level -- and pins it
-    # to the SIBLING calls, so a third switch path added later has to bring
-    # the hub list with it too.
+    # switched -- reachability changed, start over", but neither
+    # interface-switch path in tdeck_node.py called it. After a LoRa<->TCP
+    # switch the hub session survived on a deregistered interface. The rows
+    # now stay (gui.forget_routes takes their routes), the session must not.
+    # tdeck_node.py cannot be imported on the host (machine, board, the
+    # radio), so this pins the wiring at the source level -- and pins it to
+    # the SIBLING calls, so a third switch path added later has to bring the
+    # hub session with it too.
     src = open(os.path.join(REPO, "tdeck_node.py")).read()
     sites = src.count("rnsh_client.clear_nodes()")
     assert sites == 3, sites     # _dial_backbone's teardown of a live link (2026-11-01) is the third switch path
     assert src.count("nomad_browser.clear_nodes()") == sites
     assert src.count("rrc_client.clear_hubs()") == sites, \
-        "an interface switch does not clear the RRC hub list"
+        "an interface switch does not disconnect the RRC hub session"
     for chunk in src.split("rnsh_client.clear_nodes()")[1:]:
         assert chunk.lstrip().startswith("rrc_client.clear_hubs()"), chunk[:120]
-    print("ok test_every_interface_switch_clears_the_hub_list")
+    assert src.count("gui.forget_routes()") == sites, \
+        "an interface switch does not forget the routes"
+    print("ok test_every_interface_switch_disconnects_the_hub_session")
 
 
-def test_clear_hubs_reaches_the_gui():
+def test_clear_hubs_leaves_the_rows_alone():
+    # FakeGui has no list-clearing method to call: reaching for one raises.
     g = _reset()
     rrc_client.clear_hubs()
-    assert g.cleared == 1, g.cleared
-    print("ok test_clear_hubs_reaches_the_gui")
+    assert g.hubs == [] and g.heard_tabs == []
+    print("ok test_clear_hubs_leaves_the_rows_alone")
 
 
 def test_drop_link_does_not_paint_an_abandoned_link_as_a_dropped_one():
@@ -1443,7 +1446,6 @@ def test_clear_hubs_disconnects_the_live_session():
     assert link.torn_down is True, "the link survived the interface switch"
     assert rrc_client._link is None
     assert rrc_client.is_active() is False
-    assert g.cleared == 1, g.cleared
     print("ok test_clear_hubs_disconnects_the_live_session")
 
 

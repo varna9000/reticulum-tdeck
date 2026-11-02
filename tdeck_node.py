@@ -186,7 +186,7 @@ dest = router.register_delivery_identity(rns.identity, display_name=NODE_NAME)
 gc.collect()
 
 # --- Init GUI ---
-from ui import UI
+from ui import UI, TAB_MSG
 
 # trackball=board.HAS_TRACKBALL is load-bearing, not cosmetic: ui.py's trackball
 # block claims GPIO 0/1/2/3/15, and on the T-Deck Pro GPIO 3 is the SX1262 chip
@@ -278,7 +278,8 @@ gc.collect()
 
 # --- Callbacks ---
 
-# Maps LXMF delivery hash -> GUI peer key (populated by on_announce)
+# Maps LXMF delivery hash -> GUI peer key, for peers with a row only: this table
+# would grow without bound on a backbone if every announce wrote to it.
 _lxmf_to_peer = {}
 
 
@@ -456,9 +457,12 @@ def _on_message_inner(message):
     if DEBUG >= 1:
         print("[RX] from", source_hash.hex()[:8], "-> peer", peer_key.hex()[:8])
 
-    # Ensure peer exists in GUI
+    # Ensure peer exists in GUI: named from the identity cache if an announce
+    # was ever heard, else the row shows its short hash
     if peer_key not in gui.peers:
-        gui.add_peer(peer_key, source_hash.hex()[:8])
+        from urns.identity import Identity
+        v = Identity.known_destinations.get(peer_key)
+        gui.message_row(peer_key, LXMRouter.display_name_from_app_data(v[3]) if v and v[3] else None)
     if DEBUG >= 1:
         print("[RX] peer ok")
 
@@ -489,7 +493,21 @@ def _on_message_inner(message):
 
 
 def on_announce(destination_hash, display_name):
-    """Peer announce handler. Builds LXMF hash mapping and deduplicates peers."""
+    """urns calls this for every announce it hears, any aspect. An LXMF one
+    from a peer with a row updates that row in place; any other only counts
+    toward the top row."""
+    # The header's snr follows every announce; repaint only when what it shows
+    # changes (no rssi yet means it shows nothing)
+    rssi = None
+    for iface in rns.interfaces:
+        if iface.rssi is not None:
+            rssi = iface.rssi
+            if gui.rssi is None or iface.snr != gui.snr:
+                gui.dirty = True
+            gui.rssi = rssi
+            gui.snr = iface.snr
+            break
+
     # Compute the LXMF delivery hash for this identity
     lxmf_hash = _compute_lxmf_hash(destination_hash)
 
@@ -504,47 +522,46 @@ def on_announce(destination_hash, display_name):
     if lxmf_hash:
         existing = _lxmf_to_peer.get(lxmf_hash)
         if existing and existing != destination_hash and existing in gui.peers:
-            # Same node, different destination — update existing peer
-            gui.peers[existing]["name"] = display_name or gui.peers[existing].get("name", "?")
-            gui.peers[existing]["seen"] = time.time()
-            _lxmf_to_peer[lxmf_hash] = existing
-            gui.dirty = True
+            # Same node, different destination: update existing peer. Name and
+            # age only; this destination's route is not that row's.
+            gui.heard(TAB_MSG, existing, display_name)
             if DEBUG >= 1:
                 print("[Peer] (dedup)", display_name or "?",
                       "[" + destination_hash.hex()[:8] + " -> " + existing.hex()[:8] + "]")
             return
-        # Store mapping: LXMF hash -> this GUI peer key
-        _lxmf_to_peer[lxmf_hash] = destination_hash
+        # Store mapping: LXMF hash -> this GUI peer key. Without a row there is
+        # nothing to map to, and a mapping to a row that went (evicted) would
+        # send this peer's next message to the old key.
+        if destination_hash in gui.peers:
+            _lxmf_to_peer[lxmf_hash] = destination_hash
+        elif existing:
+            del _lxmf_to_peer[lxmf_hash]
 
-    rssi = None
-    for iface in rns.interfaces:
-        if iface.rssi is not None:
-            rssi = iface.rssi
-            gui.rssi = iface.rssi
-            gui.snr = iface.snr
-            break
-
-    # Route info from the transport path table (hops + next-hop relay)
+    # Route info from the transport path table (hops + next-hop relay), for a
+    # row to show; a stranger has none to show it on
     hops = None
     via = None
-    try:
-        from urns.transport import Transport
-        from urns import const as _uc
-        entry = Transport.path_table.get(destination_hash)
-        if entry:
-            hops = entry[_uc.IDX_PT_HOPS]
-            if hops and hops > 1:
-                via = entry[_uc.IDX_PT_NEXT_HOP].hex()[:4]
-    except Exception:
-        pass
+    if destination_hash in gui.peers:
+        try:
+            from urns.transport import Transport
+            from urns import const as _uc
+            entry = Transport.path_table.get(destination_hash)
+            if entry:
+                hops = entry[_uc.IDX_PT_HOPS]
+                if hops and hops > 1:
+                    via = entry[_uc.IDX_PT_NEXT_HOP].hex()[:4]
+        except Exception:
+            pass
 
-    # add_peer marks the UI dirty, so the node list is up to date the moment
-    # anyone looks at it. Waking the screen is gated on the auto-wake policy:
-    # an announce is a presence beacon, not a message for us, and peers running
-    # the 90 s auto-announce loop would wake the deck every 90 seconds forever.
-    # Only wake mode 1 ("all") opts into that; the default ("msgs") does not.
-    # A received message always wakes it -- see the LXMF delivery handler above.
-    gui.add_peer(destination_hash, display_name, rssi=rssi, hops=hops, via=via)
+    # heard() repaints only for a new name: a known row's route and age show at
+    # the next redraw and a stranger only counts, so an announce storm on a
+    # backbone costs the screen nothing. Waking the screen is gated on the
+    # auto-wake policy: an announce is a presence beacon, not a message for us,
+    # and peers running the 90 s auto-announce loop would wake the deck every
+    # 90 seconds forever. Only wake mode 1 ("all") opts into that; the default
+    # ("msgs") does not. A received message always wakes it -- see the LXMF
+    # delivery handler above.
+    gui.heard(TAB_MSG, destination_hash, display_name, rssi=rssi, hops=hops, via=via)
     if gui._wake_mode == 1:  # only mode 1 wakes on announces; a live mesh never sleeps otherwise
         gui.wake_screen(why="announce")
     if DEBUG >= 1:
@@ -1285,8 +1302,9 @@ def _drop_link(lora=True):
     back), or the old link under a new dial (lora=False: the dial's own
     failure path restarts the radio, a success stops it anyway, and a
     cycle in between would block the loop and announce for nothing). The
-    peers and the nomad/rnsh/rrc caches learned over it go with it:
-    nothing may route over a dead link."""
+    routes and the nomad/rnsh/rrc sessions and caches learned over it go
+    with it; the rows stay, since rows don't route: a send looks up a path
+    when it goes out."""
     global _tcp_iface, _tcp_task
     from urns.transport import Transport
     old = _tcp_iface
@@ -1306,7 +1324,7 @@ def _drop_link(lora=True):
         except Exception:
             pass
         Transport.deregister_interface(old)
-    gui.clear_peers()
+    gui.forget_routes()
     _lxmf_to_peer.clear()
     nomad_browser.clear_nodes()
     rnsh_client.clear_nodes()
@@ -1349,7 +1367,7 @@ def _dial_backbone(host, port, ifac=None):
         iface.setup_ifac(TCP_CONFIG)   # before any packet moves: poll_loop starts below
         # Stop LoRa — only one interface at a time
         _stop_lora()
-        gui.clear_peers()
+        gui.forget_routes()
         _lxmf_to_peer.clear()
         nomad_browser.clear_nodes()
         rnsh_client.clear_nodes()
@@ -1384,7 +1402,7 @@ def _tcp_down(save=True):
             _tcp_iface.close()
         Transport.deregister_interface(_tcp_iface)
         _tcp_iface = None
-    gui.clear_peers()
+    gui.forget_routes()
     _lxmf_to_peer.clear()
     nomad_browser.clear_nodes()
     rnsh_client.clear_nodes()
@@ -1675,8 +1693,8 @@ def set_tz_pref(minutes):
 
 
 def forget_peer(key):
-    """GUI: a peer was deleted — drop its LXMF-hash mappings too so a fresh
-    announce re-adds it cleanly."""
+    """GUI: a peer was deleted: drop its LXMF-hash mappings too, so its next
+    message makes a fresh row under its own key."""
     for h in [h for h, pk in _lxmf_to_peer.items() if pk == key]:
         _lxmf_to_peer.pop(h, None)
 

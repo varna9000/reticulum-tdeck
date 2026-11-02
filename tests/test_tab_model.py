@@ -656,51 +656,332 @@ def test_load_favorites_with_nothing_stored():
         assert keys(g, tab) == [ui._NEW] and cursor(g, tab) == 0, tab
 
 
-# --- clearing a tab --------------------------------------------------------
+# --- announces only count ---------------------------------------------------
 
-def _clear(g, tab):
-    if tab == ui.TAB_MSG:
-        g.clear_peers()
-    elif tab == ui.TAB_NET:
-        g.clear_nomad_nodes()
-    elif tab == ui.TAB_SSH:
-        g.clear_shell_nodes()
-    else:
-        g.clear_rrc_hubs()
+def stranger(i):
+    return bytes([0xA0, i >> 8, i & 255]) + bytes(13)
 
 
-def test_clearing_keeps_the_top_row():
-    # The trap: every clear_* emptied the key list, top row included.
+def test_300_stranger_announces_change_nothing():
     for tab in TABS:
         g = mk_filled(tab)
         select(g, tab, 2)
-        _clear(g, tab)
-        assert keys(g, tab) == [ui._NEW], tab
-        assert cursor(g, tab) == 0 and scroll(g, tab) == 0, tab
-        add(g, tab, C)
-        assert keys(g, tab) == [ui._NEW, C], tab
+        before = snapshot(g, tab)
+        g.dirty = False
+        for i in range(300):
+            assert g.heard(tab, stranger(i), "s") is False, tab
+        assert snapshot(g, tab) == before, tab
+        assert g.dirty is False, tab
+        assert g._new_row_label() == "99+ newly heard" and len(g._heard[tab]) == 100, tab
+
+
+def test_a_stranger_counts_once_and_only_on_its_own_tab():
+    g = mk()
+    g.heard(ui.TAB_NET, stranger(1), "s")
+    g.heard(ui.TAB_NET, stranger(1), "s")
+    assert [len(h) for h in g._heard] == [0, 1, 0, 0]
+    assert next(iter(g._heard[ui.TAB_NET])) == stranger(1)[:4]
+
+
+def test_known_announce_updates_in_place():
+    g = mk()
+    g.add_peer(A, None)
+    g.add_peer(B, "b")
+    order = list(g._peer_keys)
+    assert g.heard(ui.TAB_MSG, A, "ridge", hops=3) is True
+    assert g.peers[A]["name"] == "ridge" and g.peers[A]["hops"] == 3 and g._peer_keys == order
+    assert not any(g._heard), "a known row is not a stranger"
+
+
+def test_known_announce_moves_nothing_on_any_tab():
+    for tab in TABS:
+        g = mk_filled(tab)
+        add(g, tab, C, "c")
+        select(g, tab, keys(g, tab).index(B))
+        setattr(g, ui._TAB_ATTRS[tab][1], 1)
+        order = list(keys(g, tab))
+        at, sc = cursor(g, tab), scroll(g, tab)
+        table(g, tab)[A]["seen"] = 5
+        assert g.heard(tab, A, "z", hops=2) is True, tab
+        assert keys(g, tab) == order and (cursor(g, tab), scroll(g, tab)) == (at, sc), tab
+        assert table(g, tab)[A]["name"] == "z" and table(g, tab)[A]["hops"] == 2, tab
+        assert table(g, tab)[A]["seen"] > 5, tab
+
+
+def test_only_a_changed_name_repaints():
+    for tab in TABS:
+        g = mk_filled(tab)
+        g.dirty = False
+        g.heard(tab, A, "a", hops=7)
+        assert g.dirty is False, tab
+        g.heard(tab, A, None, hops=8)
+        assert g.dirty is False, tab
+        g.heard(tab, A, "renamed")
+        assert g.dirty is True, tab
+
+
+def test_nameless_announce_keeps_the_name():
+    for tab in TABS:
+        g = mk_filled(tab)
+        g.heard(tab, A, None)
+        g.heard(tab, A, "")
+        assert table(g, tab)[A]["name"] == "a", tab
+
+
+def test_an_announce_that_knows_no_route_keeps_the_last_one():
+    g = mk()
+    g.add_peer(A, "a", rssi=-80, hops=3, via="ab12")
+    g.heard(ui.TAB_MSG, A, "a")
+    e = g.peers[A]
+    assert (e["rssi"], e["hops"], e["via"]) == (-80, 3, "ab12")
+
+
+def test_a_shorter_route_drops_the_old_relay():
+    g = mk()
+    g.add_peer(A, "a", hops=3, via="ab12")
+    g.heard(ui.TAB_MSG, A, "a", hops=1)
+    assert g.peers[A]["hops"] == 1 and g.peers[A]["via"] is None
+
+
+def test_heard_survives_an_unknown_tab():
+    g = mk()
+    add(g, ui.TAB_SSH, A, "a")
+    g.dirty = False
+    for tab in (4, 99, -1, None):
+        assert g.heard(tab, A, "x", hops=1) is False, tab
+        assert g.heard(tab, stranger(1), "x") is False, tab
+    assert g.shell_nodes[A]["name"] == "a", "an unknown tab fell through to the SSH table"
+    assert not any(g._heard) and g.dirty is False
+
+
+def test_heard_survives_a_nameless_entry():
+    g = mk()
+    g.add_rrc_hub(A)                       # hubs may have no name at all
+    assert g.rrc_hubs[A]["name"] is None
+    g.dirty = False
+    assert g.heard(ui.TAB_RRC, A) is True and g.dirty is False
+    assert g.heard(ui.TAB_RRC, A, "hub") is True and g.dirty is True
+    del g.rrc_hubs[A]["name"]
+    assert g.heard(ui.TAB_RRC, A) is True
+    assert g.heard(ui.TAB_RRC, A, "hub") is True and g.rrc_hubs[A]["name"] == "hub"
+
+
+def test_heard_with_the_cursor_on_the_top_row():
+    for tab in TABS:
+        g = mk_filled(tab)
+        select(g, tab, 0)
+        g.heard(tab, A, "z")
+        g.heard(tab, stranger(1), "s")
+        assert g._selected_key() == ui._NEW, tab
         g.draw_node_list()
 
 
-def test_clearing_keeps_pins_in_order_with_the_cursor_on_the_first():
+# --- the message path's row -------------------------------------------------
+
+S = b"\xc0\xff\xee\x42" + bytes(12)
+
+
+def test_first_message_makes_one_row_under_the_pins():
+    g = mk()
+    g.add_peer(F, "f", fav=True)
+    g.message_row(S, None)
+    g.add_chat_message(S, False, "hi")
+    g.message_row(S, None)
+    g.add_chat_message(S, False, "again")
+    assert g._peer_keys == [ui._NEW, F, S] and g.unread[S] == 2
+    assert g._chat_cols(S)[0] == "? " + S.hex()[:8]
+
+
+def test_first_message_uses_the_cached_name():
+    g = mk()
+    g.message_row(S, "ridge")
+    assert g.peers[S]["name"] == "ridge"
+
+
+def test_message_row_keeps_a_known_name():
+    g = mk()
+    g.add_peer(S, "alex")
+    g.message_row(S, None)
+    assert g.peers[S]["name"] == "alex"
+    g.message_row(S, "other")
+    assert g.peers[S]["name"] == "alex", "only an announce renames a row"
+
+
+def test_message_row_keeps_the_route_and_star_of_a_known_row():
+    g = mk()
+    g.add_peer(S, "alex", hops=4, via="ab12", fav=True)
+    g.message_row(S, None)
+    assert g.peers[S]["hops"] == 4 and g.peers[S]["via"] == "ab12" and g.peers[S]["fav"] is True
+
+
+def test_a_message_at_the_cap_evicts_the_oldest_read_chat():
+    g = mk_at_cap(ui.TAB_MSG)
+    for i in range(ui.MAX_PEERS):
+        g.peers[key_n(i)]["seen"] = 1000 + i
+    g.message_row(S, None)
+    g.add_chat_message(S, False, "hi")
+    assert S in g.peers and key_n(0) not in g.peers and len(g.peers) == ui.MAX_PEERS
+    assert g.unread[S] == 1
+
+
+# --- a link change ----------------------------------------------------------
+
+def mk_with_unread_chat(k):
+    g = mk()
+    g.add_peer(k, "a", rssi=-80, hops=3, via="ab12")
+    g.add_chat_message(k, False, "hi", image=b"\xff\xd8", audio=b"\x00", audio_mode=0)
+    return g
+
+
+def test_link_change_keeps_rows_history_and_unread():
+    g = mk_with_unread_chat(A)
+    g.forget_routes()
+    assert A in g.peers and g.unread[A] == 1 and g.chat_history[A] and g.peers[A]["hops"] is None
+    assert g.peers[A]["rssi"] is None and g.peers[A]["via"] is None
+    assert g.peers[A]["name"] == "a"
+
+
+def test_link_change_keeps_the_media():
+    g = mk_with_unread_chat(A)
+    img, aud, order = dict(g._image_cache), dict(g._audio_cache), list(g._image_cache_order)
+    assert img and aud and order
+    g.forget_routes()
+    assert g._image_cache == img and g._audio_cache == aud and g._image_cache_order == order
+
+
+def test_link_change_with_chat_open_stays_in_the_chat():
+    g = mk_with_unread_chat(A)
+    g.selected_peer = A
+    g.state = ui.STATE_CHAT
+    g.chat_scroll = 2
+    g.forget_routes()
+    assert g.state == ui.STATE_CHAT and g.selected_peer == A and g.chat_scroll == 2
+
+
+def test_link_change_clears_routes_and_counts_on_every_tab():
+    g = mk()
+    for tab in TABS:
+        add(g, tab, A, "a", hops=2)
+        g.heard(tab, stranger(1), "s")
+    g.dirty = False
+    g._cache = ["x"] * ui.CACHE_ROWS
+    g._route_cache = "aacf7098 2 hops"
+    g.forget_routes()
+    for tab in TABS:
+        assert table(g, tab)[A]["hops"] is None and table(g, tab)[A]["name"] == "a", tab
+        assert not g._heard[tab], tab
+    assert g.dirty is True and g._cache == [""] * ui.CACHE_ROWS and g._route_cache == ""
+
+
+def test_link_change_leaves_order_cursor_window_and_pins():
     for tab in TABS:
         g = mk()
         for k in (A, B, C):
             add(g, tab, k)
         _pin_in_order(g, tab, (B, A))
-        _clear(g, tab)
-        assert keys(g, tab) == [ui._NEW, B, A], (tab, keys(g, tab))
-        assert cursor(g, tab) == 1 and scroll(g, tab) == 0, tab
+        select(g, tab, 3)
+        setattr(g, ui._TAB_ATTRS[tab][1], 1)
+        order = list(keys(g, tab))
+        g.forget_routes()
+        assert keys(g, tab) == order and keys(g, tab)[0] == ui._NEW, tab
+        assert (cursor(g, tab), scroll(g, tab)) == (3, 1), tab
+        assert table(g, tab)[B]["fav"] is True, tab
+        g.draw_node_list()
 
 
-def test_clearing_one_tab_leaves_the_others_cursors():
+def test_link_change_adds_no_route_fields_a_table_never_had():
     g = mk()
-    add(g, ui.TAB_MSG, A)
-    add(g, ui.TAB_NET, B)
-    add(g, ui.TAB_NET, C)
-    g.net_idx = 2
-    g.clear_peers()
-    assert g.net_idx == 2
+    add(g, ui.TAB_NET, A, "a", hops=2)
+    g.forget_routes()
+    assert "rssi" not in g.nomad_nodes[A] and "via" not in g.nomad_nodes[A]
+
+
+def test_a_route_comes_back_with_the_next_announce():
+    g = mk_with_unread_chat(A)
+    g.forget_routes()
+    assert g.heard(ui.TAB_MSG, A, "a", rssi=-70, hops=1) is True
+    assert g.peers[A]["hops"] == 1 and g.peers[A]["rssi"] == -70
+
+
+def test_the_clear_methods_are_gone():
+    for name in ("clear_peers", "clear_nomad_nodes", "clear_shell_nodes", "clear_rrc_hubs"):
+        assert not hasattr(ui.UI, name), name
+
+
+# --- the tab clients, on the real table -------------------------------------
+
+import nomad_browser
+import rnsh_client
+import rrc_client
+
+CLIENTS = (
+    (ui.TAB_NET, nomad_browser, "_nomad_hash", b"node", "node"),
+    (ui.TAB_SSH, rnsh_client, "_rnsh_hash", None, None),
+    (ui.TAB_RRC, rrc_client, "_hub_hash", rrc_client.cbor.dumps({"proto": "rrc", "v": 1, "hub": "hub"}), "hub"),
+)
+
+
+def _wired(client, hash_fn):
+    g = mk()
+    client._gui = g
+    setattr(client, hash_fn, lambda h: h)
+    client._node_hops = lambda h: 4
+    return g
+
+
+def test_the_clients_name_the_tab_ui_does():
+    assert nomad_browser.TAB == ui.TAB_NET
+    assert rnsh_client.TAB == ui.TAB_SSH
+    assert rrc_client.TAB == ui.TAB_RRC
+
+
+def test_client_announce_from_a_stranger_only_counts():
+    for tab, client, hash_fn, data, _name in CLIENTS:
+        g = _wired(client, hash_fn)
+        g.dirty = False
+        client._on_announce(A, data, None)
+        assert keys(g, tab) == [ui._NEW] and table(g, tab) == {}, tab
+        assert [len(h) for h in g._heard] == [1 if t == tab else 0 for t in TABS], tab
+        assert g.dirty is False, tab
+
+
+def test_client_announce_of_something_else_does_not_count():
+    for tab, client, hash_fn, data, _name in CLIENTS:
+        g = _wired(client, hash_fn)
+        setattr(client, hash_fn, lambda h: b"other")
+        client._on_announce(A, data, None)
+        assert not any(g._heard), tab
+
+
+def test_client_announce_updates_its_row_in_place():
+    for tab, client, hash_fn, data, name in CLIENTS:
+        g = _wired(client, hash_fn)
+        add(g, tab, A, "old")
+        add(g, tab, B, "b")
+        order = list(keys(g, tab))
+        client._on_announce(A, data, None)
+        assert keys(g, tab) == order and table(g, tab)[A]["hops"] == 4, tab
+        assert table(g, tab)[A]["name"] == (name or "old"), tab
+        assert not any(g._heard), tab
+
+
+def test_client_announce_wakes_only_under_wake_all():
+    for tab, client, hash_fn, data, _name in CLIENTS:
+        for mode, wakes in ((0, 0), (1, 1), (2, 0)):
+            g = _wired(client, hash_fn)
+            got = []
+            g.wake_screen = lambda *a, **k: got.append(1)
+            g._wake_mode = mode
+            client._on_announce(A, data, None)
+            assert len(got) == wakes, (tab, mode)
+
+
+def test_client_clears_leave_the_rows_to_the_link_change():
+    for tab, client, hash_fn, _data, _name in CLIENTS:
+        g = _wired(client, hash_fn)
+        add(g, tab, A, "a")
+        (client.clear_hubs if client is rrc_client else client.clear_nodes)()
+        assert A in table(g, tab), tab
 
 
 # --- the receive path, with the cursor on the top row -----------------------

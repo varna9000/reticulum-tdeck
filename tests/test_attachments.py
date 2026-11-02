@@ -343,13 +343,13 @@ def test_trimmed_messages_release_their_media():
     assert g._image_cache_order == []
 
 
-def test_clear_peers_releases_media():
+def test_link_change_keeps_media_with_its_history():
     g, _ = _chat_ui()
     g.add_chat_message(PEER, False, "[image 2k]", image=JPEG)
     g.add_chat_message(PEER, False, "[voice 1s]", audio=C2_3200, audio_mode=0)
-    g.clear_peers()
-    assert g._image_cache == {} and g._audio_cache == {}
-    assert g._image_cache_order == []
+    g.forget_routes()
+    assert len(g._image_cache) == 1 and len(g._audio_cache) == 1
+    assert len(g._image_cache_order) == 1
 
 
 def test_visible_rows_resolve_to_live_messages_after_a_trim():

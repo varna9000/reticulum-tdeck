@@ -25,6 +25,7 @@ IMG_FETCH_CAP = 630           # seconds; outer safety net only. Kept just above
 MAX_IMAGE_BYTES = 512 * 1024  # reject anything larger before it hits the decoder
 
 _gui = None
+TAB = 1            # ui.TAB_NET (pinned by test_tab_model; no ui import on the announce path)
 _link = None          # OutgoingLink to the node being browsed
 _link_dest = None     # dest_hash the current link points at
 _fetching = False
@@ -92,11 +93,11 @@ def _decode_name(app_data):
 
 
 def _on_announce(dest_hash, app_data, packet):
-    """Transport announce observer — collect nomadnetwork.node announces."""
+    """Transport announce observer: a nomadnetwork.node announce updates that
+    node's row, or counts toward the NET tab's top row if it has none."""
     if _nomad_hash(dest_hash) != dest_hash:
         return
-    _gui.add_nomad_node(dest_hash, _decode_name(app_data),
-                        hops=_node_hops(dest_hash))
+    _gui.heard(TAB, dest_hash, _decode_name(app_data), hops=_node_hops(dest_hash))
     if _gui._wake_mode == 1:  # announces wake only under Wake: all
         _gui.wake_screen()
 
@@ -107,20 +108,18 @@ def _on_announce(dest_hash, app_data, packet):
 # validate announces, so it must survive a reboot), but a node recorded in it
 # days ago says nothing about whether it is reachable now. Seeding from it
 # filled the tab with stale hashes that had to be tried before they could be
-# discovered dead. The list is therefore session-scoped: it starts empty on
-# boot and holds exactly the nodes announced since. Live announces are added
-# straight to the GUI by the announce handler above, so nothing is lost by not
-# seeding — including announces heard before the tab is first opened.
+# discovered dead. The list therefore starts with the favourites on boot and
+# holds what you picked since. Lookup reads that store when you ask, so nothing
+# heard is out of reach -- including announces heard before the tab is opened.
 
 
 def clear_nodes():
-    """Interface switched — reachability changed, start over."""
+    """Interface switched: the session and the pages fetched over the old link
+    go. The rows stay; gui.forget_routes() takes their routes."""
     _history.clear()
     _page_cache.clear()
     _page_cache_order.clear()
     _teardown()
-    if _gui:
-        _gui.clear_nomad_nodes()
 
 
 # --- Link lifecycle ---------------------------------------------------------

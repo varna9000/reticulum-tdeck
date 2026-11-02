@@ -18,9 +18,9 @@ STATE_SHELL    = 6
 STATE_RRC_ROOMS = 7
 STATE_RRC_CHAT  = 8
 
-# E-ink only: the least time between two redraws nobody asked for. Every
-# announce marks the UI dirty, and on a backbone they come several a second
-# while the node list fills; each frame whose rows differ is a ~700 ms panel
+# E-ink only: the least time between two redraws nobody asked for. An announce
+# that renames a row marks the UI dirty, and on a backbone they can come several
+# a second while the list fills; each frame whose rows differ is a ~700 ms panel
 # refresh that freezes the event loop, touch included. A frame the user caused
 # (a key, a tap, a drag) is never held by this: it goes out on the 50 ms
 # throttle as before, and carries whatever changed in the background with it.
@@ -786,14 +786,14 @@ class UI:
         self._ping_status_ms = 0
         self.ping_pending = False  # True while a ping is awaiting its receipt
 
-        # NET tab: NomadNet nodes (populated by nomad_browser)
+        # NET tab: NomadNet nodes
         self.node_tab = 0        # 0 = MSG (LXMF peers), 1 = NET (nomad nodes), 2 = SSH (rnsh)
         self.nomad_nodes = {}    # dest_hash -> {"name": str, "hops": int|None, "seen": ts}
         self._node_keys = [_NEW]     # ordered like _peer_keys
         self.net_idx = 0
         self.net_scroll = 0
 
-        # SSH tab: rnsh listeners (populated by rnsh_client)
+        # SSH tab: rnsh listeners
         self.shell_nodes = {}    # dest_hash -> {"name": str, "hops": int|None, "seen": ts}
         self._shell_keys = [_NEW]    # ordered like _peer_keys
         self.ssh_idx = 0
@@ -2796,10 +2796,10 @@ class UI:
         idx = getattr(self, _TAB_ATTRS[self.node_tab][0])
         return keys[idx] if 0 <= idx < len(keys) else None
 
-    def _cursor_home(self, only=None):
-        """Cursor to the first entry and the window to the top, on every tab
-        or just one. A tab with no entries has only its top row to be on."""
-        for tab in range(N_TABS) if only is None else (only,):
+    def _cursor_home(self):
+        """Cursor to the first entry and the window to the top, on every tab.
+        A tab with no entries has only its top row to be on."""
+        for tab in range(N_TABS):
             ia, sa = _TAB_ATTRS[tab]
             setattr(self, ia, 1 if len(self._tab_list(tab)[0]) > 1 else 0)
             setattr(self, sa, 0)
@@ -3164,7 +3164,8 @@ class UI:
             self._draw_input_line(q)
 
     def add_shell_node(self, dest_hash, name=None, hops=None, seen=None, fav=False):
-        """Add or update an rnsh listener (SSH tab, called by rnsh_client)."""
+        """Add or update an rnsh listener's row (SSH tab): a Lookup pick or a
+        favourite."""
         prev = self.shell_nodes.get(dest_hash)
         if prev is None:
             self._evict(TAB_SSH)
@@ -3181,16 +3182,6 @@ class UI:
             self._place(TAB_SSH, dest_hash)
         if self.state == STATE_NODES and self.node_tab == TAB_SSH:
             self.dirty = True
-
-    def clear_shell_nodes(self):
-        """Clear the SSH tab (interface switch)."""
-        self.shell_nodes.clear()
-        self._shell_keys.clear()
-        self._shell_keys.append(_NEW)
-        self._load_favorite("shell")
-        self._cursor_home(TAB_SSH)
-        self._cache = [''] * CACHE_ROWS
-        self.dirty = True
 
     # Callbacks invoked by rnsh_client -------------------------------------
 
@@ -3234,9 +3225,9 @@ class UI:
     # --- RRC (Reticulum Relay Chat) GUI API, called by rrc_client ---------
 
     def add_rrc_hub(self, dest_hash, name=None, hops=None, fav=False):
-        """Add or update a hub (RRC tab, called by rrc_client). The cursor
-        stays on its hub across an eviction: the next click must not open a
-        different one."""
+        """Add or update a hub's row (RRC tab): a Lookup pick or a favourite.
+        The cursor stays on its hub across an eviction: the next click must
+        not open a different one."""
         entry = self.rrc_hubs.get(dest_hash)
         if entry is None:
             self._evict(TAB_RRC)
@@ -3250,13 +3241,6 @@ class UI:
             entry["seen"] = time.time()
             if fav is True:
                 entry["fav"] = fav
-        self.dirty = True
-
-    def clear_rrc_hubs(self):
-        self.rrc_hubs = {}
-        self._rrc_keys = [_NEW]
-        self._load_favorite("hub")
-        self._cursor_home(TAB_RRC)
         self.dirty = True
 
     def rrc_status(self, text):
@@ -5529,23 +5513,50 @@ class UI:
 
     # --- Data management ---
 
-    def clear_peers(self):
-        """Clear node list, chat history, and related state."""
-        self.peers.clear()
-        self._peer_keys.clear()
-        self._peer_keys.append(_NEW)
-        self.chat_history.clear()
-        self._load_favorite("peer")
-        # Media is keyed by message id, which nothing will reference again
-        # once the history holding those ids is gone.
-        self._image_cache.clear()
-        self._audio_cache.clear()
-        self._image_cache_order = []
-        self.unread = {}
-        self.selected_peer = None
-        self._cursor_home(TAB_MSG)
-        self.chat_scroll = 0
+    def heard(self, tab, dest, name=None, rssi=None, hops=None, via=None):
+        """An announce for a tab. A row takes the news in place and True comes
+        back; anything else only counts toward the top row and False comes
+        back. Never moves a row, the cursor or the window, and repaints only
+        for a changed name: on a backbone these come several a second. A route
+        this announce doesn't know (None) keeps the last one; via goes with
+        hops, since a direct path has no relay."""
+        if tab not in (TAB_MSG, TAB_NET, TAB_SSH, TAB_RRC):
+            return False
+        e = self._tab_list(tab)[1].get(dest)
+        if e is None:
+            if len(self._heard[tab]) < 100:
+                self._heard[tab].add(dest[:4])
+            return False
+        if name and name != e.get("name"):
+            e["name"] = name
+            self.dirty = True
+        if rssi is not None:
+            e["rssi"] = rssi
+        if hops is not None:
+            e["hops"] = hops
+            e["via"] = via
+        e["seen"] = time.time()
+        self._route_cache = ''
+        return True
+
+    def message_row(self, key, name):
+        """A message arrived: give its sender a chat row if it has none. An
+        existing row keeps its name; only an announce renames."""
+        if key not in self.peers:
+            self.add_peer(key, name)
+
+    def forget_routes(self):
+        """The link changed. Routes and heard counts die with it; rows, chats,
+        unread, media and the open chat do not, and nothing moves. A send
+        looks its path up, so a row with no route is still a row you can use."""
+        for tab in (TAB_MSG, TAB_NET, TAB_SSH, TAB_RRC):
+            for e in self._tab_list(tab)[1].values():
+                for k in ("rssi", "hops", "via"):
+                    if k in e:
+                        e[k] = None
+            self._heard[tab].clear()
         self._cache = [''] * CACHE_ROWS
+        self._route_cache = ''
         self.dirty = True
 
     def _forget_peer_state(self, key):
@@ -5560,7 +5571,7 @@ class UI:
         self._image_cache_order = [ck for ck in self._image_cache_order if ck[0] != key]
 
     def add_peer(self, dest_hash, name, rssi=None, hops=None, via=None, fav=False):
-        """Add or update a peer from an announce."""
+        """Add or update a chat row: a message, a Lookup pick or a favourite."""
         e = self.peers.get(dest_hash)
         if e is None:
             self._evict(TAB_MSG)
@@ -5576,8 +5587,8 @@ class UI:
 
     def delete_selected(self):
         """Forget the selected peer (MSG) / node (NET) / hub (RRC) / listener
-        (SSH) and its local state. The entry re-appears on the next announce;
-        this just clears clutter."""
+        (SSH) and its local state. Announces won't bring the row back; a
+        message or a Lookup pick will."""
         if self._selected_key() == _NEW:
             return
         if self.node_tab == TAB_MSG:
@@ -5636,7 +5647,8 @@ class UI:
         self.dirty = True
 
     def add_nomad_node(self, dest_hash, name, hops=None, seen=None, fav=False):
-        """Add or update a NomadNet node (NET tab, called by nomad_browser)."""
+        """Add or update a NomadNet node's row (NET tab): a Lookup pick or a
+        favourite."""
         prev = self.nomad_nodes.get(dest_hash)
         if prev is None:
             self._evict(TAB_NET)
@@ -5651,16 +5663,6 @@ class UI:
         if prev is None:
             self._place(TAB_NET, dest_hash)
         self._route_cache = ''
-        self.dirty = True
-
-    def clear_nomad_nodes(self):
-        """Clear the NET tab (interface switch)."""
-        self.nomad_nodes.clear()
-        self._node_keys.clear()
-        self._node_keys.append(_NEW)
-        self._load_favorite("node")
-        self._cursor_home(TAB_NET)
-        self._cache = [''] * CACHE_ROWS
         self.dirty = True
 
     @staticmethod
