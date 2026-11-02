@@ -272,7 +272,7 @@ def test_typing_resets_selection():
     assert g._find_sel == 0
 
 
-def test_enter_adds_the_pick_and_selects_it_without_opening():
+def test_enter_adds_the_pick_selects_it_and_opens_its_chat():
     g = _mkui()
     g.add_peer(ALICE, "nomad-alice")
     g.handle_key(b"m")
@@ -280,13 +280,11 @@ def test_enter_adds_the_pick_and_selects_it_without_opening():
     g.nav_event("down")
     g.handle_trackball()
     g.handle_key(b"\r")
-    assert g.state == ui.STATE_NODES
+    assert g.state == ui.STATE_CHAT and g.selected_peer == RPI
     assert g._peer_keys[g.selected_idx] == RPI
     assert g.peers[RPI]["name"] == "deejay-rpi"
     assert g.added == [RPI]
     assert not g._find
-    g.handle_key(b"\r")                  # the usual Enter now opens it
-    assert g.state == ui.STATE_CHAT and g.selected_peer == RPI
 
 
 def test_click_adds_like_enter():
@@ -295,7 +293,7 @@ def test_click_adds_like_enter():
     _type(g, "rats")
     g.nav_event("click")
     g.handle_trackball()
-    assert g.state == ui.STATE_NODES
+    assert g.state == ui.STATE_CHAT and g.selected_peer == RATS
     assert g._peer_keys[g.selected_idx] == RATS
 
 
@@ -336,7 +334,7 @@ def test_unknown_full_hash_is_added_as_unknown_and_path_requested():
     assert g._find_res == []
     g.handle_key(b"\r")
     dest = bytes.fromhex(UNKNOWN)
-    assert g.state == ui.STATE_NODES
+    assert g.state == ui.STATE_CHAT and g.selected_peer == dest
     assert g._peer_keys[g.selected_idx] == dest
     assert g.peers[dest]["name"] == "?"
     assert g.added == [dest]
@@ -495,8 +493,8 @@ def test_find_screen_draws_with_long_names_and_no_results():
 
 
 def test_find_title_names_what_the_tab_adds_and_no_identity_rows():
-    want = {ui.TAB_MSG: "Find peer", ui.TAB_NET: "Find node",
-            ui.TAB_RRC: "Find hub", ui.TAB_SSH: "Find listener"}
+    want = {ui.TAB_MSG: "New chat: name or hash", ui.TAB_NET: "New node: name or hash",
+            ui.TAB_RRC: "New hub: name or hash", ui.TAB_SSH: "New shell: hash"}
     for tab, title in want.items():
         g = _mkui()
         g.my_identity_hash = "ab" * 16
@@ -515,7 +513,7 @@ def test_title_band_is_teal_and_centred():
     y = ui.BODY_Y + ui.CHAR_H
     band = [r for r in t.rects if r[1] == y and r[2] == ui.SCREEN_W]
     assert band and band[0][4] == g.TAB_BG, band
-    title = [c for c in t.colors if c[2] == y and c[0].startswith("Find")][0]
+    title = [c for c in t.colors if c[2] == y and c[0].startswith("New")][0]
     assert title[3] == g.NEON_GREEN and title[4] == g.TAB_BG, title
     assert title[1] == (ui.COLS - len(title[0])) // 2 * ui.CHAR_W, title
 
@@ -855,6 +853,94 @@ def test_transfers_and_playback_still_block_sleep():
     g._audio_status = None
     g.transfer_progress = (1, 4)
     assert g._sleep_blocked()
+
+
+# --- Lookup: titles, a pick on MSG opens the chat, heard count, order -------
+
+def mk_find(tab, snap):
+    g = _mkui(snap=lambda: list(snap))
+    g._switch_tab(tab)
+    g.handle_key(b"m")
+    assert g._find
+    return g
+
+
+def drawn_text(g):
+    return _draw(g).drawn()
+
+
+def test_titles_by_tab():
+    assert ui.UI._FIND_TITLES == ("New chat: name or hash", "New node: name or hash",
+                                  "New shell: hash", "New hub: name or hash")
+
+
+def test_pick_on_msg_opens_the_chat():
+    g = mk_find(ui.TAB_MSG, [(RATS, "kay", 0)])
+    g._find_pick()
+    assert g.state == ui.STATE_CHAT and g.selected_peer == RATS and RATS in g.peers
+    assert not g._find and g.added == [RATS]
+
+
+def test_pick_elsewhere_adds_and_selects_without_opening():
+    for tab in (ui.TAB_NET, ui.TAB_SSH, ui.TAB_RRC):
+        g = mk_find(tab, [(RATS, "n", 0)])
+        g._find_pick()
+        assert g.state == ui.STATE_NODES, tab
+        assert g._selected_key() == RATS, tab
+        assert g.added == [RATS], tab
+
+
+def test_pick_of_a_known_row_on_msg_opens_its_chat():
+    g = mk_find(ui.TAB_MSG, [(RATS, "kay", 0)])
+    g.add_peer(RATS, "kay")
+    g._find_pick()
+    assert g.state == ui.STATE_CHAT and g.selected_peer == RATS
+
+
+def test_open_resets_only_this_tabs_count():
+    g = _mkui()
+    g.heard(ui.TAB_MSG, RATS)
+    g.heard(ui.TAB_NET, DEEJ)
+    g._find_open()
+    assert len(g._heard[ui.TAB_MSG]) == 0 and len(g._heard[ui.TAB_NET]) == 1
+
+
+def test_add_contact_route_news_do_not_count_as_heard():
+    g = mk_find(ui.TAB_MSG, [(RATS, "kay", 0)])
+    g.on_add_contact = lambda h: g.heard(g.node_tab, h, hops=2, via=None)
+    g._find_pick()
+    assert len(g._heard[ui.TAB_MSG]) == 0 and g.peers[RATS]["hops"] == 2
+
+
+def test_empty_cache_copy():
+    g = mk_find(ui.TAB_MSG, [])
+    out = drawn_text(g)
+    assert "Nothing heard yet." in out and "Or type a 32-hex hash." in out
+
+
+def test_no_match_copy_when_something_was_heard():
+    g = mk_find(ui.TAB_MSG, [(RATS, "kay", 0)])
+    _type(g, "qqq")
+    assert "No match." in drawn_text(g)
+
+
+def test_enter_hint_says_chat_on_msg_and_add_elsewhere():
+    g = mk_find(ui.TAB_MSG, [(RATS, "kay", 0)])
+    assert "Ent=chat" in drawn_text(g)
+    g = mk_find(ui.TAB_NET, [(RATS, "kay", 0)])
+    assert "Ent=add" in drawn_text(g)
+
+
+def test_newly_heard_sort_above_flash_entries_before_sync():
+    now = 1000
+    out = ui._heard_order([(RATS, "flash", 1793000000), (DEEJ, "new", 990), (RPI, "newer", 995)], now)
+    assert [e[1] for e in out] == ["newer", "new", "flash"]
+
+
+def test_after_sync_newest_first():
+    now = 1793000000
+    out = ui._heard_order([(RATS, "old", now - 500), (DEEJ, "new", now - 5)], now)
+    assert [e[1] for e in out] == ["new", "old"]
 
 
 def _run():

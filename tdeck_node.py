@@ -1730,7 +1730,7 @@ def contact_snapshot(tab):
         if Identity.full_hash(nh + Identity.truncated_hash(pub))[:tl] != dh:
             continue
         out.append((dh, (parse(v[3]) if parse else None) or "?", v[0]))
-    out.sort(key=lambda e: e[2], reverse=True)
+    out = _ui._heard_order(out, time.time())
     gc.collect()
     return out
 

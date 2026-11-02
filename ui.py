@@ -540,6 +540,13 @@ _MIC = _icon(("..###..", ".#####.", ".#####.", ".#####.", ".#####.",
               "#.###.#", "#.....#", ".#...#.", "..###..", "...#...", "..###.."))
 
 
+def _heard_order(entries, now):
+    """Newest first. Before the clock syncs `now` is small and a flash
+    entry's saved time is a real epoch far above it: those sort below
+    everything stamped by this boot's clock, instead of above it."""
+    return sorted(entries, key=lambda e: (e[2] <= now, e[2]), reverse=True)
+
+
 def match_contacts(snap, q):
     """Find-contact filter: the (dest_hash, name, ts) entries of snap, in
     snap's order, whose name contains q (any case) or -- when q is hex --
@@ -2891,6 +2898,7 @@ class UI:
                 snap.append((k, p.get("name") or "?", p.get("seen", 0)))
         self._find_snap = snap
         self._find = True
+        self._heard[self.node_tab].clear()   # what Lookup lists is now seen
         self._find_q = ""
         self._find_filter()
         self._cache = [''] * CACHE_ROWS
@@ -3032,6 +3040,11 @@ class UI:
                 self.add_rrc_hub(dest, name=name)
             else:
                 self.add_shell_node(dest, name=name)
+        if new and self.on_add_contact:
+            try:
+                self.on_add_contact(dest)
+            except Exception:
+                pass
         self._find_close()
         i = keys.index(dest)
         rows = BODY_ROWS - 1
@@ -3048,16 +3061,14 @@ class UI:
             self.ssh_idx = i
             self.ssh_scroll = max(0, i - rows + 1) if i >= self.ssh_scroll + rows else min(self.ssh_scroll, i)
         self._route_cache = ''
-        if new and self.on_add_contact:
-            try:
-                self.on_add_contact(dest)
-            except Exception:
-                pass
+        if self.node_tab == TAB_MSG:
+            self._enter_chat()
 
-    _FIND_TITLES = ("Find peer: name or hash", "Find node: name or hash",
-                    "Find listener: hash", "Find hub: name or hash")   # by TAB_*
+    _FIND_TITLES = ("New chat: name or hash", "New node: name or hash",
+                    "New shell: hash", "New hub: name or hash")   # by TAB_*
     _FIND_NOT_HEARD = ("Not heard yet.", "Enter: and ask the network for a path.")
     _FIND_NO_MATCH = ("No match.", "Type the full 32-hex hash to add it.")
+    _FIND_EMPTY = ("Nothing heard yet.", "Or type a 32-hex hash.")
     _FIND_LISTEN = ("Listening...", "Play the address from your Mac.")
     _FIND_NOTHING = ("Nothing heard.", "Hold the T-Deck near the speaker.")
 
@@ -3069,8 +3080,6 @@ class UI:
         ql = q.lower()
         y = BODY_Y + CHAR_H
         title = self._FIND_TITLES[self.node_tab]
-        if _pro is not None:
-            title = "Lookup" + title[4:]      # its toolbar button there is Lookup (L)
         if self._cache[2] != title:
             self._cache[2] = title
             self.tft.fill_rect(0, y, SCREEN_W, CHAR_H, self.TAB_BG)
@@ -3087,7 +3096,7 @@ class UI:
             lines = self._FIND_NOTHING
         elif not res:
             lines = (self._FIND_NOT_HEARD if len(ql) == 32 and all(c in _HEX for c in ql)
-                     else self._FIND_NO_MATCH)
+                     else self._FIND_NO_MATCH if q or self._find_snap else self._FIND_EMPTY)
         if not res:
             # word-wrap to the panel (the Pro has 30 columns), then centre
             # the block both ways in the results area
@@ -3146,10 +3155,10 @@ class UI:
             n, keys = "", "Bsp=cancel"
         elif self._find_listen == "failed":
             n, keys = "", "0=try again Bsp=back"
-        elif self.on_listen_start:
-            keys = "0=listen Ent=add Bsp=back"
         else:
-            keys = "Ent=add Bsp=back"
+            go = "chat" if self.node_tab == TAB_MSG else "add"
+            keys = ("0=listen Ent=%s Bsp=back" if self.on_listen_start
+                    else "Ent=%s Bsp=back") % go
         if self._cache[BODY_ROWS] != n + keys:
             self._cache[BODY_ROWS] = n + keys
             y = BODY_Y + (BODY_ROWS - 1) * CHAR_H
