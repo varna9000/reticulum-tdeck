@@ -295,6 +295,7 @@ def mk_with_chat(key, name, text="hi", hops=None):
     g.SW = 6                # the device's small font; the bare test UI has none
     g.add_peer(key, name, hops=hops)
     g.add_chat_message(key, False, text)
+    g.selected_idx = g._peer_keys.index(key)
     g.drawn = []            # (text, y) of everything drawn, either font
 
     def text(font, t, x, y, fg, bg=None):
@@ -350,7 +351,7 @@ def test_v1_footer_new_hint_and_ping_precedence():
 def test_new_row_is_drawn_and_has_no_footer_entry():
     print("the + New sentinel draws")
     g = mk_with_chat(A, "bob")
-    g._peer_keys.insert(0, ui._NEW)
+    check("the + New row is the list's first", g._peer_keys[0] == ui._NEW, repr(g._peer_keys))
     g.draw_node_list()
     check("label", "  + New chat" in drawn_list_text(g), drawn_list_text(g))
     check("hint when nothing heard", "search or add by hash" in drawn_list_text(g))

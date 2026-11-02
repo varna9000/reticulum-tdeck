@@ -153,7 +153,7 @@ def test_ssh_tab_lists_nodes():
     sw = ui.SCREEN_W // 4
     assert any(c[0] == "text" and c[1] == "1" and c[3] == ui.BODY_Y - 2
                and c[2] // sw == ui.TAB_SSH for c in g.tft.calls)
-    assert g._shell_keys == [b"\xa3" * 16]
+    assert g._shell_keys == [ui._NEW, b"\xa3" * 16]
 
 
 def test_manual_hash_entry_adds_the_listener():
@@ -165,7 +165,7 @@ def test_manual_hash_entry_adds_the_listener():
     assert g._find
     _type(g, "aa" * 16)               # 32 hex chars
     g.handle_key(b"\r")
-    assert g._shell_keys == [bytes([0xAA] * 16)]
+    assert g._shell_keys == [ui._NEW, bytes([0xAA] * 16)]
     assert g._shell_keys[g.ssh_idx] == bytes([0xAA] * 16)
     assert not g.connects
     assert g.state == ui.STATE_NODES
@@ -181,7 +181,7 @@ def test_manual_short_hash_is_not_added():
     _type(g, "ab")                    # too short, and matches nothing heard
     g.handle_key(b"\r")
     assert not g.connects
-    assert g._shell_keys == []
+    assert g._shell_keys == [ui._NEW]
     assert g._find                    # stays in entry mode
 
 

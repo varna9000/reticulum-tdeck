@@ -310,8 +310,8 @@ def test_each_tab_adds_to_its_own_list():
         g.handle_key(b"m")
         _type(g, UNKNOWN)
         g.handle_key(b"\r")
-        assert getattr(g, keys) == [h], (tab, getattr(g, keys))
-        assert g._peer_keys == [], tab
+        assert getattr(g, keys) == [ui._NEW, h], (tab, getattr(g, keys))
+        assert g._peer_keys == [ui._NEW], tab
         assert g.added == [h], tab
         assert g.state == ui.STATE_NODES, tab
         assert fired == [] and g._terminal is None, tab   # nothing connects
@@ -591,9 +591,10 @@ def test_other_tab_footers_read_fav_hash():
 def test_unread_count_is_a_pill_on_the_right_of_the_row():
     g = _mkui()
     g.add_peer(ALICE, "nomad-alice")
+    g.selected_idx = 1
     g.unread[ALICE] = 23
     t = _draw(g)
-    y = ui.BODY_Y + ui.CHAR_H
+    y = ui.BODY_Y + 2 * ui.CHAR_H
     pill = [r for r in t.rects if r[4] == g.NEON_MAG and r[1] >= y and r[3] > 1]
     assert pill and pill[0][0] > ui.SCREEN_W // 2, pill      # right side
     assert any(c[0] == "23" for c in t.colors)
@@ -608,6 +609,7 @@ def test_footer_shows_hash_and_spells_out_hops():
     g = _mkui()
     g.SW = 6            # the device's small font; the bare test UI has none
     g.add_peer(ALICE, "nomad-alice", rssi=-87, hops=2)
+    g.selected_idx = 1
     foot = _draw(g).at_y(ui.INPUT_Y)
     assert ALICE.hex()[:8] + " 2 hops" in foot, foot     # the rows carry no hash
     g.peers[ALICE]["hops"] = None
@@ -627,8 +629,9 @@ def test_msg_footer_matches_the_other_tabs():
 def test_d_still_deletes_on_msg():
     g = _mkui()
     g.add_peer(ALICE, "nomad-alice")
+    g.selected_idx = 1
     g.handle_key(b"d")
-    assert g._peer_keys == []
+    assert g._peer_keys == [ui._NEW]
 
 
 def test_p_still_pings():
@@ -636,6 +639,7 @@ def test_p_still_pings():
     g.add_peer(ALICE, "nomad-alice")
     pinged = []
     g.on_ping = lambda h: pinged.append(h)
+    g.selected_idx = 1
     g.handle_key(b"p")
     assert pinged == [ALICE]
 

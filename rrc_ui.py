@@ -60,7 +60,10 @@ def open_hub(ui, dest):
 
 
 def open_selected_hub(ui):
-    """RRC tab click: connect to the highlighted hub."""
+    """RRC tab click: connect to the highlighted hub, or Lookup on + New hub."""
+    if ui._selected_key() == _u._NEW:
+        ui._find_open()
+        return True
     if not ui._rrc_keys or not (0 <= ui._rrc_idx < len(ui._rrc_keys)):
         return False
     return open_hub(ui, ui._rrc_keys[ui._rrc_idx])

@@ -503,8 +503,8 @@ def _tap_pro_list(ui, x, y):
     if target < 0:
         return False
     _pro_select(ui, target)
-    if x >= p.DOTS_X:
-        return p.sheet_open(ui)
+    if x >= p.DOTS_X and p.sheet_open(ui):
+        return True                        # + New has no sheet: its dots act as a tap
     ui.nav_event("click")                  # one tap opens: the rows are finger-sized
     return True
 
@@ -618,7 +618,7 @@ def _long(ui, x, y):
         if ui._sheet is not None:
             return False
         target = _pro_row(ui, y)
-        if target < 0:
+        if target < 0 or _lists(ui)[2][target] == _u._NEW:
             return False
         _pro_select(ui, target)
         return _u._pro.sheet_open(ui)

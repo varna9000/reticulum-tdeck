@@ -328,7 +328,7 @@ def draw_node_list(ui):
             ui.tft.fill_rect(0, TOOL_Y, _u.SCREEN_W, TOOL_H, ui.BG_DARK)
         ui._draw_find()          # Find keeps its own single-line layout
         return
-    if ui._sheet is not None and (ui._sheet != ui.node_tab or not cur(ui)[2]):
+    if ui._sheet is not None and (ui._sheet != ui.node_tab or ui._selected_key() in (None, _u._NEW)):
         sheet_close(ui)              # the tab changed or the list emptied under it
     ui._tools_up = True
     if ui._sheet is not None:
@@ -429,7 +429,7 @@ def sheet_open(ui):
     if ui.state != _u.STATE_NODES or ui._find or not keys:
         return False
     sel = getattr(ui, ia)
-    if not (0 <= sel < len(keys)):
+    if not (0 <= sel < len(keys)) or keys[sel] == _u._NEW:
         return False
     ui._sheet = ui.node_tab
     # Keep the row it is about in view: the last row above the sheet at most.

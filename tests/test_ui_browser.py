@@ -115,6 +115,7 @@ def test_open_node_enters_browser():
     g.on_browse = lambda dest: opened.append(dest)
     g.add_nomad_node(b"\x02" * 16, "node-two")
     g._switch_tab(1)
+    g.net_idx = g._node_keys.index(b"\x02" * 16)
     g._open_selected_node()
     assert opened == [b"\x02" * 16]
     assert g.state == ui.STATE_BROWSER
@@ -273,7 +274,7 @@ def test_peer_eviction_least_recently_seen():
         g.add_peer(k, "p%d" % i)
         g.peers[k]["seen"] = 1000 + i          # keys[0] oldest
     g.add_chat_message(keys[5], False, "hi")   # a RECENT peer bubbles to front
-    assert g._peer_keys[0] == keys[5]
+    assert g._peer_keys[1] == keys[5]
     new = bytes([200]) * 16
     g.add_peer(new, "new")
     assert len(g.peers) == ui.MAX_PEERS
@@ -288,10 +289,12 @@ def test_selection_follows_bubbled_peer():
     for i in range(3):
         g.add_peer(bytes([i + 1]) * 16, "p%d" % i)
     g.state = ui.STATE_NODES
-    g.selected_idx = 0                          # on p0
-    sel = g._peer_keys[0]
-    g.add_chat_message(bytes([3]) * 16, False, "hi")  # p2 bubbles to front
-    assert g._peer_keys[0] == bytes([3]) * 16
+    sel = bytes([1]) * 16                       # on p0
+    g.selected_idx = g._peer_keys.index(sel)
+    g.add_chat_message(bytes([3]) * 16, False, "hi")  # p2 was already first; p0 stays put
+    assert g._peer_keys[1] == bytes([3]) * 16
+    g.add_chat_message(bytes([2]) * 16, False, "hi")  # p1 bubbles past p2, p0 keeps moving
+    assert g._peer_keys[1] == bytes([2]) * 16
     assert g._peer_keys[g.selected_idx] == sel  # cursor stayed on p0
 
 
@@ -338,8 +341,9 @@ def test_delete_selected_peer():
     g.add_peer(a, "a")
     g.add_peer(b, "b")
     g.add_chat_message(a, False, "hi")          # a -> front, unread
-    g.selected_idx = 0
-    key = g._peer_keys[0]
+    g.selected_idx = 1
+    key = g._peer_keys[1]
+    assert key == a
     g.delete_selected()
     assert key not in g.peers and key not in g._peer_keys
     assert key not in g.chat_history and key not in g.unread
@@ -356,6 +360,7 @@ def test_footer_hops_label():
     g, tft = _mkui()
     g.SW = 6            # the device's small font; the bare test UI has none
     g.add_peer(b"\x01" * 16, "p", rssi=-80, hops=3)
+    g.selected_idx = 1
     g.draw()
     texts = [c[1].decode() if isinstance(c[1], (bytes, bytearray)) else c[1]
              for c in tft.calls if c[0] == "text"]

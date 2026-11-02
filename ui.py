@@ -176,7 +176,7 @@ IMG_GAP = 2   # px of breathing room top/bottom inside an inline image block
 REC_MAX_SECS = 15  # matches tdeck_node _rec_buf sizing
 
 # Data limits
-MAX_PEERS = 16
+MAX_PEERS = 64
 MAX_HISTORY = 30  # per peer
 MAX_CACHED_IMAGES = 3  # max JPEG payloads kept in RAM
 
@@ -448,6 +448,9 @@ def _age(ts):
 
 _NEW = b"+"        # the "+ New" row: a key in every tab's key list, never in its table
 _NEW_ROWS = ("+ New chat", "+ New node", "+ New shell", "+ New hub")   # by TAB_*
+_TAB_ATTRS = (("selected_idx", "node_scroll"), ("net_idx", "net_scroll"),   # by TAB_*: cursor, window
+              ("ssh_idx", "ssh_scroll"), ("_rrc_idx", "_rrc_scroll"))
+_FAV_TYPES = ("peer", "node", "shell", "hub")   # by TAB_*: the favourites file each tab uses
 _EMPTY = (("No chats yet.", "Pick someone heard, or", "wait for a message."),
           ("No nodes yet.", "Pick one heard, or", "add one by hash."),
           ("No shells yet.", "Pick one heard, or", "add one by hash."),
@@ -774,7 +777,7 @@ class UI:
         # Peers: dest_hash_bytes -> {"name": str, "rssi": int,
         #                            "hops": int|None, "via": str|None, "seen": ts}
         self.peers = {}
-        self._peer_keys = []  # ordered list of dest_hash_bytes
+        self._peer_keys = [_NEW]  # + New row, pins, then most recent first
         self._heard = (set(), set(), set(), set())   # newly heard addresses, by TAB_*
         self.selected_idx = 0
         self.node_scroll = 0
@@ -786,13 +789,13 @@ class UI:
         # NET tab: NomadNet nodes (populated by nomad_browser)
         self.node_tab = 0        # 0 = MSG (LXMF peers), 1 = NET (nomad nodes), 2 = SSH (rnsh)
         self.nomad_nodes = {}    # dest_hash -> {"name": str, "hops": int|None, "seen": ts}
-        self._node_keys = []     # ordered list of dest_hash_bytes
+        self._node_keys = [_NEW]     # ordered like _peer_keys
         self.net_idx = 0
         self.net_scroll = 0
 
         # SSH tab: rnsh listeners (populated by rnsh_client)
         self.shell_nodes = {}    # dest_hash -> {"name": str, "hops": int|None, "seen": ts}
-        self._shell_keys = []    # ordered list of dest_hash_bytes
+        self._shell_keys = [_NEW]    # ordered like _peer_keys
         self.ssh_idx = 0
         self.ssh_scroll = 0
         # Manual hex-entry sub-mode, shared by the SSH and RRC tabs: same
@@ -1061,7 +1064,7 @@ class UI:
         self.on_rrc_cap = None          # () -> composer byte budget (int)
 
         self.rrc_hubs = {}              # dest_hash -> {"name", "hops", "seen"}
-        self._rrc_keys = []             # hub order, newest announce last
+        self._rrc_keys = [_NEW]         # ordered like _peer_keys
         self._rrc_idx = 0
         self._rrc_scroll = 0
         self._rrc_lines = []            # (kind, nick, text), RAM only
@@ -2439,69 +2442,52 @@ class UI:
     def load_favorites(self):
         for type in ["peer", "node", "hub", "shell"]:
             self._load_favorite(type)
+        self._cursor_home()
 
     def _favorite(self, type=None):
-        if "peer" == type:
-            if not self._peer_keys or 0 > self.selected_idx or len(self._peer_keys) <= self.selected_idx:
-                return False # Unknown peer
-            selected_key = self._peer_keys[self.selected_idx]
-        elif "node" == type:
-            if not self._node_keys or 0 > self.net_idx or len(self._node_keys) <= self.net_idx:
-                return False # Unknown peer
-            selected_key = self._node_keys[self.net_idx]
-        elif "hub" == type:
-            if not self._rrc_keys or 0 > self._rrc_idx or len(self._rrc_keys) <= self._rrc_idx:
-                return False # Unknown hub
-            selected_key = self._rrc_keys[self._rrc_idx]
-        elif "shell" == type:
-            if not self._shell_keys or 0 > self.ssh_idx or len(self._shell_keys) <= self.ssh_idx:
-                return False # Unknown shell
-            selected_key = self._shell_keys[self.ssh_idx]
-        else:
+        """Star or unstar the tab's selected row. Slots stay in pin order, so
+        a boot loads the pins as they were: a new pin takes the first free
+        slot and an unpin closes the gap it leaves."""
+        if type not in _FAV_TYPES:
             return False # Unknown type
+        tab = _FAV_TYPES.index(type)
+        keys, table = self._tab_list(tab)
+        idx = getattr(self, _TAB_ATTRS[tab][0])
+        if not (0 <= idx < len(keys)) or keys[idx] == _NEW:
+            return False # Nothing to star
+        selected_key = keys[idx]
         favs = self._get_favorites(type)
+        kslot = type + "Key_"
+        eslot = type + "_"
         empty_slot_idx = -1
         for i in range(MAX_FAVORITES):
-            slot = favs.get(type + "Key_" + str(i))
+            slot = favs.get(kslot + str(i))
             if slot == None:
-                empty_slot_idx = i
+                if empty_slot_idx < 0:
+                    empty_slot_idx = i
             elif slot == selected_key.hex():
                 # Already a favorite, unfavorite it
-                if "peer" == type:
-                    self.peers[selected_key]["fav"] = False
-                elif "node" == type:
-                    self.nomad_nodes[selected_key]["fav"] = False
-                elif "hub" == type:
-                    self.rrc_hubs[selected_key]["fav"] = False
-                elif "shell" == type:
-                    self.shell_nodes[selected_key]["fav"] = False
-                else:
-                    return False # Unknown error
-                favs[type + "Key_" + str(i)] = None
-                favs[type + "_" + str(i)] = None
+                table[selected_key]["fav"] = False
+                for j in range(i, MAX_FAVORITES):
+                    favs[kslot + str(j)] = favs.get(kslot + str(j + 1))
+                    favs[eslot + str(j)] = favs.get(eslot + str(j + 1))
                 self._save_favorites(favs, type)
+                self._place(tab, selected_key)
                 self.dirty = True
                 return True
-        if 0 <= empty_slot_idx and empty_slot_idx < MAX_FAVORITES:
+        if 0 <= empty_slot_idx:
             # Empty slot, add to favorite
-            favs[type + "Key_" + str(empty_slot_idx)] = selected_key.hex()
-            if "peer" == type:
-                self.peers[selected_key]["fav"] = True
-                favs[type + "_" + str(empty_slot_idx)] = self.peers.get(selected_key)
-            elif "node" == type:
-                self.nomad_nodes[selected_key]["fav"] = True
-                favs[type + "_" + str(empty_slot_idx)] = self.nomad_nodes.get(selected_key)
-            elif "hub" == type:
-                self.rrc_hubs[selected_key]["fav"] = True
-                favs[type + "_" + str(empty_slot_idx)] = self.rrc_hubs.get(selected_key)
-            elif "shell" == type:
-                self.shell_nodes[selected_key]["fav"] = True
-                favs[type + "_" + str(empty_slot_idx)] = self.shell_nodes.get(selected_key)
-            else:
-                return False # Unknown error
+            table[selected_key]["fav"] = True
+            favs[kslot + str(empty_slot_idx)] = selected_key.hex()
+            favs[eslot + str(empty_slot_idx)] = table[selected_key]
             self._save_favorites(favs, type)
+            self._place(tab, selected_key)
             self.dirty = True
-            return True       
+            return True
+        if tab == TAB_MSG:
+            self.ping_status = "max 5 favs"
+            self._ping_status_ms = time.ticks_ms()
+            self.dirty = True
         return False
 
     # --- Input handling ---
@@ -2600,8 +2586,10 @@ class UI:
             return self._handle_key_chat(ch, key)
 
     def _enter_chat(self):
-        """Enter chat for the currently selected peer (trackball click only)."""
-        if self._peer_keys and 0 <= self.selected_idx < len(self._peer_keys):
+        """Enter chat for the selected row, or Lookup on the + New row."""
+        if self._selected_key() == _NEW:
+            self._find_open()
+        elif self._peer_keys and 0 <= self.selected_idx < len(self._peer_keys):
             self.selected_peer = self._peer_keys[self.selected_idx]
             self.unread.pop(self.selected_peer, None)
             self.chat_scroll = 0
@@ -2643,8 +2631,8 @@ class UI:
             self.delete_selected()
             return True
         elif key == b'p' or key == b'P':
-            if (self.node_tab == TAB_MSG and self.on_ping and self._peer_keys
-                    and self.selected_idx < len(self._peer_keys)):
+            if (self.node_tab == TAB_MSG and self.on_ping
+                    and self._selected_key() not in (None, _NEW)):
                 self.ping_status = "ping..."
                 self.ping_pending = True
                 self._ping_status_ms = time.ticks_ms()
@@ -2702,6 +2690,9 @@ class UI:
 
     def _open_selected_node(self):
         """NET tab click/Enter: fetch the selected node's index page."""
+        if self._selected_key() == _NEW:
+            self._find_open()
+            return
         if not (self._node_keys and 0 <= self.net_idx < len(self._node_keys)):
             return
         dest = self._node_keys[self.net_idx]
@@ -2718,6 +2709,9 @@ class UI:
 
     def _open_selected_shell(self):
         """SSH tab click/Enter: connect to the selected rnsh listener."""
+        if self._selected_key() == _NEW:
+            self._find_open()
+            return
         if not (self._shell_keys and 0 <= self.ssh_idx < len(self._shell_keys)):
             return
         self._start_shell(self._shell_keys[self.ssh_idx])
@@ -2783,15 +2777,100 @@ class UI:
 
     # --- Find: search heard addresses, or add one by hash (m, any tab) ---
 
-    def _tab_list(self):
-        """(keys, table) behind the current tab's list."""
-        if self.node_tab == TAB_MSG:
+    def _tab_list(self, tab=None):
+        """(keys, table) behind a tab's list, by default the current tab's."""
+        if tab is None:
+            tab = self.node_tab
+        if tab == TAB_MSG:
             return self._peer_keys, self.peers
-        if self.node_tab == TAB_NET:
+        if tab == TAB_NET:
             return self._node_keys, self.nomad_nodes
-        if self.node_tab == TAB_RRC:
+        if tab == TAB_RRC:
             return self._rrc_keys, self.rrc_hubs
         return self._shell_keys, self.shell_nodes
+
+    def _selected_key(self):
+        """The key under the current tab's cursor: _NEW on the top row, None
+        if the cursor is off the list."""
+        keys = self._tab_list()[0]
+        idx = getattr(self, _TAB_ATTRS[self.node_tab][0])
+        return keys[idx] if 0 <= idx < len(keys) else None
+
+    def _cursor_home(self, only=None):
+        """Cursor to the first entry and the window to the top, on every tab
+        or just one. A tab with no entries has only its top row to be on."""
+        for tab in range(N_TABS) if only is None else (only,):
+            ia, sa = _TAB_ATTRS[tab]
+            setattr(self, ia, 1 if len(self._tab_list(tab)[0]) > 1 else 0)
+            setattr(self, sa, 0)
+
+    def _cursor_on(self, tab, key):
+        """Rows moved: put the tab's cursor back on key (or in range, if key
+        has gone) and keep it inside the window. The Pro's sheet holds its own
+        window while it is up, and its draw re-clamps once it closes."""
+        keys = self._tab_list(tab)[0]
+        ia, sa = _TAB_ATTRS[tab]
+        idx = keys.index(key) if key in keys else max(0, min(getattr(self, ia), len(keys) - 1))
+        setattr(self, ia, idx)
+        if self._sheet is None:
+            n = getattr(self, sa)
+            if idx < n:
+                n = idx
+            elif idx >= n + LIST_ROWS:
+                n = idx - LIST_ROWS + 1
+            setattr(self, sa, max(0, min(n, len(keys) - LIST_ROWS)))
+
+    def _place(self, tab, key):
+        """Move key to just under the pins, or to the end of the pins if it is
+        a favourite: the first row after them either way. Top row first, so
+        the search starts at 1. The cursor stays on its entry."""
+        keys, table = self._tab_list(tab)
+        idx = getattr(self, _TAB_ATTRS[tab][0])
+        cur = keys[idx] if 0 <= idx < len(keys) else None
+        if key in keys:
+            keys.remove(key)
+        n = 1
+        while n < len(keys):
+            e = table.get(keys[n])
+            if not (e and e.get("fav")):
+                break
+            n += 1
+        keys.insert(n, key)
+        self._cursor_on(tab, cur)
+
+    def _evict(self, tab):
+        """At the tab's cap, drop one entry: the oldest, never a favourite. On
+        MSG also never the open chat, and unread only if nothing else is left;
+        its age there is its last message. Walks the table, which the top row
+        is not in. With nothing to drop (the pins are all there is) it leaves
+        the table over the cap rather than take down the receive path."""
+        keys, table = self._tab_list(tab)
+        if len(table) < (MAX_RRC_HUBS if tab == TAB_RRC else MAX_PEERS):
+            return
+        msg = tab == TAB_MSG
+        best = None
+        bt = 0
+        for unread_too in (False, True) if msg else (True,):
+            for k, e in table.items():
+                if e.get("fav") or (msg and (k == self.selected_peer
+                                             or (k in self.unread and not unread_too))):
+                    continue
+                h = self.chat_history.get(k) if msg else None
+                t = h[-1][2] if h else e.get("seen", 0)
+                if best is None or t < bt:
+                    best = k
+                    bt = t
+            if best is not None:
+                break
+        if best is None:
+            return
+        idx = getattr(self, _TAB_ATTRS[tab][0])
+        cur = keys[idx] if 0 <= idx < len(keys) else None
+        keys.remove(best)
+        del table[best]
+        if msg:
+            self._forget_peer_state(best)
+        self._cursor_on(tab, cur)
 
     def _find_open(self):
         """Snapshot every heard address of this tab's kind, plus any listed
@@ -2807,7 +2886,7 @@ class UI:
         have = set(e[0] for e in snap)
         keys, table = self._tab_list()
         for k in keys:
-            if k not in have:
+            if k != _NEW and k not in have:
                 p = table[k]
                 snap.append((k, p.get("name") or "?", p.get("seen", 0)))
         self._find_snap = snap
@@ -3087,26 +3166,19 @@ class UI:
     def add_shell_node(self, dest_hash, name=None, hops=None, seen=None, fav=False):
         """Add or update an rnsh listener (SSH tab, called by rnsh_client)."""
         prev = self.shell_nodes.get(dest_hash)
-        if prev is None and len(self.shell_nodes) >= MAX_PEERS:
-            oldest = min(filter(lambda k: not self.shell_nodes[k].get("fav", False), self._shell_keys),
-                         key=lambda k: self.shell_nodes[k].get("seen", 0), default=None)
-            del self.shell_nodes[oldest]
-            self._shell_keys.remove(oldest)
-            if self.ssh_idx >= len(self._shell_keys):
-                self.ssh_idx = max(0, len(self._shell_keys) - 1)
-        if prev:
-            if name is None:
-                name = prev.get("name")
+        if prev is None:
+            self._evict(TAB_SSH)
+        else:
+            name = name or prev.get("name")
             if seen is not None and prev.get("seen", 0) > seen:
                 seen = prev["seen"]
-            if fav is False:
-                fav = prev["fav"]
+            fav = fav or prev.get("fav", False)
         # rnsh announces carry no name — show a short hash so the row isn't "?"
         self.shell_nodes[dest_hash] = {"name": name or dest_hash.hex()[:10],
                                        "hops": hops,
                                        "seen": time.time() if seen is None else seen, "fav": fav}
-        if dest_hash not in self._shell_keys:
-            self._shell_keys.append(dest_hash)
+        if prev is None:
+            self._place(TAB_SSH, dest_hash)
         if self.state == STATE_NODES and self.node_tab == TAB_SSH:
             self.dirty = True
 
@@ -3114,9 +3186,9 @@ class UI:
         """Clear the SSH tab (interface switch)."""
         self.shell_nodes.clear()
         self._shell_keys.clear()
+        self._shell_keys.append(_NEW)
         self._load_favorite("shell")
-        self.ssh_idx = 0
-        self.ssh_scroll = 0
+        self._cursor_home(TAB_SSH)
         self._cache = [''] * CACHE_ROWS
         self.dirty = True
 
@@ -3162,34 +3234,14 @@ class UI:
     # --- RRC (Reticulum Relay Chat) GUI API, called by rrc_client ---------
 
     def add_rrc_hub(self, dest_hash, name=None, hops=None, fav=False):
-        """Add or update a hub (RRC tab, called by rrc_client).
-
-        Eviction is least-recently-SEEN, like add_shell_node(): FIFO drops
-        a hub that is still announcing in favour of one that went quiet.
-        And the selection is carried across the eviction by identity --
-        pop(0) used to shift every index down one while _rrc_idx stayed
-        put, so the highlighted row silently became a different hub and the
-        next click opened that one instead.
-        """
+        """Add or update a hub (RRC tab, called by rrc_client). The cursor
+        stays on its hub across an eviction: the next click must not open a
+        different one."""
         entry = self.rrc_hubs.get(dest_hash)
         if entry is None:
-            selected = (self._rrc_keys[self._rrc_idx]
-                        if 0 <= self._rrc_idx < len(self._rrc_keys) else None)
-            entry = {"name": name, "hops": hops, "seen": time.time(), "fav": fav}
-            self.rrc_hubs[dest_hash] = entry
-            self._rrc_keys.append(dest_hash)
-            while len(self._rrc_keys) > MAX_RRC_HUBS:
-                oldest = min(filter(lambda k: not self.rrc_hubs[k].get("fav", False), self._rrc_keys),
-                             key=lambda k: self.rrc_hubs[k].get("seen", 0), default=None)
-                self.rrc_hubs.pop(oldest, None)
-                self._rrc_keys.remove(oldest)
-            if selected is not None and selected in self._rrc_keys:
-                self._rrc_idx = self._rrc_keys.index(selected)
-            elif self._rrc_idx >= len(self._rrc_keys):
-                self._rrc_idx = max(0, len(self._rrc_keys) - 1)
-            _max_scroll = max(0, len(self._rrc_keys) - (BODY_ROWS - 1))
-            if self._rrc_scroll > _max_scroll:
-                self._rrc_scroll = _max_scroll
+            self._evict(TAB_RRC)
+            self.rrc_hubs[dest_hash] = {"name": name, "hops": hops, "seen": time.time(), "fav": fav}
+            self._place(TAB_RRC, dest_hash)
         else:
             if name:
                 entry["name"] = name
@@ -3202,10 +3254,9 @@ class UI:
 
     def clear_rrc_hubs(self):
         self.rrc_hubs = {}
-        self._rrc_keys = []
+        self._rrc_keys = [_NEW]
         self._load_favorite("hub")
-        self._rrc_idx = 0
-        self._rrc_scroll = 0
+        self._cursor_home(TAB_RRC)
         self.dirty = True
 
     def rrc_status(self, text):
@@ -5482,6 +5533,7 @@ class UI:
         """Clear node list, chat history, and related state."""
         self.peers.clear()
         self._peer_keys.clear()
+        self._peer_keys.append(_NEW)
         self.chat_history.clear()
         self._load_favorite("peer")
         # Media is keyed by message id, which nothing will reference again
@@ -5491,8 +5543,7 @@ class UI:
         self._image_cache_order = []
         self.unread = {}
         self.selected_peer = None
-        self.selected_idx = 0
-        self.node_scroll = 0
+        self._cursor_home(TAB_MSG)
         self.chat_scroll = 0
         self._cache = [''] * CACHE_ROWS
         self.dirty = True
@@ -5510,29 +5561,16 @@ class UI:
 
     def add_peer(self, dest_hash, name, rssi=None, hops=None, via=None, fav=False):
         """Add or update a peer from an announce."""
-        if dest_hash not in self.peers and len(self.peers) >= MAX_PEERS:
-            # Evict the least-recently-seen peer — never index 0, which
-            # message-bubbling makes the most active chat.
-            sel_key = (self._peer_keys[self.selected_idx]
-                       if self.selected_idx < len(self._peer_keys) else None)
-            oldest = min(filter(lambda k: not self.peers[k].get("fav", False), self._peer_keys),
-                         key=lambda k: self.peers[k].get("seen", 0), default=None)
-            self._peer_keys.remove(oldest)
-            del self.peers[oldest]
-            self._forget_peer_state(oldest)
-            if self.selected_peer == oldest:
-                self.selected_peer = None
-            # re-anchor the cursor to the same peer it was on
-            if sel_key is not None and sel_key != oldest and sel_key in self._peer_keys:
-                self.selected_idx = self._peer_keys.index(sel_key)
-            elif self.selected_idx >= len(self._peer_keys):
-                self.selected_idx = max(0, len(self._peer_keys) - 1)
-        if fav is False and dest_hash in self.peers:
-            fav = self.peers[dest_hash].get("fav")
+        e = self.peers.get(dest_hash)
+        if e is None:
+            self._evict(TAB_MSG)
+        else:
+            fav = fav or e.get("fav", False)
+            name = name or e.get("name")
         self.peers[dest_hash] = {"name": name or "?", "rssi": rssi,
                                  "hops": hops, "via": via, "seen": time.time(), "fav": fav}
-        if dest_hash not in self._peer_keys:
-            self._peer_keys.append(dest_hash)
+        if e is None:
+            self._place(TAB_MSG, dest_hash)
         self._route_cache = ''  # selected-peer footer may show new route info
         self.dirty = True
 
@@ -5540,6 +5578,8 @@ class UI:
         """Forget the selected peer (MSG) / node (NET) / hub (RRC) / listener
         (SSH) and its local state. The entry re-appears on the next announce;
         this just clears clutter."""
+        if self._selected_key() == _NEW:
+            return
         if self.node_tab == TAB_MSG:
             if not (0 <= self.selected_idx < len(self._peer_keys)):
                 return
@@ -5598,25 +5638,18 @@ class UI:
     def add_nomad_node(self, dest_hash, name, hops=None, seen=None, fav=False):
         """Add or update a NomadNet node (NET tab, called by nomad_browser)."""
         prev = self.nomad_nodes.get(dest_hash)
-        if prev is None and len(self.nomad_nodes) >= MAX_PEERS:
-            oldest = min(filter(lambda k: not self.nomad_nodes[k].get("fav", False), self._node_keys), 
-                         key=lambda k: self.nomad_nodes[k].get("seen", 0), default=None)
-            del self.nomad_nodes[oldest]
-            self._node_keys.remove(oldest)
-            if self.net_idx >= len(self._node_keys):
-                self.net_idx = max(0, len(self._node_keys) - 1)
-        if prev:
-            if name is None:
-                name = prev.get("name")
+        if prev is None:
+            self._evict(TAB_NET)
+        else:
+            name = name or prev.get("name")
             # never let a stale storage seed overwrite a fresher announce
             if seen is not None and prev.get("seen", 0) > seen:
                 seen = prev["seen"]
-            if fav is False:
-                fav = prev["fav"]
+            fav = fav or prev.get("fav", False)
         self.nomad_nodes[dest_hash] = {"name": name or "?", "hops": hops,
                                        "seen": time.time() if seen is None else seen, "fav": fav}
-        if dest_hash not in self._node_keys:
-            self._node_keys.append(dest_hash)
+        if prev is None:
+            self._place(TAB_NET, dest_hash)
         self._route_cache = ''
         self.dirty = True
 
@@ -5624,9 +5657,9 @@ class UI:
         """Clear the NET tab (interface switch)."""
         self.nomad_nodes.clear()
         self._node_keys.clear()
+        self._node_keys.append(_NEW)
         self._load_favorite("node")
-        self.net_idx = 0
-        self.net_scroll = 0
+        self._cursor_home(TAB_NET)
         self._cache = [''] * CACHE_ROWS
         self.dirty = True
 
@@ -5676,21 +5709,12 @@ class UI:
                 self._image_cache.pop(old_key, None)
 
         # Track unread: incoming message when not viewing that chat
-        if not is_mine:
-            if self.state == STATE_NODES or self.selected_peer != dest_hash:
-                self.unread[dest_hash] = self.unread.get(dest_hash, 0) + 1
-            # Bubble peer to top of node list, keeping the cursor on the
-            # same peer (not blindly on row 0, which could be a different one).
-            if dest_hash in self._peer_keys:
-                sel_key = (self._peer_keys[self.selected_idx]
-                           if self.selected_idx < len(self._peer_keys) else None)
-                self._peer_keys.remove(dest_hash)
-                self._peer_keys.insert(0, dest_hash)
-                if self.state == STATE_NODES:
-                    if sel_key is not None and sel_key in self._peer_keys:
-                        self.selected_idx = self._peer_keys.index(sel_key)
-                    if self.selected_idx < self.node_scroll:
-                        self.node_scroll = self.selected_idx
+        if not is_mine and (self.state == STATE_NODES or self.selected_peer != dest_hash):
+            self.unread[dest_hash] = self.unread.get(dest_hash, 0) + 1
+        # Either direction moves the chat under the pins; pins stay put.
+        e = self.peers.get(dest_hash)
+        if e and not e.get("fav"):
+            self._place(TAB_MSG, dest_hash)
 
         # The line cache outlives the chat screen: leaving a chat keeps it
         # tagged with that peer, so a message arriving meanwhile (node list,

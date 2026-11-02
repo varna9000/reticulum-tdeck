@@ -186,15 +186,15 @@ def test_rows_are_two_lines_at_32px():
     g._cache = [''] * ui.CACHE_ROWS
     g.selected_idx = 1
     ui_pro.draw_rows(g)
-    order = [k[0] - 1 for k in g._peer_keys]
-    for r, i in enumerate(order):
+    order = [k[0] - 1 for k in g._peer_keys[1:]]
+    for r, i in enumerate(order, 1):      # row 0 is the + New row
         c = find(t, "text", "peer%02d" % i)
         check("row %d name at x 16, y %d" % (i, row_y(r)), c is not None and c[2] == 16 and c[3] == row_y(r), repr(c))
         h = find(t, "small", "msg %d" % i)
         check("row %d last message on the second line, left" % i, h is not None, repr(h))
     l2 = [c for c in texts(t, "small") if c[1].startswith("msg ")]
     check("line 2 starts at x 16 on every row",
-          sorted(c[3] for c in l2) == [row_y(i) + 17 for i in range(3)] and all(c[2] == 16 for c in l2), repr(l2))
+          sorted(c[3] for c in l2) == [row_y(i) + 17 for i in (1, 2, 3)] and all(c[2] == 16 for c in l2), repr(l2))
     check("the hash is no longer on a row",
           not any(c[1] == (bytes([i + 1]) * 16).hex()[:8] for c in texts(t, "small") for i in range(3)))
     dots = [c for c in t.calls if c[0] == "rect" and c[3] == 3 and c[4] == 3]
@@ -204,39 +204,39 @@ def test_rows_are_two_lines_at_32px():
 def test_selected_row_is_inverted():
     g, t = mkui()
     peers(g, 3)
-    g.selected_idx = 1
+    g.selected_idx = g._peer_keys.index(b"\x02" * 16)
     ui_pro.draw_rows(g)
     sel = find(t, "text", "peer01")
     oth = find(t, "text", "peer00")
     check("selected: paper text on an ink block", sel[4] == g.BG_DARK and sel[5] == g.SEL_BG, repr(sel))
     check("others: ink text on paper", oth[4] != g.BG_DARK and oth[5] == g.BG_DARK, repr(oth))
-    blk = [c for c in t.calls if c[0] == "rect" and c[2] == row_y(1) and c[5] == g.SEL_BG and c[4] >= 31]
+    blk = [c for c in t.calls if c[0] == "rect" and c[2] == row_y(g.selected_idx) and c[5] == g.SEL_BG and c[4] >= 31]
     check("the ink block covers the row", len(blk) == 1, repr(blk))
 
 
 def test_margin_pill_and_star():
     g, t = mkui()
     peers(g, 4)
-    k = g._peer_keys
+    k = g._peer_keys[1:]                  # the peers are on rows 1 to 4
     g.unread[k[0]] = 3
     g.unread[k[1]] = 12
     g.peers[k[1]]["fav"] = True
     g.peers[k[2]]["fav"] = True
-    g.selected_idx = 3
+    g.selected_idx = 4
     ui_pro.draw_rows(g)
     p3 = find(t, "small", "3")
     p12 = find(t, "small", "12")
-    check("one-digit pill in the margin on the name line", p3 is not None and p3[2] < 16 and p3[3] == row_y(0) + 2, repr(p3))
+    check("one-digit pill in the margin on the name line", p3 is not None and p3[2] < 16 and p3[3] == row_y(1) + 2, repr(p3))
     check("a two-digit pill leaves 2 px of paper before the name",
           p12 is not None and p12[2] == 1 and p12[2] + 2 * ui_pro.SW + 1 == ui_pro.MARGIN - 2, repr(p12))
-    blk = [c for c in t.calls if c[0] == "rect" and c[2] == row_y(1) + 2 and c[4] == ui_pro.SH]
+    blk = [c for c in t.calls if c[0] == "rect" and c[2] == row_y(2) + 2 and c[4] == ui_pro.SH]
     check("...and its block is 14 px from the panel edge", len(blk) == 1 and blk[0][1] == 0 and blk[0][3] == 14, repr(blk))
     check("the pill is inverse to its row", p3[4] == g.BG_DARK)
     stars = [c for c in t.calls if c[0] == "icon" and c[1] is ui_pro._STAR]
-    check("stars on the second line of rows 1 and 2, clear of the row's rule",
-          sorted(c[3] for c in stars) == [row_y(1) + 18, row_y(2) + 18]
+    check("stars on the second line of rows 2 and 3, clear of the row's rule",
+          sorted(c[3] for c in stars) == [row_y(2) + 18, row_y(3) + 18]
           and all(c[2] >= 0 and c[2] + 12 <= 16 for c in stars), repr(stars))
-    check("a row can carry both", find(t, "small", "12")[3] == row_y(1) + 2)
+    check("a row can carry both", find(t, "small", "12")[3] == row_y(2) + 2)
     g.unread[k[0]] = 250
     g._cache = [''] * ui.CACHE_ROWS
     del t.calls[:]
@@ -293,19 +293,12 @@ def test_empty_list_and_other_tabs():
         ui_pro.draw_rows(g)
         L = ui._EMPTY[tab]
         got = [c[1].strip() for c in texts(t)]
-        check("empty tab %d draws its three _EMPTY lines" % tab, got == list(L), repr(got))
-        g, t = mkui()
-        g.node_tab = tab
-        g._peer_keys, g._node_keys, g._rrc_keys, g._shell_keys = ([ui._NEW],) * 4
-        g._cache = [''] * ui.CACHE_ROWS
-        ui_pro.draw_rows(g)
-        got = [c[1].strip() for c in texts(t)]
         check("tab %d: _EMPTY lines under the + New row" % tab,
               got == [ui._NEW_ROWS[tab]] + list(L), repr(got))
     g, t = mkui()
     g.add_shell_node(b"\x07" * 16, name="box", hops=1)
     g.node_tab = ui.TAB_SSH
-    g.ssh_idx = 0
+    g.ssh_idx = 1
     g._cache = [''] * ui.CACHE_ROWS
     ui_pro.draw_rows(g)
     check("the SSH tab draws its own list", find(t, "text", "box") is not None)
@@ -321,13 +314,13 @@ def test_msg_line_two_is_the_last_message():
     g._cache = [''] * ui.CACHE_ROWS
     ui_pro.draw_rows(g)
     c = find(t, "small", "see you at nine")
-    check("MSG line 2 is the last message", c is not None and c[2] == 16 and c[3] == row_y(0) + 17, repr(c))
+    check("MSG line 2 is the last message", c is not None and c[2] == 16 and c[3] == row_y(1) + 17, repr(c))
     check("...and not the hash", find(t, "small", k.hex()[:8]) is None)
     ry = find(t, "text", "peer01")[3]
     check("the peer with no history has a blank line 2",
           not [c for c in texts(t, "small") if c[3] == ry + 17], repr((ry, texts(t, "small"))))
     check("the age sits on the name line, right-aligned to x 212",
-          any(c[3] == row_y(0) + 2 and c[1] == "now" and c[2] + 3 * ui_pro.SW == ui_pro.INFO_R for c in texts(t, "small")),
+          any(c[3] == row_y(1) + 2 and c[1] == "now" and c[2] + 3 * ui_pro.SW == ui_pro.INFO_R for c in texts(t, "small")),
           repr(texts(t, "small")))
 
 
@@ -344,9 +337,9 @@ def test_net_line_two_is_hops():
 def test_open_sheet_shows_hash_and_route():
     g, t = mkui()
     g.add_nomad_node(b"\xaa\xcf\x70\x98" + b"\x01" * 12, name="nodeA", hops=3)
-    g.nomad_nodes[g._node_keys[0]]["seen"] = _time.time() - 660
+    g.nomad_nodes[g._node_keys[1]]["seen"] = _time.time() - 660
     g.node_tab = ui.TAB_NET
-    g.net_idx = 0
+    g.net_idx = 1
     g._sheet = ui.TAB_NET
     g._cache = [''] * ui.CACHE_ROWS
     ui_pro.draw_rows(g)
@@ -357,6 +350,7 @@ def test_open_sheet_shows_hash_and_route():
 def test_sheet_row_shows_ping_result():
     g, t = mkui()
     peers(g, 1)
+    g.selected_idx = 1
     g.ping_status = "ping 1.2s"
     g._sheet = ui.TAB_MSG
     g._cache = [''] * ui.CACHE_ROWS
@@ -367,7 +361,6 @@ def test_sheet_row_shows_ping_result():
 def test_new_row():
     g, t = mkui()
     peers(g, 2)
-    g._peer_keys = [ui._NEW] + list(g._peer_keys)
     g._heard[ui.TAB_MSG].update(range(21))
     g.unread[g._peer_keys[1]] = 3
     g._cache = [''] * ui.CACHE_ROWS
@@ -379,7 +372,7 @@ def test_new_row():
     dots = [c for c in row0 if c[0] == "rect" and c[3] == 3 and c[4] == 3]
     check("no dots on the + New row", not dots, repr(dots))
     check("no pill or star on the + New row", not [c for c in row0 if c[0] == "icon"])
-    check("the next row is a real peer", find(t, "text", "peer00") is not None and find(t, "text", "peer00")[3] == row_y(1))
+    check("the next row is a real peer", find(t, "text", "peer01") is not None and find(t, "text", "peer01")[3] == row_y(1))
     g._heard[ui.TAB_MSG].clear()
     del t.calls[:]
     ui_pro.draw_rows(g)
@@ -440,7 +433,7 @@ def test_draw_node_list_uses_the_pro_rows():
     g, t = mkui()
     peers(g, 2)
     g.draw_node_list()
-    check("ui.draw_node_list hands over", find(t, "text", "peer00") is not None and find(t, "text", "peer00")[3] == row_y(0))
+    check("ui.draw_node_list hands over", find(t, "text", "peer00") is not None and find(t, "text", "peer00")[3] == row_y(2))
     sb = [c for c in t.calls if c[0] == "rect" and c[1] == ui.SBAR_X]
     check("a scroll lane is drawn beside the list", sb and sb[0][2] == ui_pro.LIST_Y and sb[0][4] == 8 * 32, repr(sb[:1]))
 
@@ -761,19 +754,19 @@ def test_small_text_is_ui_pros_own_6x12():
     check("ui.py's own small font on the Pro is the 8x16 main font", g.SW == 8 and g.SH == 16, "%d %d" % (g.SW, g.SH))
     check("ui_pro measures with 6x12", ui_pro.SW == 6 and ui_pro.SH == 12)
     peers(g, 3)
-    k = g._peer_keys
+    k = g._peer_keys[1:]
     g.peers[k[0]]["hops"] = 12
     g.peers[k[0]]["rssi"] = -102
     g.peers[k[0]]["seen"] = _time.time() - 50 * 60
     g.unread[k[1]] = 12
     g.draw_navbar()
     ui_pro.draw_node_list(g)
-    g.selected_idx = 0
+    g.selected_idx = 1
     ui_pro.sheet_open(g)
     ui_pro.draw_node_list(g)
     check("nothing in ui_pro goes through ui._sdraw", texts(t, "big") == [], repr(texts(t, "big")[:2]))
     sm = texts(t, "small")
-    info = [c for c in sm if k[0].hex()[:8] in c[1] and c[3] == row_y(0) + 17]
+    info = [c for c in sm if k[0].hex()[:8] in c[1] and c[3] == row_y(1) + 17]
     check("the longest sheet line (hash + route) still ends left of the dots",
           len(info) == 1 and len(info[0][1]) == 30 and info[0][2] + 30 * ui_pro.SW <= ui_pro.INFO_R, repr(info))
     line2 = [c for c in sm if ui_pro.LIST_Y <= c[3] < ui_pro.TOOL_Y and (c[3] - ui_pro.LIST_Y) % 32 == 17]
@@ -794,6 +787,22 @@ def _visible(g):
     return sc <= sel < sc + ui_pro.LIST_ROWS and 0 <= sc <= max(0, len(keys) - ui_pro.LIST_ROWS)
 
 
+def test_top_row_has_no_sheet():
+    print("the + New row has no sheet")
+    for tab in range(4):
+        g, t = mkui()
+        g.node_tab = tab
+        check("empty tab %d: nothing to open a sheet on" % tab, ui_pro.sheet_open(g) is False and g._sheet is None)
+    g, t = mkui()
+    peers(g, 2)
+    check("cursor on + New: no sheet", ui_pro.sheet_open(g) is False and g._sheet is None)
+    g.selected_idx = 1
+    check("cursor on a peer: the sheet opens", ui_pro.sheet_open(g) is True and g._sheet == ui.TAB_MSG)
+    g.clear_peers()                        # an interface switch, under the open sheet
+    ui_pro.draw_node_list(g)
+    check("the list emptying under an open sheet closes it", g._sheet is None)
+
+
 def test_selection_stays_in_the_window():
     print("review: the window follows the selection whoever moved it")
     g, t = mkui()
@@ -812,7 +821,7 @@ def test_selection_stays_in_the_window():
     check("a selection above the window is scrolled to", _visible(g) and g.node_scroll == 2, str(g.node_scroll))
     g.node_scroll, g.selected_idx = 9, 11
     ui_pro.draw_node_list(g)
-    check("the window never runs past the end", g.node_scroll == 4, str(g.node_scroll))
+    check("the window never runs past the end", g.node_scroll == 5, str(g.node_scroll))    # 13 rows less 8
     g.node_scroll, g.selected_idx = 4, 6
     ui_pro.draw_node_list(g)
     check("a visible selection is left where it is", g.node_scroll == 4)
@@ -2220,6 +2229,7 @@ if __name__ == "__main__":
     test_open_sheet_shows_hash_and_route()
     test_sheet_row_shows_ping_result()
     test_new_row()
+    test_top_row_has_no_sheet()
     test_only_new_row_draws_the_empty_lines()
     test_one_real_row_has_no_empty_lines()
     test_draw_node_list_uses_the_pro_rows()

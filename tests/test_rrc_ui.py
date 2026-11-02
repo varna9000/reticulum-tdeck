@@ -107,7 +107,7 @@ def test_hub_list_holds_sixteen_and_drops_the_oldest():
     g = make_ui()
     for i in range(20):
         g.add_rrc_hub(bytes([i]) * 16, name="hub%d" % i, hops=1)
-    assert len(g._rrc_keys) == 16
+    assert len(g._rrc_keys) == 17 and g._rrc_keys[0] == U._NEW   # sixteen hubs under the + New row
     # The backing dict must shrink with the key list, or it leaks.
     assert len(g.rrc_hubs) == 16
     # Oldest four evicted, newest retained -- not merely "some sixteen".
@@ -115,8 +115,8 @@ def test_hub_list_holds_sixteen_and_drops_the_oldest():
     assert bytes([3]) * 16 not in g.rrc_hubs
     assert bytes([4]) * 16 in g.rrc_hubs
     assert bytes([19]) * 16 in g.rrc_hubs
-    assert g._rrc_keys[0] == bytes([4]) * 16
-    assert g._rrc_keys[-1] == bytes([19]) * 16
+    assert g._rrc_keys[1] == bytes([19]) * 16     # most recent first
+    assert g._rrc_keys[-1] == bytes([4]) * 16
     print("ok test_hub_list_holds_sixteen_and_drops_the_oldest")
 
 
@@ -135,6 +135,7 @@ def test_rrc_tab_lists_hubs_like_the_ssh_tab():
     g.state = U.STATE_NODES
     g.node_tab = U.TAB_RRC
     g.add_rrc_hub(b"\x42" * 16, name="Varna Hub", hops=2)
+    g._rrc_idx = 1                       # its hash shows in the footer when selected
     g.tft.calls = []
     g.draw_node_list()
     painted = _painted(g.tft.calls)
@@ -433,10 +434,10 @@ def test_enter_on_rrc_tab_connects_the_hub_not_a_shell():
     g.state = U.STATE_NODES
     g.node_tab = U.TAB_RRC
     g.add_rrc_hub(b"\x42" * 16, name="Varna Hub", hops=2)
-    g._rrc_idx = 0
+    g._rrc_idx = 1
     g.shell_nodes[b"\xaa" * 16] = {"name": "stale", "hops": 1, "seen": 0}
-    g._shell_keys = [b"\xaa" * 16]
-    g.ssh_idx = 0
+    g._shell_keys = [U._NEW, b"\xaa" * 16]
+    g.ssh_idx = 1
     connected = []
     g.on_rrc_connect = lambda dest: connected.append(dest)
     g.handle_key(b"\r")
@@ -537,7 +538,7 @@ def test_trackball_click_on_rrc_tab_opens_the_hub():
     g.state = U.STATE_NODES
     g.node_tab = U.TAB_RRC
     g.add_rrc_hub(b"\x42" * 16, name="Varna Hub", hops=2)
-    g._rrc_idx = 0
+    g._rrc_idx = 1
     connected = []
     g.on_rrc_connect = lambda dest: connected.append(dest)
     g._irq_click = 1; g.handle_trackball()
@@ -553,12 +554,12 @@ def test_delete_on_rrc_tab_forgets_a_hub_not_a_listener():
     g.add_rrc_hub(b"\x11" * 16, name="Varna Hub", hops=1)
     g.add_rrc_hub(b"\x22" * 16, name="KC1AWV Hub", hops=2)
     g.add_shell_node(b"\xee" * 16, name="listener", hops=1)
-    g._rrc_idx = 0
+    g._rrc_idx = g._rrc_keys.index(b"\x11" * 16)
     g.delete_selected()
     assert b"\x11" * 16 not in g.rrc_hubs, "selected hub was not forgotten"
-    assert len(g._rrc_keys) == 1
+    assert g._rrc_keys == [U._NEW, b"\x22" * 16], g._rrc_keys
     assert b"\xee" * 16 in g.shell_nodes, "deleting a hub removed an SSH listener"
-    assert len(g._shell_keys) == 1
+    assert g._shell_keys == [U._NEW, b"\xee" * 16], g._shell_keys
     print("ok test_delete_on_rrc_tab_forgets_a_hub_not_a_listener")
 
 
@@ -1931,7 +1932,7 @@ def test_opening_a_hub_resets_every_field_of_the_previous_session():
     connected = []
     g.on_rrc_connect = lambda dest: connected.append(dest)
     # ...a live session on hub A:
-    g._rrc_idx = 0
+    g._rrc_idx = g._rrc_keys.index(b"\x11" * 16)
     g._rrc_hub_name = "Hub A"
     g._rrc_status = "linking..."
     g._rrc_scroll_chat = 7
@@ -1943,7 +1944,7 @@ def test_opening_a_hub_resets_every_field_of_the_previous_session():
     for i in range(20):
         g.rrc_line("msg", "sam", "hub A line %d" % i)
 
-    g._rrc_idx = 1
+    g._rrc_idx = g._rrc_keys.index(b"\x22" * 16)
     import rrc_ui
     rrc_ui.open_selected_hub(g)
 
@@ -1979,7 +1980,7 @@ def test_opening_a_second_hub_ends_the_first_session_through_the_real_click():
     g.state = U.STATE_NODES
     g.node_tab = U.TAB_RRC
     g.add_rrc_hub(b"\x22" * 16, name="Hub B", hops=1)
-    g._rrc_idx = 0
+    g._rrc_idx = g._rrc_keys.index(b"\x22" * 16)
     dialled = []
     g.on_rrc_connect = lambda dest: (dialled.append(dest),
                                      rrc_client.connect(dest))
@@ -2020,7 +2021,7 @@ def test_hub_eviction_keeps_the_selection_on_the_same_hub():
     g._rrc_idx = 3
     selected = g._rrc_keys[3]
     g.add_rrc_hub(b"\xf0" * 16, name="newcomer", hops=1)   # forces an eviction
-    assert len(g._rrc_keys) == U.MAX_RRC_HUBS
+    assert len(g._rrc_keys) == U.MAX_RRC_HUBS + 1      # the + New row is not a hub
     assert selected in g._rrc_keys, "the selected hub itself was evicted"
     assert g._rrc_keys[g._rrc_idx] == selected, \
         "eviction moved the selection to a different hub"
@@ -2045,7 +2046,7 @@ def test_hub_eviction_drops_the_least_recently_seen_not_the_oldest_added():
     assert first in g.rrc_hubs, "a hub that is still announcing was evicted"
     assert quiet not in g.rrc_hubs, (
         "eviction was FIFO, not least-recently-seen")
-    assert len(g._rrc_keys) == len(g.rrc_hubs) == U.MAX_RRC_HUBS
+    assert len(g._rrc_keys) - 1 == len(g.rrc_hubs) == U.MAX_RRC_HUBS
     print("ok test_hub_eviction_drops_the_least_recently_seen_not_the_oldest_added")
 
 
@@ -2100,7 +2101,7 @@ def test_m_on_the_rrc_tab_opens_find_and_adds_the_hub():
         g.handle_key(c.encode())
     g.draw_node_list()                     # the entry screen must render
     g.handle_key(b"\r")
-    assert g._rrc_keys == [bytes([0xBB]) * 16], g._rrc_keys
+    assert g._rrc_keys == [U._NEW, bytes([0xBB]) * 16], g._rrc_keys
     assert g._rrc_keys[g._rrc_idx] == bytes([0xBB]) * 16
     assert connected == [], connected      # added, not connected
     assert g.state == U.STATE_NODES, g.state
@@ -2116,8 +2117,8 @@ def test_manual_entry_on_the_rrc_tab_never_starts_a_shell():
     for c in "cc" * 16:
         g.handle_key(c.encode())
     g.handle_key(b"\r")
-    assert g._rrc_keys == [bytes([0xCC]) * 16], g._rrc_keys
-    assert g._shell_keys == [], g._shell_keys
+    assert g._rrc_keys == [U._NEW, bytes([0xCC]) * 16], g._rrc_keys
+    assert g._shell_keys == [U._NEW], g._shell_keys
     assert g.connects == [], g.connects       # on_shell_connect must not fire
     assert g._terminal is None
     print("ok test_manual_entry_on_the_rrc_tab_never_starts_a_shell")
@@ -2139,7 +2140,7 @@ def test_manual_entry_accepts_the_hex_digits_e_and_x_is_not_one():
         assert g._find_q == "ee" * 16, (keys, g._find_q)
         assert (g._irq_up, g._irq_down) == (0, 0), (keys, g._irq_up, g._irq_down)
         g.handle_key(b"\r")
-        assert getattr(g, keys) == [bytes([0xEE]) * 16], (keys, getattr(g, keys))
+        assert getattr(g, keys) == [U._NEW, bytes([0xEE]) * 16], (keys, getattr(g, keys))
     print("ok test_manual_entry_accepts_the_hex_digits_e_and_x_is_not_one")
 
 
@@ -2152,7 +2153,7 @@ def test_manual_entry_still_works_on_the_ssh_tab():
     for c in "aa" * 16:
         g.handle_key(c.encode())
     g.handle_key(b"\r")
-    assert g._shell_keys == [bytes([0xAA] * 16)]
+    assert g._shell_keys == [U._NEW, bytes([0xAA] * 16)]
     assert g.connects == []
     assert g.state == U.STATE_NODES
     print("ok test_manual_entry_still_works_on_the_ssh_tab")

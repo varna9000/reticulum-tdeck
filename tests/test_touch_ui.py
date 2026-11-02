@@ -418,7 +418,7 @@ def test_tap_beyond_list_end_is_ignored():
     settle(g)
     check("selection unchanged", g.selected_idx == 0)
     g = with_peers(0)
-    check("a tap on an empty list does nothing", tap(g, 100, nrow_y(0)) is False)
+    check("a tap under the + New row of an empty list does nothing", tap(g, 100, nrow_y(1)) is False)
 
 
 def test_dots_column_opens_the_sheet():
@@ -433,6 +433,30 @@ def test_dots_column_opens_the_sheet():
     ui_pro.sheet_close(g)
     check("the ... of the already-selected row opens the sheet too",
           tap(g, 225, nrow_y(2)) is True and g._sheet == ui.TAB_MSG and opened == [])
+
+
+def test_top_row_tap_and_dots_open_lookup_and_long_press_does_nothing():
+    print("the + New row")
+    for tab in (ui.TAB_MSG, ui.TAB_NET, ui.TAB_SSH, ui.TAB_RRC):
+        for x, where in ((100, "the row"), (225, "the dots column")):
+            g = with_peers(3)
+            del g._enter_chat             # the real one, not with_peers' stub
+            g.node_tab = tab
+            g.on_contact_snapshot = lambda t: []
+            check("tab %d: a tap on %s is accepted" % (tab, where), tap(g, x, nrow_y(0)) is True)
+            settle(g)
+            check("...and opens Lookup, no sheet", g._find is True and g._sheet is None, "%r %r" % (g._find, g._sheet))
+            check("...and stays on the node list", g.state == ui.STATE_NODES)
+        g = with_peers(3)
+        g.node_tab = tab
+        check("tab %d: a long press on it is not taken" % tab,
+              touch_ui.handle(g, (LONG, 100, nrow_y(0), 0, 200000), 0) is False)
+        settle(g)
+        check("...opens no sheet and no Lookup", g._sheet is None and g._find is False)
+    g = with_peers(3)
+    g.selected_idx = 2
+    touch_ui.handle(g, (LONG, 100, nrow_y(0), 0, 200000), 0)
+    check("...and leaves the cursor on its row", g.selected_idx == 2, str(g.selected_idx))
 
 
 def test_long_press_opens_the_sheet():
@@ -1909,6 +1933,7 @@ if __name__ == "__main__":
     test_controller_feedback_and_dark()
     test_one_tap_opens_a_row()
     test_dots_column_opens_the_sheet()
+    test_top_row_tap_and_dots_open_lookup_and_long_press_does_nothing()
     test_long_press_opens_the_sheet()
     test_sheet_taps()
     test_layout_key_sees_a_reorder()
