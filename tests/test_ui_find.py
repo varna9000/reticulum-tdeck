@@ -7,6 +7,7 @@
 #
 # Run:  python3 tests/test_ui_find.py
 
+import json
 import os
 import sys
 import types
@@ -903,6 +904,55 @@ def test_open_resets_only_this_tabs_count():
     g.heard(ui.TAB_NET, DEEJ)
     g._find_open()
     assert len(g._heard[ui.TAB_MSG]) == 0 and len(g._heard[ui.TAB_NET]) == 1
+
+
+def _favourites_on_a_dict(g, store):
+    g._get_favorites = lambda t=None: json.loads(store.get(t, "{}"))
+    g._save_favorites = lambda d, t=None: store.__setitem__(t, json.dumps(d)) or True
+
+
+def test_a_shell_picked_with_no_name_is_named_by_its_hash():
+    """contact_snapshot has no name parser for rnsh, so every shell in Lookup
+    says "?". The row must read as its hash, and a pin must save the hash."""
+    g = mk_find(ui.TAB_SSH, [(RATS, "?", 1000), (DEEJ, "?", 900)])
+    g.handle_key(b"\r")
+    g.handle_key(b"m")
+    g._find_sel = 1
+    g.handle_key(b"\r")
+    names = [g.shell_nodes[k]["name"] for k in (RATS, DEEJ)]
+    assert names == [RATS.hex()[:10], DEEJ.hex()[:10]], names
+
+    store = {}
+    _favourites_on_a_dict(g, store)
+    g.ssh_idx = g._shell_keys.index(RATS)
+    g.handle_key(b"f")
+    booted = _mkui()
+    _favourites_on_a_dict(booted, store)
+    booted.load_favorites()
+    assert booted.shell_nodes[RATS]["name"] == RATS.hex()[:10]
+
+
+def test_a_shell_pinned_as_a_question_mark_shows_its_hash_after_a_boot():
+    """Older firmware pinned the "?" into shells.json."""
+    store = {"shell": json.dumps({"shellKey_0": RATS.hex(), "shell_0": {"name": "?"}})}
+    g = _mkui()
+    _favourites_on_a_dict(g, store)
+    g.load_favorites()
+    assert g.shell_nodes[RATS]["name"] == RATS.hex()[:10]
+
+
+def test_a_nameless_pick_still_takes_its_name_from_the_announce():
+    for tab in (ui.TAB_MSG, ui.TAB_NET, ui.TAB_RRC):
+        for snap, typed in (([(RATS, "?", 1000)], None), ([], RATS.hex())):
+            g = mk_find(tab, snap)
+            _type(g, typed or "")
+            g._find_pick()
+            e = g._tab_list(tab)[1][RATS]
+            assert (e["name"] or "?") == "?", (tab, e)
+            assert g.heard(tab, RATS, "kay") is True
+            assert e["name"] == "kay", (tab, e)
+            assert g.heard(tab, RATS) is True, "a nameless re-announce keeps it"
+            assert e["name"] == "kay", (tab, e)
 
 
 def test_add_contact_route_news_do_not_count_as_heard():

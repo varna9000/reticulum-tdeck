@@ -2418,7 +2418,8 @@ class UI:
         elif "hub" == type:
             self.add_rrc_hub(key, entity.get("name"), fav=True)
         elif "shell" == type:
-            self.add_shell_node(key, entity.get("name"), fav=True)
+            name = entity.get("name")   # an older pick saved Lookup's "?" here
+            self.add_shell_node(key, None if name == "?" else name, fav=True)
         else:
             return False # Unknown favorite usecase
         return True
@@ -3025,6 +3026,8 @@ class UI:
             return
         if self._find_res:
             dest, name = self._find_res[self._find_sel][:2]
+            if name == "?":        # Lookup's word for no name: a shell's row then shows its hash
+                name = None
         else:
             q = self._find_q.lower()
             if len(q) != 32 or not all(c in _HEX for c in q):
