@@ -161,7 +161,7 @@ The Pro has no trackball; its **alt** key (sticky, tap it then the letter within
 | Left / right (tabs, paging) | alt+S / alt+F (bare b cycles tabs) |
 | Click (open, select) | alt+W, or Enter where the screen has no text field |
 
-The touch panel carries the same navigation by finger. A tap on a row selects it and acts (rows that drop a link or quit a shell take a second tap to confirm). A drag or flick moves lists and pages the way a phone does: finger up shows what is below, finger down what is above, and the highlight keeps its place on the screen while the rows move under it; at the top or bottom nothing moves. A swipe to the right is back on any screen with no other use for it; a sideways swipe on the selected Setup row steps its value, and on the node list it changes tab. A long press opens a row's menu.
+The touch panel carries the same navigation by finger. A tap on a row selects it and acts (rows that drop a link or quit a shell take a second tap to confirm). A drag or flick moves lists and pages the way a phone does: finger up shows what is below, finger down what is above, and the highlight keeps its place on the screen while the rows move under it; at the top or bottom nothing moves. A swipe to the right is back on any screen with no other use for it; a sideways swipe on the selected Setup row steps its value, and on the node list it changes tab. A long press opens a row's menu. A tap on a tab in the tab bar switches to it, from Lookup too.
 | Back | Backspace on an empty field |
 | Keyboard backlight | alt+B |
 
@@ -268,33 +268,32 @@ mpremote cp tdeck_node.py :/main.py
 
 ### Node List Screen
 
-The device starts on the node list screen with four tabs: **MSG** (LXMF chat peers), **NET** (browsable NomadNet nodes), **RNSH** (rnsh shell listeners) and **RRC** (chat-room hubs), all populated from announces. Peers with unread messages are marked with `*`. A NomadNet instance announces both aspects, so it appears in both MSG and NET — chattable in MSG, browsable in NET.
+The device starts on the node list screen with four tabs: **MSG** (LXMF chat peers), **NET** (browsable NomadNet nodes), **RNSH** (rnsh shell listeners) and **RRC** (chat-room hubs), Every tab lists only what you use: a conversation, a favourite, or something you opened. An announce from a stranger adds no row; it only counts toward the first row, `+ New chat` (`+ New node`, `+ New shell`, `+ New hub`), which reads `37 newly heard` (`37 heard since last look` on the Pro) and `99+` from 100. That count is the addresses of the tab's kind heard since you last opened Lookup there. Click it, or press Enter, to open Lookup. The first row scrolls away with the list; `m` opens Lookup from anywhere. Below it come the favourites in the order you starred them, then everything else, most recent first. Unread chats carry a count pill. A message from someone with no row gives them one just under the favourites, named from an announce if you ever heard one, else `? c0ffee42`. An announce from something that has a row updates its name, hops and age in place without moving it. A NomadNet instance announces both aspects, so it can have a row in both MSG and NET — chattable in MSG, browsable in NET.
 
 | Action | Input |
 |---|---|
 | Switch MSG/NET/RNSH/RRC tab | Trackball left/right (or `b`) |
 | Select peer/node | Trackball up/down (or `e`/`x`) |
-| Open chat / node page / shell | Trackball click (or Enter) |
-| Favorite/Unfavorite selected peer/node | Press `f` |
-| Find, or add by hash, a peer / node / hub / listener | Press `m` |
-| Receive an address by sound (in Find, empty query) | Press `0` — see [Address by Sound](#address-by-sound-dtmf) |
+| Open chat / node page / shell (on the first row: open Lookup) | Trackball click (or Enter) |
+| Favorite/Unfavorite selected peer/node (nothing on the first row) | Press `f` |
+| Lookup: search what was heard, or add by hash, a peer / node / hub / listener | Press `m` |
+| Receive an address by sound (in Lookup, empty query) | Press `0` — see [Address by Sound](#address-by-sound-dtmf) |
 | Send announce | Press `a` |
 | Open setup | Press `s` |
-| Ping selected peer (MSG, not shown in the footer) | Press `p` |
-| Delete selected peer/node (not shown in the footer) | Press `d` |
+| Ping selected peer (MSG, not shown in the footer; nothing on the first row) | Press `p` |
+| Delete selected peer/node (not shown in the footer; nothing on the first row) | Press `d` |
 | Lock the device | Hold trackball click (0.7 s), anywhere |
 | Unlock the device | Any trackball click |
 
-Favorites will appear with `[*]` in node list. There is a maximum of 5 favorites for each type(`peer`, `nomad`, `rrc` and `rnsh`).
+Favourites show a star and stay on top. There is a maximum of 5 favourites for each type (`peer`, `nomad`, `rrc` and `rnsh`). Only favourites survive a reboot; chats and messages are kept in RAM and never written to flash.
 
-Deleting a peer forgets its chat history and cached media locally; it
-re-appears on the next announce. When the peer list fills up (16 entries) the
-**least-recently-seen** peer that is not favorited is evicted — never the one you're actively
-chatting with.
+An empty tab shows the first row selected and three centred lines, for example `No chats yet.` / `Pick someone heard, or` / `wait for a message.`
 
-**Find** (`m`, on any tab) searches every address of that tab's kind the node has heard — LXMF peers on MSG, NomadNet nodes on NET, hubs on RRC, listeners on RNSH — not just the 16 in the list, but the whole announce cache (up to 768 identities). Type part of a display name (`deej`) or the start of an address (`b90d`); matches list newest first with their hash prefix and age, so two with similar names can be told apart. Move with the trackball, and click or press Enter to add the pick to the tab's list and select it; opening it (chat, page, hub, shell) is the usual click away, so nothing connects by surprise. Backspace on an empty query goes back to the list. To add something whose announce hasn't reached you — say an address posted as a QR code online — type all 32 hex characters: it is added as `?`, a path request goes out, and the name fills in when the answer arrives instead of hours later at its next announce. Messages typed to a `?` peer are queued and sent once a path is known. On RRC and RNSH the screen also shows your identity hash, for a hub operator or a listener's `-a`.
+Deleting a peer forgets its chat history and cached media locally; an announce no longer brings it back, but a message or a Lookup pick does. MSG, NET and RNSH hold up to 64 rows each (RRC 16). At the limit the oldest read entry is dropped; one with unread messages only if nothing else is left. A favourite and the chat you have open are never dropped. A change of link keeps your rows, chats and unread counts, and forgets only the routes and the heard counts.
 
-The footer's right side shows a compact status for the **selected entry** — hop count, last RSSI, and last-seen age (`2h -87dB 5m`), learned from announces. Pinging sends a probe to the peer's `urns.probe` destination and shows the round-trip time (`ping: 2.4s`); peers must run uP-reticulum with the probe responder enabled to answer.
+**Lookup** (`m` on any tab, or the first row) searches every address of that tab's kind the node has heard — LXMF peers on MSG, NomadNet nodes on NET, hubs on RRC, listeners on RNSH — not just the rows in the list, but the whole announce cache (up to 768 identities). Its title says what a pick adds: `New chat: name or hash`, `New node: ...`, `New shell: hash`, `New hub: ...`. Type part of a display name (`deej`) or the start of an address (`b90d`); matches list newest first with their hash prefix and age, so two with similar names can be told apart. Move with the trackball, and click or press Enter to pick. On MSG a pick opens the chat, since opening one sends nothing. On NET, RNSH and RRC it adds the row and selects it; opening it (page, shell, hub) is the usual click away, so nothing connects by surprise. Before the clock has synced, entries newly heard sort first and an age that cannot be right is left blank. Backspace on an empty query goes back to the list, and so does tapping another tab. To add something whose announce hasn't reached you — say an address posted as a QR code online — type all 32 hex characters: it is added as `?`, a path request goes out, and the name fills in when the answer arrives instead of hours later at its next announce. Messages typed to a `?` peer are queued and sent once a path is known. On RRC and RNSH the screen also shows your identity hash, for a hub operator or a listener's `-a`.
+
+The footer's hint is `(A)nnc (S)etup (F)av (M)new`. Its right side shows the **selected entry**'s address and hop count when known (`aacf7098 3 hops`; the first 8 hex digits), and is blank on the first row. Pinging sends a probe to the peer's `urns.probe` destination and shows the round-trip time (`ping: 2.4s`); peers must run uP-reticulum with the probe responder enabled to answer.
 
 The navbar shows a clock (`HH:MM`) once the node has adopted mesh time via network time sync.
 
@@ -322,7 +321,7 @@ v1 limitations: read-only (form fields render as placeholders), pages are capped
 
 ### rnsh Shell (RNSH tab)
 
-The RNSH tab lists [rnsh](https://github.com/acehoss/rnsh) listeners heard via announces; press `m` to find one or add it by its 32-hex destination hash. Clicking one establishes an encrypted link, identifies your node, exchanges protocol versions, and starts the remote default shell on a pty. Output renders as a **scrolling text log** on a **53×16 grid** (see the font note below) — line-oriented commands (`ls -l`, `ps`, `git log`, `cat`) keep their column layout instead of wrapping; full-screen TUIs (`vim`, `htop`) won't render correctly (ANSI cursor addressing is stripped in this MVP). The listener must authorize your **identity hash** (shown at boot and on the RNSH Find screen) via its `-a` flag or `~/.config/rnsh/allowed_identities`, unless it runs `--no-auth`.
+The RNSH tab lists [rnsh](https://github.com/acehoss/rnsh) listeners heard via announces; press `m` to look one up or add it by its 32-hex destination hash. Clicking one establishes an encrypted link, identifies your node, exchanges protocol versions, and starts the remote default shell on a pty. Output renders as a **scrolling text log** on a **53×16 grid** (see the font note below) — line-oriented commands (`ls -l`, `ps`, `git log`, `cat`) keep their column layout instead of wrapping; full-screen TUIs (`vim`, `htop`) won't render correctly (ANSI cursor addressing is stripped in this MVP). The listener must authorize your **identity hash** (shown at boot and on the RNSH Find screen) via its `-a` flag or `~/.config/rnsh/allowed_identities`, unless it runs `--no-auth`.
 
 | Action | Input |
 |---|---|
@@ -432,9 +431,9 @@ On the T-Deck Pro the decoded image is Floyd-Steinberg dithered down to the e-in
 
 Getting a 32-hex address onto the T-Deck without typing it: play it from a computer as DTMF tones and let the T-Deck's microphone take it down. Works from macOS and Linux with the included script, or from any DTMF generator.
 
-1. On the T-Deck, open **Find** (`m`) and press `0` (the Sym+0 mic key) on the empty query. The screen shows *Listening...*.
+1. On the T-Deck, open **Lookup** (`m`) and press `0` (the Sym+0 mic key) on the empty query. The screen shows *Listening...*.
 2. On a Mac, select the address in any app and choose **Services → Transfer via sound**. On Linux, select it and press the key you bound to `dtmf_send.py --selection`. Or anywhere: `python3 tools/dtmf_send.py <hash>`. Setup for each is below.
-3. The T-Deck chimes and the address appears in the Find query — a heard contact is highlighted, an unheard one offers *Enter: add*. Nothing is added until you press Enter.
+3. The T-Deck chimes and the address appears in the Lookup query — a heard contact is highlighted, an unheard one offers *Enter: add*. Nothing is added until you press Enter.
 
 **Hold the T-Deck** about 30 cm from the speaker, at a normal volume (~60%). Lying on a desk in its case, the T-Deck's mic path loses 15–25 dB around 1.5–2 kHz — exactly where the A–D DTMF tone (1633 Hz) sits — so hex digits a–d go missing; held in the hand the notch disappears. Listening gives up after 30 s (`0` tries again); pressing any other key cancels, and the character goes into the query after the `0` — so a hash that starts with `0` can still be typed.
 
@@ -1003,7 +1002,7 @@ path on stock MicroPython.
 | `tools/flash_tdeck.sh` | Flashes firmware + uploads natmod files via mpremote |
 | `tools/tdeck_manifest.py` | MicroPython frozen module manifest |
 | `tools/render_v1.py`, `tools/render_pro.py` | Render the Setup pages on the host with the real `ui.py` and fonts (colour LCD / 1-bit e-ink), to look at a layout before flashing |
-| `tools/dtmf_send.py` | Plays a 32-hex address as DTMF for the T-Deck's Find → `0` — macOS and Linux, stdlib only; `--wav` writes a file, `--digits` prints the keys for another generator |
+| `tools/dtmf_send.py` | Plays a 32-hex address as DTMF for the T-Deck's Lookup → `0` — macOS and Linux, stdlib only; `--wav` writes a file, `--digits` prints the keys for another generator |
 | `tools/mac/make_shortcut.py` | Builds, signs and imports the macOS *Transfer via sound* Quick Action |
 | `tools/gen_cp866_font.py` | Regenerates the legacy VGA Cyrillic font from the CP437 base + a BDF source |
 | `tools/gen_shell_font.py` | Converts any ≤8px-wide BDF into a font module in the CP437+CP866 slot layout (system or shell); `--fallback` fills slots the BDF lacks from another font |

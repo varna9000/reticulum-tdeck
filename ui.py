@@ -3019,7 +3019,8 @@ class UI:
     def _find_pick(self):
         """Add the highlighted result -- or, with no result, a full 32-hex
         hash nobody has announced yet -- to this tab's list and select it.
-        Opening it is the usual click away; nothing connects by surprise."""
+        On MSG the chat opens, since opening one sends nothing; on the other
+        tabs opening it is the usual click away and nothing connects by surprise."""
         if self._find_listen:
             return
         if self._find_res:
