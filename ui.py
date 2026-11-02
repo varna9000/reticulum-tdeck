@@ -1496,100 +1496,76 @@ class UI:
 
     # --- Navbar ---
 
+    def _nav_state(self):
+        """What the header shows, for both boards: (battery text, bars 0-3,
+        clock, status, fan, antenna, antenna text, announce flash). status is
+        "" or the bracketed audio text / "RX n/total"; fan and antenna are
+        icons or None; the clock is "--:--" until the mesh time is synced."""
+        # Above ~4.3V the pack is on USB/charge; a bare voltage there reads
+        # like a bug. And 0.0V is an unknown, not a flat pack.
+        if self.bat_v >= 4.3:
+            bat = "USB"
+        elif self.bat_v <= 0.0:
+            bat = "--"
+        else:
+            bat = "{:.1f}V".format(self.bat_v)
+        bars = 3 if self.bat_v > 3.9 else (2 if self.bat_v > 3.6 else (1 if self.bat_v > 3.3 else 0))
+        ann = bool(self.announce_flash and time.ticks_diff(time.ticks_ms(), self.announce_flash) < 2000)
+        status = ""
+        if self._audio_status:
+            status = "[" + self._audio_status + "]"
+        elif self.transfer_progress:
+            status = "RX " + str(self.transfer_progress[0]) + "/" + str(self.transfer_progress[1])
+        ic, text, badge = band_slots(self._backbone, self._tcp_enabled, self.lora_online, self.rssi, self.snr)
+        ant = ic if ic is _ANTENNA else None
+        fan = badge if ant else ic
+        clock = _fmt_clock() if _clock_valid() else "--:--"
+        return bat, bars, clock, status, fan, ant, text, ann
+
     def draw_navbar(self):
+        """Battery on the left, the clock on the right, WiFi, LoRa and the
+        announce flash packed leftwards from it; sending / RX / FAIL centred."""
         if _pro is not None:
             return _pro.draw_navbar(self)
-        # Above ~4.3V the pack is on USB/charge — a LiPo never rests that
-        # high, so a bare voltage there reads like a bug. Show "USB" instead.
-        if self.bat_v >= 4.3:
-            bat_v_str = "USB"
-        elif self.bat_v <= 0.0:
-            # Nothing has reported a voltage yet. "0.0V" reads as a flat pack;
-            # this reads as what it is, an unknown.
-            bat_v_str = "--"
-        else:
-            bat_v_str = "{:.1f}V".format(self.bat_v)
-        name = self.node_name[:10]
-        ann = ">>>" if (self.announce_flash and time.ticks_diff(time.ticks_ms(), self.announce_flash) < 2000) else ""
-
-        # Center: transfer / voice status as text, else an interface icon --
-        # globe for TCP, antenna for LoRa (magenta when the radio failed) --
-        # with the SNR; then the mesh clock once time is synced.
-        icon = None
-        badge = None
-        if self._audio_status:
-            center = "[" + self._audio_status + "]"
-        elif self.transfer_progress:
-            rcv, tot = self.transfer_progress
-            center = "RX " + str(rcv) + "/" + str(tot)
-        else:
-            icon, center, badge = band_slots(self._backbone, self._tcp_enabled, self.lora_online, self.rssi, self.snr)
-        clock = _fmt_clock() if _clock_valid() else ""
-        if not icon and clock:
-            center = (center + "  " if center else "") + clock
-            clock = ""
-
-        right_str = (ann + " " if ann else "") + name
-        center_color = self.NEON_MAG if (not self._tcp_enabled and not self.lora_online) else self.DIM_CYAN
+        bat, bl, clock, status, fan, ant, text, ann = self._nav_state()
+        key = clock + status + text + bat + str(bl) + ("W" if fan is _WIFI else "B" if fan else "") \
+            + ("A" if ant else "") + (">" if ann else "")
+        if self._cache[0] == key:
+            return
+        self._cache[0] = key
         hb = self.HEADER_BG
         sw = self.SW
         ny = (NAV_H - self.SH) // 2
-        left_end = 4 * CHAR_W + 5 * sw          # battery icon + voltage
-
-        bl = 3 if self.bat_v > 3.9 else (2 if self.bat_v > 3.6 else (1 if self.bat_v > 3.3 else 0))
-        bat_key = bat_v_str + str(bl)
-        mid_key = (("W" if icon is _WIFI else "B" if icon is _WIFI_BANG else "A" if icon else "")
-                   + ("!" if badge else "") + center + clock + right_str)
-
-        if self._cache[0] == '':
-            self._nav_bat_cache = ''
-            self._nav_mid_cache = ''
-            self.tft.fill_rect(0, 0, SCREEN_W, NAV_H, hb)
-
-        # Battery section (icon + voltage text)
-        if self._nav_bat_cache != bat_key:
-            self._nav_bat_cache = bat_key
-            gr = self.NEON_GREEN
-            dm = self.BG_DARK if self._mono else self.DIM_CYAN
-            self.tft.fill_rect(1, 4, 26, 12, gr)
-            self.tft.fill_rect(2, 5, 24, 10, hb)
-            self.tft.fill_rect(27, 7, 2, 6, gr)
-            self.tft.fill_rect(3,  6, 7, 8, gr if bl >= 1 else dm)
-            self.tft.fill_rect(11, 6, 7, 8, gr if bl >= 2 else dm)
-            self.tft.fill_rect(19, 6, 7, 8, gr if bl >= 3 else dm)
-            self.tft.fill_rect(4 * CHAR_W, 0, 5 * sw, NAV_H, hb)
-            self._sdraw(bat_v_str, 4 * CHAR_W, ny, self.NEON_GREEN, hb)
-
-        # Center + right (announce flash, node name): repainted together, as
-        # the name's length decides how much room the center gets.
-        if self._nav_mid_cache != mid_key:
-            self._nav_mid_cache = mid_key
-            self.tft.fill_rect(left_end, 0, SCREEN_W - left_end, NAV_H, hb)
-            right_x = SCREEN_W - sw - len(right_str) * sw     # one-char right margin
-            self._sdraw(right_str, right_x, ny, self.NEON_CYAN, hb)
-            if ann:
-                self._sdraw(ann, right_x, ny, self.NEON_MAG, hb)
-            lo, hi = left_end + sw, right_x - sw
-            iw = icon[0] + 4 if icon else 0
-            # The transport group has a fixed width (icon, "snr N", badge) so
-            # nothing walks between states; the clock follows it at a fixed x.
-            group_w = 15 + 4 + 7 * sw + 8 + 17
-            if icon:
-                cw = group_w + (2 * sw + len(clock) * sw if clock else 0)
-            else:
-                center = center[:max(0, (hi - lo) // sw)]
-                cw = len(center) * sw
-            x = max(lo, min((SCREEN_W - cw) // 2, hi - cw))
-            if icon:
-                self._bitmap(icon, x, (NAV_H - icon[1]) // 2, center_color)
-            if center:
-                self._sdraw(center, x + iw, ny, center_color, hb)
-            if badge:
-                self._bitmap(badge, x + 15 + 4 + 7 * sw + 8, (NAV_H - badge[1]) // 2, self.DIM_CYAN)
-            if clock:
-                self._sdraw(clock, x + group_w + 2 * sw, ny, self.DIM_CYAN, hb)
-
-        self._cache[0] = bat_key + mid_key
+        bad = not self._tcp_enabled and not self.lora_online
+        col = self.NEON_MAG if bad else self.DIM_CYAN
+        self.tft.fill_rect(0, 0, SCREEN_W, NAV_H, hb)
+        x = SCREEN_W - 4 - 5 * sw
+        self._sdraw(clock, x, ny, self.NEON_CYAN, hb)
+        # Packed from the clock leftwards, 10 px between items: whichever of
+        # WiFi and LoRa is showing sits next to the clock.
+        fail = text == "FAIL"
+        if fan:
+            x -= 10 + 17                # the fan's slot also fits its "!" form
+            self._bitmap(fan, x, (NAV_H - fan[1]) // 2, col)
+        if ant:
+            t = "" if status or fail else text
+            x -= 10 + ant[0] + (4 + len(t) * sw if t else 0)
+            self._bitmap(ant, x, (NAV_H - ant[1]) // 2, col)
+            if t:
+                self._sdraw(t, x + ant[0] + 4, ny, col, hb)
+        if ann and not status:
+            x -= 10 + 3 * sw
+            self._sdraw(">>>", x, ny, self.NEON_MAG, hb)
+        mid = status[:27] or ("FAIL" if fail else "")
+        if mid:
+            self._sdraw(mid, (SCREEN_W - len(mid) * sw) // 2, ny, col if fail else self.NEON_CYAN, hb)
+        gr = self.NEON_GREEN
+        self.tft.fill_rect(1, 4, 26, 12, gr)
+        self.tft.fill_rect(2, 5, 24, 10, hb)
+        self.tft.fill_rect(27, 7, 2, 6, gr)
+        for i in range(3):
+            self.tft.fill_rect(3 + 8 * i, 6, 7, 8, gr if bl > i else (self.BG_DARK if self._mono else self.DIM_CYAN))
+        self._sdraw(bat, 4 * CHAR_W, ny, gr, hb)
 
     # --- Node list screen ---
 

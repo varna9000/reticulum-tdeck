@@ -308,43 +308,34 @@ def draw_node_list(ui):
 
 
 def draw_navbar(ui):
-    """Battery left, radio state in the middle, the mesh clock on the right.
-    No node name: it never changes, and the clock is what gets glanced at.
-    Left and centre keep ui.draw_navbar's content and rules."""
+    """Battery left, the clock right with WiFi, LoRa and the announce flash
+    packed leftwards from it, sending / RX / FAIL centred. Ink only. The
+    battery and the middle keep separate caches so a voltage change does not
+    repaint the middle on e-ink."""
     tft = ui.tft
     W = _u.SCREEN_W
     NAV_H = _u.NAV_H
-    if ui.bat_v >= 4.3:
-        bat = "USB"
-    elif ui.bat_v <= 0.0:
-        bat = "--"
-    else:
-        bat = "{:.1f}V".format(ui.bat_v)
-    ann = ui.announce_flash and time.ticks_diff(time.ticks_ms(), ui.announce_flash) < 2000
-    icon = None
-    badge = None
-    if ui._audio_status:
-        center = "[" + ui._audio_status + "]"
-    elif ui.transfer_progress:
-        rcv, tot = ui.transfer_progress
-        center = "RX " + str(rcv) + "/" + str(tot)
-    else:
-        icon, center, badge = _u.band_slots(ui._backbone, ui._tcp_enabled, ui.lora_online, ui.rssi, ui.snr)
-    clock = _u._fmt_clock() if _u._clock_valid() else ""
-    right = (">>> " if ann else "") + clock
-    right = right.rstrip() if not clock else right
+    bat, bl, clock, status, fan, ant, text, ann = ui._nav_state()
+    fail = text == "FAIL"
+    mid = status[:18] or ("FAIL" if fail else "")
+    mx = (W - len(mid) * SW) // 2
+    t = "" if mid else text
     hb = ui.HEADER_BG
-    sw = SW
     ny = (NAV_H - SH) // 2
-    left_end = 4 * _u.CHAR_W + 5 * sw
-    bl = 3 if ui.bat_v > 3.9 else (2 if ui.bat_v > 3.6 else (1 if ui.bat_v > 3.3 else 0))
     bat_key = bat + str(bl)
-    mid_key = (("W" if icon is _u._WIFI else "B" if icon is _u._WIFI_BANG else "A" if icon else "")
-               + ("!" if badge else "") + center + "|" + right)
+    x = W - 4 - 5 * SW
+    fx = x - 10 - 17 if fan else x
+    ax = fx - 10 - (ant[0] + (4 + len(t) * SW if t else 0)) if ant else fx
+    # A long status beside both icons: the WiFi warning stays, the antenna goes.
+    if ant and fan and mid and mx + len(mid) * SW + 6 > ax:
+        ant = None
+        ax = fx
+    mid_key = ("W" if fan is _u._WIFI else "B" if fan else "") + ("A" if ant else "") + t + "|" + mid + "|" + clock + (">" if ann else "")
     if ui._cache[0] == '':
         ui._nav_bat_cache = ''
         ui._nav_mid_cache = ''
         tft.fill_rect(0, 0, W, NAV_H, hb)
+    left_end = 4 * _u.CHAR_W + 5 * SW
     if ui._nav_bat_cache != bat_key:
         ui._nav_bat_cache = bat_key
         gr = ui.NEON_GREEN
@@ -355,31 +346,23 @@ def draw_navbar(ui):
         tft.fill_rect(3, 6, 7, 8, gr if bl >= 1 else dm)
         tft.fill_rect(11, 6, 7, 8, gr if bl >= 2 else dm)
         tft.fill_rect(19, 6, 7, 8, gr if bl >= 3 else dm)
-        tft.fill_rect(4 * _u.CHAR_W, 0, 5 * sw, NAV_H, hb)
-        _sd(ui, bat, 4 * _u.CHAR_W, ny, ui.NEON_GREEN, hb)
+        tft.fill_rect(4 * _u.CHAR_W, 0, 5 * SW, NAV_H, hb)
+        _sd(ui, bat, 4 * _u.CHAR_W, ny, gr, hb)
     if ui._nav_mid_cache != mid_key:
         ui._nav_mid_cache = mid_key
         tft.fill_rect(left_end, 0, W - left_end, NAV_H, hb)
-        rx = W - sw - len(right) * sw
-        if right:
-            _sd(ui, right, rx, ny, ui.NEON_CYAN, hb)
-        lo = left_end + sw
-        hi = rx - sw
-        iw = icon[0] + 4 if icon else 0
-        # A fixed-width transport group (icon, "snr N", badge): nothing walks.
-        if icon:
-            cw = 15 + 4 + 7 * sw + 8 + 17
-        else:
-            center = center[:max(0, (hi - lo) // sw)]
-            cw = len(center) * sw
-        x = max(lo, min((W - cw) // 2, hi - cw))
-        col = ui.NEON_MAG if (not ui._tcp_enabled and not ui.lora_online) else ui.DIM_CYAN
-        if icon:
-            ui._bitmap(icon, x, (NAV_H - icon[1]) // 2, col)
-        if center:
-            _sd(ui, center, x + iw, ny, col, hb)
-        if badge:
-            ui._bitmap(badge, x + 15 + 4 + 7 * sw + 8, (NAV_H - badge[1]) // 2, col)
+        ink = ui.NEON_CYAN
+        _sd(ui, clock, x, ny, ink, hb)
+        if fan:
+            ui._bitmap(fan, fx, (NAV_H - fan[1]) // 2, ink)
+        if ant:
+            ui._bitmap(ant, ax, (NAV_H - ant[1]) // 2, ink)
+            if t:
+                _sd(ui, t, ax + ant[0] + 4, ny, ink, hb)
+        if ann and not status:
+            _sd(ui, ">>>", ax - 10 - 3 * SW, ny, ink, hb)
+        if mid:
+            _sd(ui, mid, mx, ny, ink, hb)
     ui._cache[0] = bat_key + mid_key
 
 

@@ -735,8 +735,8 @@ def test_v1_band_two_slots_and_a_clock_that_does_not_move():
     try:
         g.set_backbone_state("no_server", "home", "", link=False)
         icons, texts = _band_calls(g)
-        assert [i for i, _ in icons] == [ui._ANTENNA, ui._WIFI_BANG], icons
-        assert ("snr 7", icons[0][1] + ui._ANTENNA[0] + 4) in texts, texts
+        assert [i for i, _ in icons] == [ui._WIFI_BANG, ui._ANTENNA], icons
+        assert ("snr 7", icons[1][1] + ui._ANTENNA[0] + 4) in texts, texts
         clock_x = [x for s, x in texts if s == "09:41"][0]
         g.set_backbone_state("up", "home", "1.2.3.4", link=True)
         icons, texts = _band_calls(g)
@@ -749,8 +749,8 @@ def test_v1_band_two_slots_and_a_clock_that_does_not_move():
         g.rssi, g.snr = -120, -12
         icons, texts = _band_calls(g)
         tx = [x for s_, x in texts if s_ == "snr -12"][0]
-        bx = icons[1][1]
-        assert bx - (tx + len("snr -12") * g.SW) >= 8, (tx, bx)            # a negative snr still clears the badge
+        cx = [x for s_, x in texts if s_ == "09:41"][0]
+        assert cx - (tx + len("snr -12") * g.SW) >= 10, (tx, cx)           # a negative snr still clears the clock
         g.rssi, g.snr = -80, 7
         g.set_backbone_state("off", "", "")
         g.lora_online = True
@@ -768,7 +768,103 @@ def test_band_precedence_audio_and_transfer_win():
     g.lora_online = True
     g._audio_status = "PLAY"
     icons, texts = _band_calls(g)
-    assert icons == [] and any(s.startswith("[PLAY]") for s, _ in texts), texts   # the clock may follow the text
+    assert [i for i, _ in icons] == [ui._WIFI_BANG, ui._ANTENNA] and any(s == "[PLAY]" for s, _ in texts), (icons, texts)
+
+
+def _hdr(g, clock="09:41", valid=True):
+    """Draw the header once; (icons by identity -> x, texts as (s, x))."""
+    saved = (ui._clock_valid, ui._fmt_clock)
+    ui._clock_valid, ui._fmt_clock = (lambda: valid), (lambda: clock)
+    try:
+        icons, texts = _band_calls(g)
+    finally:
+        ui._clock_valid, ui._fmt_clock = saved
+    return dict((id(i), x) for i, x in icons), texts
+
+
+def _xclock(g):
+    return ui.SCREEN_W - 4 - 5 * g.SW
+
+
+def _hdr_ui(state, link, lora=True, snr=7):
+    g = _mkui()
+    g.state = ui.STATE_NODES
+    g.lora_online = lora
+    g.rssi, g.snr = (-80, snr) if lora else (None, 0)
+    g.set_backbone_state(state, "home", "", link=link)
+    return g
+
+
+def test_v1_header_lone_wifi_sits_next_to_the_clock():
+    g = _hdr_ui("up", True)
+    ic, tx = _hdr(g)
+    assert ic == {id(ui._WIFI): _xclock(g) - 27}, ic
+    assert ("09:41", _xclock(g)) in tx, tx
+
+
+def test_v1_header_lone_lora_sits_next_to_the_clock():
+    g = _hdr_ui("off", False)
+    ic, tx = _hdr(g)
+    x = [x for s, x in tx if s == "snr 7"][0]
+    assert x + 5 * g.SW == _xclock(g) - 10, (x, _xclock(g))
+    assert list(ic) == [id(ui._ANTENNA)], ic
+
+
+def test_v1_header_both_icons():
+    g = _hdr_ui("connecting", False)
+    ic, tx = _hdr(g)
+    assert ic[id(ui._WIFI_BANG)] == _xclock(g) - 27, ic
+    x = [x for s, x in tx if s == "snr 7"][0]
+    assert x + 5 * g.SW == _xclock(g) - 37, (x, _xclock(g))
+
+
+def test_v1_header_status_centred_icons_stay():
+    g = _hdr_ui("off", False)
+    g.transfer_progress = (3, 12)
+    ic, tx = _hdr(g)
+    assert ("RX 3/12", (ui.SCREEN_W - 7 * g.SW) // 2) in tx, tx
+    assert id(ui._ANTENNA) in ic and not any(s.startswith("snr") for s, _ in tx), (ic, tx)
+
+
+def test_v1_header_fail_centred_icons_stay():
+    g = _hdr_ui("off", False, lora=False)
+    ic, tx = _hdr(g)
+    assert ("FAIL", (ui.SCREEN_W - 4 * g.SW) // 2) in tx, tx
+    assert id(ui._ANTENNA) in ic and not any(s.startswith("snr") for s, _ in tx), (ic, tx)
+
+
+def test_v1_header_unsynced_clock_is_dashes():
+    g = _hdr_ui("off", False)
+    ic, tx = _hdr(g, valid=False)
+    assert ("--:--", _xclock(g)) in tx, tx
+
+
+def test_v1_header_has_no_node_name():
+    g = _hdr_ui("off", False)
+    g.node_name = "MyDeck"
+    ic, tx = _hdr(g)
+    assert not any("MyDeck" in s for s, _ in tx), tx
+
+
+def test_v1_header_announce_hides_during_status():
+    g = _hdr_ui("off", False)
+    g.announce_flash = _time.ticks_ms()
+    ic, tx = _hdr(g)
+    assert any(s == ">>>" for s, _ in tx), tx
+    g._audio_status = "sending"
+    ic, tx = _hdr(g)
+    assert not any(s == ">>>" for s, _ in tx), tx
+    assert ("[sending]", (ui.SCREEN_W - 9 * g.SW) // 2) in tx, tx
+
+
+def test_nav_state_tuple():
+    g = _hdr_ui("connecting", False)
+    g.bat_v = 3.8
+    bat, bars, clock, status, fan, ant, text, ann = g._nav_state()
+    assert (bat, bars, status, fan, ant, text, ann) == ("3.8V", 2, "", ui._WIFI_BANG, ui._ANTENNA, "snr 7", False)
+    g._audio_status = "PLAY"
+    g.bat_v = 4.4
+    assert g._nav_state()[0] == "USB" and g._nav_state()[3] == "[PLAY]"
 
 
 def _v1_rows(g):

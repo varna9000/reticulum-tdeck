@@ -366,7 +366,7 @@ def nav(g, t, clock="09:41", valid=True):
 
 def test_pro_band_two_slots():
     print("top bar: two slots")
-    for state, link, lora, want_icons, want_text in (("up", True, False, [ui._WIFI], None), ("no_server", False, True, [ui._ANTENNA, ui._WIFI_BANG], "snr 7"),
+    for state, link, lora, want_icons, want_text in (("up", True, False, [ui._WIFI], None), ("no_server", False, True, [ui._WIFI_BANG, ui._ANTENNA], "snr 7"),
                                                      ("no_server", True, True, [ui._WIFI_BANG], None), ("off", False, True, [ui._ANTENNA], "snr 7")):
         g, t = mkui()
         g.state = ui.STATE_NODES
@@ -393,19 +393,106 @@ def test_navbar_clock_right_no_name():
     check("voltage on the left", "3.9V" in strs)
     check("the node name is not drawn", not any("MyDeck" in x for x in strs), repr(strs))
     clk = [c for c in s if c[1] == "09:41"][0]
-    check("the clock ends one character from the right edge",
-          clk[2] + 5 * ui_pro.SW == ui.SCREEN_W - ui_pro.SW, repr(clk))
+    check("the clock ends 4 px from the right edge",
+          clk[2] + 5 * ui_pro.SW == ui.SCREEN_W - 4, repr(clk))
     snr = [c for c in s if c[1] == "snr 7"][0]
     check("radio state sits between the battery and the clock", 4 * ui.CHAR_W + 5 * ui_pro.SW < snr[2] < clk[2], repr(snr))
     s = nav(g, t, valid=False)
-    check("no valid clock: nothing on the right", [c[1] for c in s if c[2] > 180] == [], repr([c[1] for c in s]))
+    check("no valid clock: dashes where it goes", [c[1] for c in s if c[2] == XC] == ["--:--"], repr([c[1] for c in s]))
     g.announce_flash = _clock[0]
     s = nav(g, t)
     fl = [c for c in s if ">>>" in c[1]]
-    check("the announce flash sits just left of the clock", len(fl) == 1 and fl[0][1].endswith("09:41"), repr(fl))
+    check("the announce flash sits left of the clock, past the radio group", len(fl) == 1 and fl[0][1] == ">>>" and fl[0][2] < snr[2], repr(fl))
     del t.calls[:]
     g.draw_navbar()
     check("ui.draw_navbar hands over and is cached", t.calls == [], repr(t.calls[:2]))
+
+
+def _pro_hdr(state, link, lora=True, snr=7, **kw):
+    g, t = mkui()
+    g.set_backbone_state(state, "home", "", link=link)
+    g.lora_online = lora
+    g.rssi, g.snr = (-80, snr) if lora else (None, 0)
+    for k, v in kw.items():
+        setattr(g, k, v)
+    s = nav(g, t)
+    return g, t, [(c[1], c[2]) for c in s], dict((id(c[1]), c[2]) for c in t.calls if c[0] == "icon")
+
+
+XC = ui.SCREEN_W - 4 - 5 * 6
+
+
+def test_pro_header_lone_wifi():
+    print("header: lone WiFi")
+    g, t, tx, ic = _pro_hdr("up", True)
+    check("fan next to the clock, no antenna", ic == {id(ui._WIFI): XC - 27}, repr(ic))
+    check("clock at x_clock", ("09:41", XC) in tx, repr(tx))
+
+
+def test_pro_header_lone_lora():
+    print("header: lone LoRa")
+    g, t, tx, ic = _pro_hdr("off", False)
+    x = [x for s, x in tx if s == "snr 7"][0]
+    check("snr ends 10 px before the clock", x + 5 * 6 == XC - 10, repr(tx))
+
+
+def test_pro_header_both_icons():
+    print("header: both icons")
+    g, t, tx, ic = _pro_hdr("connecting", False)
+    x = [x for s, x in tx if s == "snr 7"][0]
+    check("fan at x_clock - 27", ic.get(id(ui._WIFI_BANG)) == XC - 27, repr(ic))
+    check("text ends at x_clock - 37", x + 5 * 6 == XC - 37, repr(tx))
+
+
+def test_pro_header_status_centred_icons_stay():
+    print("header: status centred")
+    g, t, tx, ic = _pro_hdr("off", False, transfer_progress=(3, 12))
+    check("RX centred", ("RX 3/12", (ui.SCREEN_W - 7 * 6) // 2) in tx, repr(tx))
+    check("antenna drawn, no snr", id(ui._ANTENNA) in ic and not any(s.startswith("snr") for s, _ in tx), repr((ic, tx)))
+
+
+def test_pro_header_fail_centred():
+    print("header: FAIL centred")
+    g, t, tx, ic = _pro_hdr("off", False, lora=False)
+    check("FAIL centred", ("FAIL", (ui.SCREEN_W - 4 * 6) // 2) in tx, repr(tx))
+    check("antenna drawn, no snr", id(ui._ANTENNA) in ic and not any(s.startswith("snr") for s, _ in tx), repr((ic, tx)))
+
+
+def test_pro_header_unsynced_clock_and_no_name():
+    print("header: unsynced clock, no name")
+    g, t = mkui()
+    g.node_name = "MyDeck"
+    g.lora_online = True
+    s = nav(g, t, valid=False)
+    check("dashes at x_clock", ("--:--", XC) in [(c[1], c[2]) for c in s], repr(s))
+    check("no node name", not any("MyDeck" in c[1] for c in s))
+
+
+def test_pro_header_long_status_drops_the_antenna():
+    print("header: long status beside both icons")
+    g, t, tx, ic = _pro_hdr("connecting", False, _audio_status="decode 12s audio")
+    check("antenna not drawn, fan drawn", id(ui._ANTENNA) not in ic and id(ui._WIFI_BANG) in ic, repr(ic))
+    check("status whole", ("[decode 12s audio]", (ui.SCREEN_W - 18 * 6) // 2) in tx, repr(tx))
+
+
+def test_pro_header_announce_hides_during_status():
+    print("header: announce")
+    g, t, tx, ic = _pro_hdr("off", False, announce_flash=_clock[0])
+    check("shown with no status", any(s == ">>>" for s, _ in tx), repr(tx))
+    g, t, tx, ic = _pro_hdr("off", False, announce_flash=_clock[0], _audio_status="sending")
+    check("hidden during a status", not any(s == ">>>" for s, _ in tx), repr(tx))
+
+
+def test_pro_header_middle_repaints_without_the_battery():
+    print("header: battery and middle caches stay apart")
+    g, t = mkui()
+    g.lora_online = True
+    nav(g, t)
+    del t.calls[:]
+    g.snr = 3
+    g.rssi = -90
+    ui_pro.draw_navbar(g)
+    check("a snr change does not repaint the battery", not [c for c in t.calls if c[0] == "rect" and c[1] == 1 and c[2] == 4], repr(t.calls[:3]))
 
 
 # --- Task 5: the sheet ------------------------------------------------------------
@@ -1990,6 +2077,15 @@ if __name__ == "__main__":
     test_no_body_frame_on_the_pro_list()
     test_pro_band_two_slots()
     test_navbar_clock_right_no_name()
+    test_pro_header_lone_wifi()
+    test_pro_header_lone_lora()
+    test_pro_header_both_icons()
+    test_pro_header_status_centred_icons_stay()
+    test_pro_header_fail_centred()
+    test_pro_header_unsynced_clock_and_no_name()
+    test_pro_header_long_status_drops_the_antenna()
+    test_pro_header_announce_hides_during_status()
+    test_pro_header_middle_repaints_without_the_battery()
     test_sheet_items_per_tab()
     test_sheet_open_draw_close()
     test_sheet_keeps_the_row_visible()
