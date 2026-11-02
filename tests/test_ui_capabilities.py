@@ -373,6 +373,8 @@ def test_unnamed_peer_shows_its_hash_as_name():
 
 
 def test_preview_marks_attachments():
+    """The app's own text already leads with a marker (test_attachments.py has
+    those); this is the fallback for an attachment whose text has none."""
     print("preview marks attachments")
     g = mk_with_chat(A, "a")
     g.add_chat_message(A, True, "look", image=b"x")

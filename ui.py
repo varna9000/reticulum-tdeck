@@ -446,6 +446,7 @@ def _age(ts):
     return str(d // 86400) + "d"
 
 
+_ATTACH_MARKS = ("[image", "[voice", "[audio")   # how tdeck_node's markers start
 _NEW = b"+"        # the "+ New" row: a key in every tab's key list, never in its table
 _NEW_ROWS = ("+ New chat", "+ New node", "+ New shell", "+ New hub")   # by TAB_*
 _TAB_ATTRS = (("selected_idx", "node_scroll"), ("net_idx", "net_scroll"),   # by TAB_*: cursor, window
@@ -1646,8 +1647,11 @@ class UI:
         if not hist:
             return name, "", ""
         m = hist[-1]
-        t = ("[image] " if m[4] else "[voice] " if m[5] else "") + _ascii(m[1]).replace("\n", " ")
-        t = t.rstrip()
+        # Whitespace first: the filter would delete a newline and join the
+        # words. Sliced first: this runs per visible row on every draw.
+        t = _ascii(" ".join(m[1][:64].split()))
+        if (m[4] or m[5]) and t[:6] not in _ATTACH_MARKS:
+            t = (("[image] " if m[4] else "[voice] ") + t).rstrip()
         return name, ("me: " + t if m[0] else t), _age(m[2])
 
     def _draw_list_rows(self, keys, table, scroll, sel_idx):

@@ -384,6 +384,60 @@ def test_unsupported_format_names_itself_in_the_viewer():
     assert any("any key = back" in t for t in tft.texts())
 
 
+# --- The Pro's second line, on the text the app really stores ---------------
+
+def _received(g, content, fields):
+    """What _on_message_inner does with an incoming message."""
+    img, aud, mode, markers = A["_parse_attachments"](fields)
+    g.add_chat_message(PEER, False, A["_with_markers"](content, markers),
+                       image=img, audio=aud, audio_mode=mode)
+    return g._chat_cols(PEER)[1]
+
+
+def test_preview_of_a_received_image_shows_its_marker_once():
+    g, _ = _chat_ui()
+    assert _received(g, "", {FIELD_IMAGE: ["jpeg", JPEG]}) == "[image 2k]"
+    assert _received(g, "look at this", {FIELD_IMAGE: ["jpeg", JPEG]}) == "[image 2k] look at this"
+
+
+def test_preview_of_a_received_voice_clip_shows_its_marker_once():
+    g, _ = _chat_ui()
+    assert _received(g, "", {FIELD_AUDIO: [0x09, C2_3200]}) == "[voice 1s]"
+
+
+def test_preview_of_an_image_and_a_voice_clip_shows_each_once():
+    g, _ = _chat_ui()
+    got = _received(g, "", {FIELD_IMAGE: ["jpeg", JPEG], FIELD_AUDIO: [0x09, C2_3200]})
+    assert got == "[image 2k] [voice 1s]", got
+
+
+def test_preview_of_a_sent_voice_clip_shows_its_marker_once():
+    g, _ = _chat_ui()
+    g.add_chat_message(PEER, True, "[voice 5s]", status=1, audio=C2_3200, audio_mode=0)
+    assert g._chat_cols(PEER)[1] == "me: [voice 5s]"
+
+
+def test_preview_separates_the_lines_of_a_message():
+    g, _ = _chat_ui()
+    assert _received(g, "line one\nline two", {}) == "line one line two"
+    assert _received(g, "a\r\n\n\tb  c", {}) == "a b c"
+    assert _received(g, "\n look\n", {FIELD_IMAGE: ["jpeg", JPEG]}) == "[image 2k] look"
+
+
+def test_preview_filters_a_few_characters_however_long_the_message():
+    g, _ = _chat_ui()
+    g.add_chat_message(PEER, False, "x" * 5000)
+    seen = []
+    real = ui._ascii
+    ui._ascii = lambda t: seen.append(len(t)) or real(t)
+    try:
+        cols = g._chat_cols(PEER)
+    finally:
+        ui._ascii = real
+    assert max(seen) <= 64, seen
+    assert cols[1] == "x" * 64
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(list(globals().items())):
