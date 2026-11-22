@@ -510,6 +510,29 @@ p._wifi_flag[0] = False
 p.step()
 check("station down again: 80 MHz", calls == [240_000_000, 80_000_000], repr(calls))
 check("the Pro idles at 80 MHz", "IDLE_CPU_MHZ = 80" in src and "AWAKE_CPU_MHZ = 240" in src)
+
+print("network work (stamp search, pending LXMF) holds the clock and light sleep, not the screen")
+p, gui, calls, logs = _mk_clk(IDLE_CPU_MHZ=80, AWAKE_CPU_MHZ=240)
+busy = [True]
+p.net_busy = lambda: busy[0]
+r = p.step()
+check("dark, net busy: awake clock", calls == [240_000_000] or calls == [], repr(calls))
+check("dark, net busy: no sleep, reason 'network'", r == "network" and p.lp.calls == [], repr(r))
+busy[0] = False
+p.step()
+check("net idle again: 80 MHz", calls[-1:] == [80_000_000], repr(calls))
+
+
+def _net_boom():
+    raise RuntimeError("router gone")
+
+
+p, gui, calls, logs = _mk_clk(IDLE_CPU_MHZ=80, AWAKE_CPU_MHZ=240)
+p.net_busy = _net_boom
+p.step()
+check("a raising net_busy counts as idle (never blocks sleep forever)", calls == [80_000_000], repr(calls))
+check("may_sleep: net_busy after ui busy", power.may_sleep(power.State(
+    screen_on=False, sleep_blocked=False, net_busy=True, wifi_on=False)) == "network")
 check("the v1 idles at 80 MHz too",
       "IDLE_CPU_MHZ = 80" in open(os.path.join(ROOT, "board_tdeck_v1.py")).read())
 

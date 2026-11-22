@@ -169,6 +169,15 @@ from urns.lxmf import (LXMRouter, FIELD_IMAGE, FIELD_AUDIO,
                        FIELD_FILE_ATTACHMENTS)
 from urns.log import LOG_NONE, LOG_NOTICE, LOG_DEBUG
 
+# urns' known-destination cleanup (reference RNS clean_known_destinations)
+# drops a destination that was never used, has no path and last announced over
+# KD_UNUSED_LINGER ago -- 6 min upstream. Lookup reads that cache as "everyone
+# heard", so the deck keeps a day of it; memory stays bounded by the table cap
+# (768 here), which on a busy hub evicts first anyway. Favourites are retained
+# outright (_retain_favourites below).
+from urns import const as _urns_const
+_urns_const.KD_UNUSED_LINGER = 24 * 3600
+
 log_map = {0: LOG_NONE, 1: LOG_NONE, 2: LOG_DEBUG}
 rns = Reticulum(loglevel=log_map.get(DEBUG, LOG_NOTICE))
 
@@ -259,6 +268,49 @@ spi_acquire_lora()
 rns.setup_interfaces()
 spi_release_lora()
 gc.collect()
+
+# Reticulum 1.6 announce stamps: with the native module urns finds a stamp for
+# our own announces in the background (minutes of CPU at 50% duty, value 25)
+# and stores it in /rns/stamps, so this happens once per identity. On battery
+# that is a real drain on a pocket device, so it only runs on external power
+# unless STAMP_ON_BATTERY = True. Until the stamp exists announces go out
+# unstamped, as before. (Or make it off-device: urns logs "stamp material
+# <hex>" and tools/gen_announce_stamp.py in uP-reticulum writes the file.)
+_ext_power = [False, None]   # (last reading, ticks_ms of it)
+
+
+def _on_ext_power():
+    """board.usb_power(), re-read at most every 10 s (it is an I2C/ADC read)."""
+    now = time.ticks_ms()
+    if _ext_power[1] is None or time.ticks_diff(now, _ext_power[1]) > 10000:
+        try:
+            _ext_power[0] = bool(board.usb_power())
+        except Exception:
+            _ext_power[0] = False
+        _ext_power[1] = now
+    return _ext_power[0]
+
+
+if not getattr(config, "STAMP_ON_BATTERY", False):
+    try:
+        from urns import announce_stamps as _ann_stamps
+        _ann_stamps.hold = lambda: not _on_ext_power()
+    except ImportError:
+        pass        # an older urns without announce stamps
+
+
+def _net_busy():
+    """Network work worth staying awake for with the screen dark (power.py's
+    net_busy): an interactive stamp search -- link key, stamped path request,
+    LXMF proof-of-work -- runs ~3x slower at the 80 MHz idle clock and stops
+    in light sleep; and LXMF messages still queued for delivery need the
+    router's 4 s retry job. Both are bounded (a search times out, an
+    undelivered message fails after its retries)."""
+    import sys
+    st = sys.modules.get("urns.stamps")
+    if st is not None and st.interactive_active():
+        return True
+    return bool(getattr(router, "pending_outbound", None))
 
 # --- Battery sense (board-declared pin/divider; self-disabling) ---
 import adc_reader
@@ -513,10 +565,42 @@ def _route_to(dest_hash):
     return hops, via
 
 
+# Favourites are contacts: urns' known-destination cleanup (and its cap
+# eviction) must leave their keys alone, or a pinned peer that has been quiet
+# for a week -- or is pushed out by a busy hub's announces -- needs a fresh
+# announce before we can write to it again. A pin whose key is not known yet
+# is retained when its announce arrives.
+_retain_wanted = set()
+
+
+def _retain(dest_hash, pinned=True):
+    from urns.identity import Identity
+    try:
+        ok = Identity.retain_destination(dest_hash, pinned)
+    except AttributeError:
+        return      # an older urns without the cleanup
+    if pinned and not ok:
+        _retain_wanted.add(dest_hash)
+    else:
+        _retain_wanted.discard(dest_hash)
+
+
+def _retain_favourites():
+    for t in ("peer", "node", "hub", "shell"):
+        for k, v in gui._get_favorites(t).items():
+            if v and "Key_" in k:
+                try:
+                    _retain(bytes.fromhex(v))
+                except Exception:
+                    pass
+
+
 def on_announce(destination_hash, display_name):
     """urns calls this for every announce it hears, any aspect. An LXMF one
     from a peer with a row updates that row in place; any other only counts
     toward the top row."""
+    if destination_hash in _retain_wanted:
+        _retain(destination_hash)
     # The header's snr follows every announce; repaint only when what it shows
     # changes (no rssi yet means it shows nothing)
     rssi = None
@@ -594,55 +678,63 @@ def gui_send(dest_hash, text, msg_id=None):
     asyncio.create_task(_async_send(dest_hash, text, msg_id))
 
 
-async def _watch_queued(dest_hash, msg_id):
-    """A send was queued behind a path request (status 4). The router
-    re-sends by itself once a path arrives — reflect that in the GUI."""
-    import uasyncio as asyncio
-    from urns.transport import Transport
-    for _ in range(13):  # ~26s; router's path request times out at 15s
-        await asyncio.sleep(2)
-        if Transport.has_path(dest_hash):
-            gui.update_message_status(dest_hash, msg_id, 2)
-            gui.dirty = True
-            sound.play_tx()
-            if DEBUG >= 1:
-                print("[TX] Route found, message sent to", dest_hash.hex()[:8])
-            return
-    gui.update_message_status(dest_hash, msg_id, 3)
-    gui.dirty = True
-    if DEBUG >= 1:
-        print("[TX] No route found for", dest_hash.hex()[:8])
+# Delivery status of my rows (ui: 1 "..", 2 delivered, 3 failed, 4 "~" queued,
+# 5 ">" sent). urns >= rns-161-stamps follows reference LXMF 1.3.1: send_message()
+# QUEUES the message and returns the LXMessage, or None when the outbound queue
+# is full. Then OUTBOUND (waiting for a path / next attempt) -> SENT (one
+# opportunistic packet out) or SENDING (link transfer) -> DELIVERED only when the
+# receiver's proof arrives; FAILED / REJECTED / CANCELLED when the retries run out
+# (~60 s on fast LoRa, longer on slow links). The callbacks below are the only
+# source of truth -- a SENT state is no longer "done". See the NOTE FOR UI
+# INTEGRATIONS in urns/lxmf.py and docs/lxmf-delivery-semantics.md upstream.
+
+def _status_callbacks(dest_hash, msg_id, what="TX"):
+    """(sent, delivered, failed) callbacks that move one row's mark."""
+    def _set(st):
+        gui.update_message_status(dest_hash, msg_id, st)
+        gui.dirty = True
+
+    def sent(msg):
+        _set(5)
+        sound.play_tx()
+        if DEBUG >= 1:
+            print("[" + what + "] Sent to", dest_hash.hex()[:8])
+
+    def delivered(msg):
+        _set(2)
+        if DEBUG >= 1:
+            print("[" + what + "] Delivered to", dest_hash.hex()[:8])
+
+    def failed(msg):
+        _set(3)
+        if DEBUG >= 1:
+            print("[" + what + "] Failed to", dest_hash.hex()[:8],
+                  "state", hex(getattr(msg, "state", 0) or 0))
+
+    return sent, delivered, failed
 
 
-async def _track_delivery(msg, dest_hash, msg_id, timeout=150):
-    """Watch a DIRECT LXMessage (status 5) until the transfer concludes:
-    DELIVERED -> checkmark, FAILED -> '!'. Covers link setup + resource
-    transfer over multi-hop LoRa, hence the generous timeout."""
-    import uasyncio as asyncio
+def _submit(dest_hash, msg_id, content, fields=None, method=None, what="TX"):
+    """Queue one LXMF message with its row wired to the delivery callbacks.
+    Returns the LXMessage, or None when the router refused it (queue full)."""
     from urns.lxmf import LXMessage
-    t = 0
-    while t < timeout:
-        await asyncio.sleep(2)
-        t += 2
-        state = getattr(msg, "state", None)
-        if state == LXMessage.DELIVERED:
-            gui.update_message_status(dest_hash, msg_id, 2)
-            gui.dirty = True
-            if DEBUG >= 1:
-                print("[TX] Delivered to", dest_hash.hex()[:8])
-            return
-        if state == LXMessage.FAILED:
-            gui.update_message_status(dest_hash, msg_id, 3)
-            gui.dirty = True
-            if DEBUG >= 1:
-                print("[TX] Delivery failed to", dest_hash.hex()[:8])
-            return
-        if state == LXMessage.SENT:
-            # Downgraded to a single link packet — no proof will follow.
-            gui.update_message_status(dest_hash, msg_id, 2)
-            gui.dirty = True
-            return
-    # Still unresolved — leave the '>' marker as-is (honest: sent, unproven)
+    sent, delivered, failed = _status_callbacks(dest_hash, msg_id, what)
+    msg = router.send_message(dest_hash, content, fields=fields,
+                              desired_method=method,
+                              sent_callback=sent, delivery_callback=delivered,
+                              failed_callback=failed)
+    if msg is None:
+        gui.update_message_status(dest_hash, msg_id, 3)
+        gui.add_chat_message(dest_hash, True, "(outbox full, try again)")
+        gui.dirty = True
+        if DEBUG >= 1:
+            print("[" + what + "] Outbox full, refused for", dest_hash.hex()[:8])
+    elif getattr(msg, "state", None) == LXMessage.OUTBOUND:
+        # Not transmitted yet (waiting for a path, a stamp, or the next slot).
+        # The sent callback replaces this mark once it goes out.
+        gui.update_message_status(dest_hash, msg_id, 4)
+        gui.dirty = True
+    return msg
 
 
 async def _async_send(dest_hash, text, msg_id=None):
@@ -660,37 +752,8 @@ async def _async_send(dest_hash, text, msg_id=None):
         # delivers independently of any DIRECT link — otherwise it piggybacks
         # on a link that a voice/image transfer may have tied up (or wedged),
         # and dies with it. (A long text still auto-upgrades to a DIRECT
-        # resource, which the sender-side timeout now protects.)
-        msg = router.send_message(dest_hash, text,
-                                  desired_method=LXMessage.OPPORTUNISTIC)
-        if msg is True:
-            # Queued behind a path request
-            gui.update_message_status(dest_hash, msg_id, 4)
-            gui.dirty = True
-            asyncio.create_task(_watch_queued(dest_hash, msg_id))
-            if DEBUG >= 1:
-                print("[TX] Queued (path request) for", dest_hash.hex()[:8])
-        elif msg:
-            sound.play_tx()
-            if DEBUG >= 1:
-                print("[TX] Sent to", dest_hash.hex()[:8])
-
-            if (getattr(msg, "method", None) == LXMessage.DIRECT
-                    and getattr(msg, "state", None) != LXMessage.SENT):
-                # DIRECT resource transfer — a delivery proof follows; track it.
-                gui.update_message_status(dest_hash, msg_id, 5)
-                asyncio.create_task(_track_delivery(msg, dest_hash, msg_id))
-            else:
-                # Opportunistic, or a DIRECT single packet already SENT over the
-                # link (no proof follows) — mark sent so it doesn't hang on '>'.
-                gui.update_message_status(dest_hash, msg_id, 2)
-            gui.dirty = True
-        else:
-            gui.update_message_status(dest_hash, msg_id, 3)
-            gui.add_chat_message(dest_hash, True, "(send failed: unknown peer)")
-            gui.dirty = True
-            if DEBUG >= 1:
-                print("[TX] Failed: unknown identity for", dest_hash.hex()[:8])
+        # resource.)
+        _submit(dest_hash, msg_id, text, method=LXMessage.OPPORTUNISTIC)
     except Exception as e:
         gui.update_message_status(dest_hash, msg_id, 3)
         gui.add_chat_message(dest_hash, True, "(send error)")
@@ -2075,24 +2138,8 @@ async def _encode_and_send_voice(dest_hash, pcm_bytes):
         # green marker, and replayable to check what actually went out.
         msg_id = gui.add_chat_message(dest_hash, True, "[voice " + str(dur) + "s]",
                                        status=1, audio=c2_data, audio_mode=0)
-        msg = router.send_message(dest_hash, "[voice]", fields=fields,
-                                  desired_method=LXMessage.DIRECT)
-        if msg is True:
-            # Queued behind a path request
-            gui.update_message_status(dest_hash, msg_id, 4)
-            asyncio.create_task(_watch_queued(dest_hash, msg_id))
-        elif msg:
-            if getattr(msg, "state", None) == LXMessage.SENT:
-                # Short voice fit in a single link packet — no proof follows.
-                gui.update_message_status(dest_hash, msg_id, 2)
-            else:
-                # DIRECT resource: '>' until the transfer concludes (proof, or
-                # the sender-side timeout that now fails a stalled transfer).
-                gui.update_message_status(dest_hash, msg_id, 5)
-                asyncio.create_task(_track_delivery(msg, dest_hash, msg_id))
-            sound.play_tx()
-        else:
-            gui.update_message_status(dest_hash, msg_id, 3)
+        _submit(dest_hash, msg_id, "[voice]", fields=fields,
+                method=LXMessage.DIRECT, what="Audio")
     except Exception as e:
         if DEBUG >= 1:
             print("[Audio] encode/send error:", e)
@@ -2345,6 +2392,7 @@ async def _start_power():
     p = power.Power(gui, board, lowpower, _lora_iface, _wifi_on,
                     bool(getattr(config, "SLEEP_ON_USB", False)),
                     time.ticks_ms, _log)
+    p.net_busy = _net_busy
     await power.loop(p)
 
 
@@ -2361,6 +2409,8 @@ def main():
 
     _auto_connect_wifi()
     gui.load_favorites()
+    _retain_favourites()
+    gui.on_favorite = _retain
 
     if DEBUG >= 1:
         print("Starting event loop...")

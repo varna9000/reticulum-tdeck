@@ -202,6 +202,13 @@ freeze(_vendor, "urns/resource.py")
 freeze(_vendor, "urns/reticulum.py")
 freeze(_vendor, "urns/transport.py")
 freeze(_vendor, "urns/umsgpack.py")
+# Reticulum 1.6 stamps. All four are imported LAZILY (on the first stamped
+# announce, path request or link, or the first hardware-SHA slice), so leaving
+# one out builds and boots fine and then fails at that first use.
+freeze(_vendor, "urns/stamp_check.py")
+freeze(_vendor, "urns/stamps.py")
+freeze(_vendor, "urns/stamp_hw.py")
+freeze(_vendor, "urns/announce_stamps.py")
 
 # --- urns/crypto ---
 freeze(_vendor, "urns/crypto/__init__.py")

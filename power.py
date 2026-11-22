@@ -48,7 +48,7 @@ def _default_ticks_diff(a, b):
     except AttributeError:
         return ((a - b + (1 << 29)) & ((1 << 30) - 1)) - (1 << 29)
 
-_FIELDS = ("screen_on", "sleep_blocked", "wifi_on", "lora_online",
+_FIELDS = ("screen_on", "sleep_blocked", "net_busy", "wifi_on", "lora_online",
            "usb", "sleep_on_usb", "quiet_ms", "backoff_ms")
 
 
@@ -59,6 +59,7 @@ class State:
     def __init__(self, **kw):
         self.screen_on = True
         self.sleep_blocked = True
+        self.net_busy = False
         self.wifi_on = True
         self.lora_online = False
         self.usb = True
@@ -78,6 +79,8 @@ def may_sleep(s):
         return "screen on"
     if s.sleep_blocked:
         return "ui busy"
+    if s.net_busy:
+        return "network"
     if s.wifi_on:
         return "wifi"
     if not s.lora_online:
@@ -204,6 +207,12 @@ class Power:
         self.ticks_diff = ticks_diff      # ticks_ms wraps at 2^30: never subtract
         self.log = log
         self.read_pin = read_pin
+        # () -> bool: network work the deck is waiting on with the screen dark --
+        # an interactive stamp search (link key, path request, LXMF stamp: ~3x
+        # slower at 80 MHz, stalled in light sleep) or LXMF messages still queued
+        # for delivery. Keeps the awake clock and blocks light sleep, but unlike
+        # gui._sleep_blocked() it never holds the screen on. Set by the app.
+        self.net_busy = None
         self.counts = {k: 0 for k in WAKE_KINDS}
         self.last_reason = None
         self.dark_reason = None           # last reason seen with the screen off
@@ -254,6 +263,17 @@ class Power:
             self._backoff_start = None
             return 0
         return left
+
+    def _net_busy(self):
+        """net_busy(), False when unset or raising: a broken hook must not keep
+        the deck awake for good."""
+        fn = self.net_busy
+        if fn is None:
+            return False
+        try:
+            return bool(fn())
+        except Exception:
+            return False
 
     def _usb(self):
         """External power that should keep us awake. Host frames (SOF) are
@@ -311,15 +331,17 @@ class Power:
         quiet_ms = self._quiet_ms(iface)
         screen_on = bool(self.gui._screen_on)
         sleep_blocked = bool(self.gui._sleep_blocked())
+        net_busy = self._net_busy()
         wifi_on = bool(self.wifi_on())
         # Idle means idle on LoRa: a dark deck kept awake by a live TCP link
         # is serving backbone traffic (verify, decrypt, resource windows
         # tuned at full clock) and gets no clock drop for a 6-11 mA saving
         # against the ~55 mA the station already costs.
-        self._clock(not screen_on and not sleep_blocked and not wifi_on)
+        self._clock(not screen_on and not sleep_blocked and not net_busy and not wifi_on)
         s = State(
             screen_on=screen_on,
             sleep_blocked=sleep_blocked,
+            net_busy=net_busy,
             wifi_on=wifi_on,
             lora_online=bool(iface is not None and iface.online),
             usb=False,                    # probed below, once the UI-side gates pass

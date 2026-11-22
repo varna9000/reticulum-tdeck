@@ -1031,6 +1031,7 @@ class UI:
         self._tz_min = 0
         self.on_contact_snapshot = None  # (tab) -> [(dest_hash, name, ts)], newest first
         self.on_add_contact = None       # (dest_hash) -> None — added by Find; seek a path
+        self.on_favorite = None          # (dest_hash, pinned) -> None — keep a pin's key out of urns' cleanup
         self.on_wifi_scan = None      # () -> [(ssid, rssi), ...]
         self.on_wifi_connect = None   # (ssid, password) -> None — async; calls set_wifi_result
         self.on_wifi_disconnect = None # () -> bool: the backbone switch off (link, station, LoRa back)
@@ -2477,6 +2478,13 @@ class UI:
             self._load_favorite(type)
         self._cursor_home()
 
+    def _notify_favorite(self, key, pinned):
+        if self.on_favorite is not None:
+            try:
+                self.on_favorite(key, pinned)
+            except Exception:
+                pass
+
     def _favorite(self, type=None):
         """Star or unstar the tab's selected row. Slots stay in pin order, so
         a boot loads the pins as they were: a new pin takes the first free
@@ -2506,6 +2514,7 @@ class UI:
                     favs[eslot + str(j)] = favs.get(eslot + str(j + 1))
                 self._save_favorites(favs, type)
                 self._place(tab, selected_key)
+                self._notify_favorite(selected_key, False)
                 self.dirty = True
                 return True
         if 0 <= empty_slot_idx:
@@ -2515,6 +2524,7 @@ class UI:
             favs[eslot + str(empty_slot_idx)] = table[selected_key]
             self._save_favorites(favs, type)
             self._place(tab, selected_key)
+            self._notify_favorite(selected_key, True)
             self.dirty = True
             return True
         if tab == TAB_MSG:

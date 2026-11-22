@@ -150,7 +150,10 @@ class Node:
             "_with_markers": lambda content, markers: content,
             "sound": types.SimpleNamespace(play_rx=lambda: self.rings.append(1)),
             "gc": types.SimpleNamespace(collect=lambda: None, mem_free=lambda: 1),
+            "_retain_wanted": set(),
+            "_retain": lambda d, pinned=True: self.retained.append(d),
         }
+        self.retained = []
         exec(_CODE, self.g)
 
     @property
@@ -549,6 +552,15 @@ def test_every_link_change_forgets_routes_and_keeps_the_rest():
         lines = [ln.strip() for ln in chunk.strip().splitlines()[:4]]
         assert lines == ["_lxmf_to_peer.clear()", "nomad_browser.clear_nodes()",
                          "rnsh_client.clear_nodes()", "rrc_client.clear_hubs()"], lines
+
+
+def test_a_pin_whose_key_was_unknown_is_retained_when_its_announce_arrives():
+    n = Node()
+    n.g["_retain_wanted"].add(A)
+    n.announce(S)
+    assert n.retained == []
+    n.announce(A)
+    assert n.retained == [A]
 
 
 def _run():
