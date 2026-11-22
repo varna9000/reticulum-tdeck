@@ -30,6 +30,12 @@ DEBUG = 0
 # sleep with the cable in; read the results from Settings > Radio.
 SLEEP_ON_USB = False
 
+# Make the announce stamp on battery too. Hubs that enforce Reticulum 1.6
+# stamps (1.6.2) drop announces without one, so until it exists the deck
+# cannot be found through them. It takes a few minutes of background hashing,
+# once per identity (kept in /rns/stamps). False makes it only on USB power.
+STAMP_ON_BATTERY = True
+
 # --- Board revision --------------------------------------------------------
 # LilyGO ships three revisions (V1.0, V1.1, MAX) that differ in a few pins,
 # two of which matter at boot: V1.1/MAX have a panel reset line on GPIO 16 and

@@ -274,10 +274,11 @@ gc.collect()
 
 # Reticulum 1.6 announce stamps: with the native module urns finds a stamp for
 # our own announces in the background (minutes of CPU at 50% duty, value 25)
-# and stores it in /rns/stamps, so this happens once per identity. On battery
-# that is a real drain on a pocket device, so it only runs on external power
-# unless STAMP_ON_BATTERY = True. Until the stamp exists announces go out
-# unstamped, as before. (Or make it off-device: urns logs "stamp material
+# and stores it in /rns/stamps, so this happens once per identity. It runs on
+# battery too by default: hubs that enforce stamps (RNS 1.6.2) drop unstamped
+# announces, so a deck that is never plugged in would stay unfindable through
+# them. STAMP_ON_BATTERY = False in the board config holds it off USB power.
+# Until the stamp exists announces go out unstamped, as before. (Or make it off-device: urns logs "stamp material
 # <hex>" and tools/gen_announce_stamp.py in uP-reticulum writes the file.)
 _ext_power = [False, None]   # (last reading, ticks_ms of it)
 
@@ -294,7 +295,7 @@ def _on_ext_power():
     return _ext_power[0]
 
 
-if not getattr(config, "STAMP_ON_BATTERY", False):
+if not getattr(config, "STAMP_ON_BATTERY", True):
     try:
         from urns import announce_stamps as _ann_stamps
         _ann_stamps.hold = lambda: not _on_ext_power()

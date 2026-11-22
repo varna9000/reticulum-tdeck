@@ -22,6 +22,12 @@ DEBUG = 0
 # sleep with the cable in; read the results from Settings > Radio.
 SLEEP_ON_USB = False
 
+# Make the announce stamp on battery too. Hubs that enforce Reticulum 1.6
+# stamps (1.6.2) drop announces without one, so until it exists the deck
+# cannot be found through them. It takes a few minutes of background hashing,
+# once per identity (kept in /rns/stamps). False makes it only on USB power.
+STAMP_ON_BATTERY = True
+
 # --- Display (ST7789 on shared SPI1) ---
 DISP_SCK  = 40
 DISP_MOSI = 41

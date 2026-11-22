@@ -616,7 +616,7 @@ When WiFi connects the deck dials the backbone and LoRa is stopped (only one int
 
 Reticulum 1.6 hubs ask for **stamps**, a small proof of work: a 1.6.1 hub checks them and 1.6.2 is expected to enforce them, so an unstamped deck stops being heard through those hubs. The stack handles them by itself:
 
-- **Your announces** carry a stamp. The deck makes one per address the first time, in the background (a few minutes), keeps it in `/rns/stamps` and reuses it from then on; until it exists, announces go out unstamped and one is re-sent when it is ready. It is made **only on USB power**; `STAMP_ON_BATTERY = True` in the config file allows it on battery.
+- **Your announces** carry a stamp. The deck makes one per address the first time, in the background (a few minutes), keeps it in `/rns/stamps` and reuses it from then on; until it exists, announces go out unstamped and one is re-sent when it is ready. It is made on battery too, since without it a deck that is never plugged in stays unfindable through enforcing hubs; `STAMP_ON_BATTERY = False` in `tdeck_config.py` (v1) or `tdeck_pro_config.py` (Pro) makes it only on USB power (read at boot).
 - **Path requests** are stamped, and a **link** to a peer that asks for a stamp (MeshChat, for example) gets one before it opens; both take well under a second.
 - The ESP32-S3's SHA hardware does the hashing, about 4x faster than software, whenever WiFi is off or connected (not while it is joining).
 
