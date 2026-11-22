@@ -54,9 +54,20 @@ def test_builtin_exports_what_the_natmod_exports():
         check("built-in exports " + fn, fn in blt)
 
 
+def test_filesystem_natmods_match_the_submodule():
+    # The manual (stock MicroPython) setup and tools/gen_bootstrap.py copy lib/*.mpy to the
+    # device. lib/ed25519_fast_xtensawin.mpy was a 2026 build without hashcash/x25519_stamp2
+    # until v1.16.0, so a deck set up that way silently had no network stamps.
+    for m in ("ed25519_fast_xtensawin.mpy", "bz2_fast_xtensawin.mpy"):
+        ours = open(os.path.join(ROOT, "lib", m), "rb").read()
+        theirs = open(os.path.join(FW, "lib", m), "rb").read()
+        check("lib/%s is the submodule's build" % m, ours == theirs)
+
+
 if __name__ == "__main__":
     test_every_urns_module_is_frozen()
     test_builtin_exports_what_the_natmod_exports()
+    test_filesystem_natmods_match_the_submodule()
     if failures:
         print("\n%d FAILED" % len(failures))
         sys.exit(1)

@@ -98,6 +98,10 @@ with a new identity and an empty message history, exactly as it would after flas
 > device then boots with no filesystem at all. Deleting old **update** slots is safe — an app-only
 > install registers no storage of its own.
 
+> **Slot size (T-Deck v1).** The app is about 1.9 MB (1,945,056 bytes in v1.16.0). It fits the
+> Launcher's 2 MB slots but not a smaller one; some layouts end with a 1856 KB slot. If an install
+> fails or the Launcher refuses the update, install to a 2 MB slot.
+
 #### Updating without taking the SD card out
 
 M5Launcher offers three routes that avoid the card shuffle, in rough order of convenience:
@@ -138,7 +142,7 @@ The T-Deck must be in **download mode** to flash: short GPIO0 to GND while press
 
 | Layer | Contents |
 |---|---|
-| **Frozen in ROM** | ui.py, sound.py, es7210.py, micron.py, nomad_browser.py, rnsh_proto.py, rnsh_client.py, terminal.py, display fonts (spleen_8x16 + shell grids), the SX1262 driver (lora/, vendored in `lib/lora`), full urns/ stack (reticulum, Channel, LXMF, crypto, interfaces) |
+| **Frozen in ROM** | ui.py, sound.py, es7210.py, micron.py, nomad_browser.py, rnsh_proto.py, rnsh_client.py, terminal.py, display fonts (spleen_8x16 + shell grids), the SX1262 driver (lora/, vendored in `lib/lora`), full urns/ stack (reticulum, Channel, LXMF, Reticulum 1.6 stamps, crypto, interfaces) |
 | **C drivers in ROM** | Russ Hughes st7789_mpy (DMA-accelerated ST7789 display) + the codec/crypto modules: ed25519_fast, bz2_fast, codec2_fast, tjpgd_fast, webp_fast |
 | **On filesystem** | main.py (tdeck_node.py), tdeck_config.py, logo.jpg |
 
@@ -217,7 +221,7 @@ mpremote cp lib/lora/__init__.py lib/lora/modem.py lib/lora/sx126x.py lib/lora/s
 
 #### 4. Upload files
 
-The Reticulum stack is not vendored in this repo — it lives in the `vendor/uP-reticulum` git submodule. The shipped `.mpy` files are cross-compiled for the `xtensawin` architecture using `mpy-cross -march=xtensawin`; urns uploads as `.py` (optionally compile it yourself for faster imports).
+The Reticulum stack is not vendored in this repo — it lives in the `vendor/uP-reticulum` git submodule. On stock MicroPython the native modules load from `/lib` as natmod `.mpy` files (xtensawin builds; `ed25519_fast` and `bz2_fast` are the submodule's, kept identical by `tests/test_frozen_urns.py`, and `ed25519_fast` also carries the Reticulum 1.6 stamp search). urns uploads as `.py` (optionally compile it with `mpy-cross -march=xtensawin` for faster imports).
 
 ```bash
 # Upload native C modules (crypto + JPEG + Codec2)
@@ -291,7 +295,7 @@ An empty tab shows the first row selected and three centred lines, for example `
 
 Deleting a peer forgets its chat history and cached media locally; an announce no longer brings it back, but a message or a Lookup pick does. MSG, NET and RNSH hold up to 64 rows each (RRC 16). At the limit the oldest read entry is dropped; one with unread messages only if nothing else is left. A favourite and the chat you have open are never dropped. A change of link keeps your rows, chats and unread counts, and forgets only the routes and the heard counts.
 
-**Lookup** (`m` on any tab, or the first row) searches every address of that tab's kind the node has heard — LXMF peers on MSG, NomadNet nodes on NET, hubs on RRC, listeners on RNSH — not just the rows in the list, but the whole announce cache (up to 768 identities). Its title says what a pick adds: `New chat: name or hash`, `New node: ...`, `New shell: hash`, `New hub: ...`. Type part of a display name (`deej`) or the start of an address (`b90d`); matches list newest first with their hash prefix and age, so two with similar names can be told apart. Move with the trackball, and click or press Enter to pick. On MSG a pick opens the chat, since opening one sends nothing. On NET, RNSH and RRC it adds the row and selects it; opening it (page, shell, hub) is the usual click away, so nothing connects by surprise. Before the clock has synced, entries newly heard sort first and an age that cannot be right is left blank. Backspace on an empty query goes back to the list, and so does tapping another tab. To add something whose announce hasn't reached you — say an address posted as a QR code online — type all 32 hex characters: it is added as `?`, a path request goes out, and the name fills in when the answer arrives instead of hours later at its next announce. Messages typed to a `?` peer are queued and sent once a path is known. On RRC and RNSH the screen also shows your identity hash, for a hub operator or a listener's `-a`.
+**Lookup** (`m` on any tab, or the first row) searches every address of that tab's kind the node has heard — LXMF peers on MSG, NomadNet nodes on NET, hubs on RRC, listeners on RNSH — not just the rows in the list, but the whole announce cache (up to 768 identities; an address not heard from for 24 hours, with no route and never used, is forgotten, but favourites never are). Its title says what a pick adds: `New chat: name or hash`, `New node: ...`, `New shell: hash`, `New hub: ...`. Type part of a display name (`deej`) or the start of an address (`b90d`); matches list newest first with their hash prefix and age, so two with similar names can be told apart. Move with the trackball, and click or press Enter to pick. On MSG a pick opens the chat, since opening one sends nothing. On NET, RNSH and RRC it adds the row and selects it; opening it (page, shell, hub) is the usual click away, so nothing connects by surprise. Before the clock has synced, entries newly heard sort first and an age that cannot be right is left blank. Backspace on an empty query goes back to the list, and so does tapping another tab. To add something whose announce hasn't reached you — say an address posted as a QR code online — type all 32 hex characters: it is added as `?`, a path request goes out, and the name fills in when the answer arrives instead of hours later at its next announce. Messages typed to a `?` peer are queued and sent once a path is known. On RRC and RNSH the screen also shows your identity hash, for a hub operator or a listener's `-a`.
 
 The footer's hint is `(A)nnc (S)etup (F)av (M)new`. Its right side shows the **selected entry**'s address and hop count when known (`aacf7098 3 hops`; the first 8 hex digits), and is blank on the first row. Pinging sends a probe to the peer's `urns.probe` destination and shows the round-trip time (`ping: 2.4s`); peers must run uP-reticulum with the probe responder enabled to answer.
 
@@ -410,10 +414,12 @@ reading history no longer yanks the view to the bottom.
 
 Message delivery status is shown after each sent message:
 - `..` — pending (send in progress)
-- `~` — queued: no route yet, a path request is out; sends by itself when a route arrives
-- `>` — sent via DIRECT link, awaiting the delivery proof
-- checkmark — delivered (proven for DIRECT voice/images; handed to the mesh for short texts)
-- `!` — failed
+- `~` — queued: no route yet, or waiting for the next attempt; sends by itself
+- `>` — sent, not confirmed yet
+- checkmark — delivered: the receiver's proof has arrived (for every message, text or voice)
+- `!` — failed: no proof after the retries (about a minute on a fast link, several minutes on slow LoRa settings), or the peer refused it
+
+An unconfirmed message is sent again and its route looked up again before it fails, so a checkmark always means the peer has it. When the outbox is full (8 queued messages) the send is refused with `(outbox full, try again)`. Peers on old µReticulum firmware may not confirm every copy, so a message to them can end on `!` although it arrived.
 
 Highlighting a message with the trackball shows its timestamp in the bottom bar (once mesh time is synced).
 
@@ -568,8 +574,9 @@ Everything the firmware does to make a charge last:
 - **CPU light sleep.** While the screen is off, on battery and with the WiFi station down, the ESP32 itself sleeps between events. A received LoRa packet wakes it in about a millisecond, so nothing is missed and announces still go out on schedule. A keypress wakes the Pro; the trackball click wakes the v1, whose keyboard cannot raise an interrupt, so the v1 also wakes every 300 ms to poll it. Idle draw on the Pro falls from about 84 mA to the mid-30s, roughly 2.4× the standby time.
 - **WiFi only with a job.** A WiFi association cannot survive the chip's sleep, so the station is kept up only while it has something to do: TCP is on (the link is real-time, and the deck stays awake at roughly 55 mA on the Pro, about a day), or the screen is lit. WiFi on means the backbone link, so a station without a link (the server down, the host wrong) is switched off 30 s after the screen goes dark; a lit screen retries the association once a minute and re-dials the link once a minute. The saved WiFi wish and backbone settings are never changed by any of this.
 - **What keeps it awake.** TCP on, a USB host on the cable (so the console keeps working; a plain charger only pauses sleep for a few seconds), and anything the screen timeout also waits for. Sleep never interrupts a transfer, playback, recording or DTMF listen.
+- **Waiting on the network.** While a stamp search runs (a path request or a link to a peer that asks for one, see [Network stamps](#network-stamps-reticulum-16)) or messages are still waiting for their delivery proof, the deck keeps its full clock and does not light-sleep, so retries and proofs are not delayed. The screen still turns off. Both are bounded: a search times out, and an unconfirmed message fails after its retries.
 - **Sleep diagnostics.** Setup → Radio shows a `sleep` row: `l12 k2 t5` counts wakes by cause (LoRa packet, key, timer); `off usb`, `off wifi` and so on name what is currently preventing sleep. `SLEEP_ON_USB = True` in the config file allows sleeping with a cable in, for bench work only, since the USB console drops during every sleep.
-- **Idle clock.** Both decks drop the CPU to 80 MHz while the screen is dark and nothing is transferring, and back to 240 MHz the moment it lights or a transfer starts.
+- **Idle clock.** Both decks drop the CPU to 80 MHz while the screen is dark and nothing is transferring or waiting on the network, and back to 240 MHz the moment it lights or a transfer starts.
 - **Unused hardware off.** The Pro's GPS receiver, which the firmware does not read, is held powered down from boot; its enable line idles on by itself on V1.1 boards.
 - **Display bus.** All SPI display writes are skipped while the screen is off, freeing the shared bus for the radio.
 
@@ -579,7 +586,7 @@ Holding the trackball click for 0.7 s locks the device from any screen: the scre
 
 ### Status Bar
 
-The top bar has the battery voltage on the left (or `USB` when running on external power / charging, since a LiPo never rests above ~4.3 V) and the clock on the right (`--:--` until the time has synced). Next to the clock sit the WiFi icon and the LoRa antenna, WiFi nearest when both show. A plain WiFi icon means the backbone link is carrying traffic, and the antenna steps aside. With a `!` on it the backbone is wanted but not carrying: it is still connecting or out of reach while LoRa carries on beside it, or, with no antenna, a live link lost its server and nothing carries traffic until it reconnects. The antenna adds `snr N` once a packet has been received. A `>>>` shows for 2 s after an announce. While sending, encoding, decoding or playing audio, or receiving a large message (`RX 3/12`), that status is centred on the bar, and so is `FAIL` when the radio is offline with nothing carrying traffic; the `snr` number gives way to either, and `>>>` to a status. The node name is not shown here: it is in Setup and on the splash screen. A neon frame borders the body on every screen for a consistent look.
+The top bar has the battery voltage on the left (or `USB` on external power: the v1 senses its supply rail above 4.3 V, the Pro reads the charger's power-present bit, since its fuel gauge reports the cell, which stops near 4.2 V while charging) and the clock on the right (`--:--` until the time has synced). Next to the clock sit the WiFi icon and the LoRa antenna, WiFi nearest when both show. A plain WiFi icon means the backbone link is carrying traffic, and the antenna steps aside. With a `!` on it the backbone is wanted but not carrying: it is still connecting or out of reach while LoRa carries on beside it, or, with no antenna, a live link lost its server and nothing carries traffic until it reconnects. The antenna adds `snr N` once a packet has been received. A `>>>` shows for 2 s after an announce. While sending, encoding, decoding or playing audio, or receiving a large message (`RX 3/12`), that status is centred on the bar, and so is `FAIL` when the radio is offline with nothing carrying traffic; the `snr` number gives way to either, and `>>>` to a status. The node name is not shown here: it is in Setup and on the splash screen. A neon frame borders the body on every screen for a consistent look.
 
 The **Radio / Mesh** stats page (Setup → Radio stats) additionally reports uptime, total announces sent this session, and battery percentage, and scrolls when the stats exceed one screen.
 
@@ -604,6 +611,14 @@ The remote node needs a `TCPServerInterface` in its Reticulum config:
 ```
 
 When WiFi connects the deck dials the backbone and LoRa is stopped (only one interface at a time). Switching WiFi off drops the link and restarts LoRa. A link that loses its server is given 30 s to come back, screen lit or dark; then it is dropped and LoRa carries again, while the station stays (lit) and re-dials once a minute, or is given up too (dark).
+
+### Network stamps (Reticulum 1.6)
+
+Reticulum 1.6 hubs ask for **stamps**, a small proof of work: a 1.6.1 hub checks them and 1.6.2 is expected to enforce them, so an unstamped deck stops being heard through those hubs. The stack handles them by itself:
+
+- **Your announces** carry a stamp. The deck makes one per address the first time, in the background (a few minutes), keeps it in `/rns/stamps` and reuses it from then on; until it exists, announces go out unstamped and one is re-sent when it is ready. It is made **only on USB power**; `STAMP_ON_BATTERY = True` in the config file allows it on battery.
+- **Path requests** are stamped, and a **link** to a peer that asks for a stamp (MeshChat, for example) gets one before it opens; both take well under a second.
+- The ESP32-S3's SHA hardware does the hashing, about 4x faster than software, whenever WiFi is off or connected (not while it is joining).
 
 ### Interface access codes (IFAC)
 
@@ -703,17 +718,21 @@ open while browsing the same node and re-establishes transparently after the
 remote stale-closes it (~12 min idle). Pages are capped at 16 KB by the
 resource receiver.
 
-### Native C Modules (.mpy) — on filesystem
+### Native C Modules — built into the firmware
 
-| Module | Size | Purpose |
-|---|---|---|
-| `ed25519_fast_xtensawin.mpy` | 50 KB | Ed25519 signing/verification (~160x faster than pure Python) |
-| `bz2_fast_xtensawin.mpy` | 5 KB | BZ2 compression/decompression for message payloads |
-| `tjpgd_fast_xtensawin.mpy` | 5 KB | TJpgDec JPEG decoder with nearest-neighbor scaling |
-| `codec2_fast_xtensawin.mpy` | 46 KB | Codec2 3200/2400 bps voice codec (full double-precision LSP pipeline) |
-| `webp_fast_xtensawin.mpy` | — | WebP image decoder |
+The firmware image carries these as built-in user C modules (`tools/c_modules/`), not as files, so an M5Launcher install with no filesystem still has them:
 
-These are compiled as MicroPython native modules using `mpy-cross` and the ESP-IDF Xtensa toolchain. Source and Makefiles are in `tools/natmod/`.
+| Module | Purpose |
+|---|---|
+| `ed25519_fast_xtensawin` | Ed25519 / X25519 (~160× pure Python), and the Reticulum 1.6 stamp search (`hashcash`, `x25519_stamp2`, the ESP32-S3 SHA accelerator) |
+| `bz2_fast_xtensawin` | BZ2 compression/decompression for message payloads |
+| `tjpgd_fast_xtensawin` | JPEG decoder (TJpgDec) to RGB565, with nearest-neighbour scaling |
+| `webp_fast_xtensawin` | WebP decoder to RGB565 |
+| `codec2_fast_xtensawin` | Codec2 3200/2400 bps voice codec |
+| `lowpower` | ESP32 light sleep with GPIO wake and the USB-host check (`power.py`) |
+| `pdm_mic` | The Pro's PDM microphone |
+
+The st7789 display driver is built in the same way. A built-in C module normally executes from flash, which measured ~80× slower for Monocypher than a natmod in IRAM; an ldgen fragment (`tools/c_modules/ed25519_fast/linker.lf`) links Monocypher into IRAM instead, so the built-in runs at natmod speed. The algorithm sources come unmodified from the submodule (`vendor/uP-reticulum/tools/natmod/ed25519_fast/`) and from `tools/natmod/` (codec2, tjpgd, webp); `bz2_fast` is one self-contained file in `tools/c_modules/`; `tests/test_frozen_urns.py` checks that the built-in exports every function the urns natmod does. A built-in wins the import search, so a same-named `.mpy` left in `/lib` is never loaded. The natmod `.mpy` builds in `lib/` are only for the manual stock-MicroPython setup (Option C).
 
 ### SPI Bus Sharing
 
