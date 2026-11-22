@@ -856,6 +856,27 @@ def test_transfers_and_playback_still_block_sleep():
     assert g._sleep_blocked()
 
 
+def test_audio_status_shown_follows_what_the_navbar_painted():
+    # tdeck_node waits for this before starting the playback thread: the thread's
+    # I2S writes starve the GUI task, so a status set just before it started was
+    # painted only when playback ended ("[playing]" appeared at the end).
+    g = _mkui()
+    g._audio_status = "playing"
+    assert not g.audio_status_shown()            # set, not painted yet
+    g._cache = [''] * ui.CACHE_ROWS
+    g.draw_navbar()
+    assert g.audio_status_shown()
+    g.draw_navbar()                              # unchanged key: still on the panel
+    assert g.audio_status_shown()
+    g._audio_status = "decode 3s audio"
+    assert not g.audio_status_shown()
+    g.draw_navbar()
+    assert g.audio_status_shown()
+    g._audio_status = None
+    g.draw_navbar()
+    assert g.audio_status_shown()
+
+
 # --- Lookup: titles, a pick on MSG opens the chat, heard count, order -------
 
 def mk_find(tab, snap):

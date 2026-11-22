@@ -399,6 +399,7 @@ def draw_navbar(ui):
         if mid:
             _sd(ui, mid, mx, ny, ink, hb)
     ui._cache[0] = bat_key + mid_key
+    ui._nav_status_drawn = status        # see UI.audio_status_shown
 
 
 # --- the actions sheet ---------------------------------------------------------
@@ -1181,7 +1182,7 @@ def draw_sleep(ui):
     _sleep_box(ui)
     bv = ui.bat_v
     s = None
-    if bv >= 4.3:
+    if ui.ext_power:
         s = "USB %.2fV" % bv
     elif bv > 0:
         pct = int((bv - 3.3) / 0.9 * 100)

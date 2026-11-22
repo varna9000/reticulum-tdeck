@@ -864,7 +864,11 @@ def test_nav_state_tuple():
     assert (bat, bars, status, fan, ant, text, ann) == ("3.8V", 2, "", ui._WIFI_BANG, ui._ANTENNA, "snr 7", False)
     g._audio_status = "PLAY"
     g.bat_v = 4.4
+    g.update_battery()       # battery_loop refreshes ext_power with the reading (no hook: the 4.3 V rule)
     assert g._nav_state()[0] == "USB" and g._nav_state()[3] == "[PLAY]"
+    g.on_usb_power = lambda: False            # a board sense overrides the voltage rule
+    g.update_battery()
+    assert g._nav_state()[0] == "4.4V"
 
 
 def _v1_rows(g):

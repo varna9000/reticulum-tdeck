@@ -639,6 +639,16 @@ def test_pro_header_long_status_drops_the_antenna():
     check("status whole", ("[decode 12s audio]", (ui.SCREEN_W - 18 * 6) // 2) in tx, repr(tx))
 
 
+def test_pro_header_reports_the_painted_audio_status():
+    print("header: audio_status_shown follows the painted middle")
+    g, t, tx, ic = _pro_hdr("off", False, _audio_status="playing")
+    check("painted status reported", g.audio_status_shown(), repr(tx))
+    g._audio_status = "decode 3s audio"
+    check("a new status is not shown until painted", not g.audio_status_shown())
+    nav(g, t)
+    check("shown after the next paint", g.audio_status_shown())
+
+
 def test_pro_header_announce_hides_during_status():
     print("header: announce")
     g, t, tx, ic = _pro_hdr("off", False, announce_flash=_clock[0])
@@ -1831,11 +1841,45 @@ def mksleep(unread=0, bat=4.0, clock=True):
     g._bl = None
     g._screen_on = True
     g.bat_v = bat
+    g.update_battery()      # as battery_loop does: no board hook here, so the voltage rule sets ext_power
     g.unread = {b"a" * 16: unread} if unread else {}
     ui._clock_valid = lambda: clock
     ui._fmt_clock = lambda: "09:41"
     g._panel_flush = _Flushes()
     return g, t
+
+
+def test_pro_usb_comes_from_the_charger_not_the_voltage():
+    print("USB: from the board's VBUS sense, not a 4.3 V rule the gauge never reaches")
+    # The Pro's BQ27220 reads the CELL: ~4.2 V at most while charging, so the old
+    # bat_v >= 4.3 rule (true on the v1, whose ADC reads the supply rail) never fired.
+    g, t = mkui()
+    g.on_battery = lambda: 4.18
+    g.on_usb_power = lambda: True
+    g.update_battery()
+    check("cable in: ext_power", g.ext_power is True)
+    check("cable in: the top bar says USB", g._nav_state()[0] == "USB", repr(g._nav_state()[0]))
+    g.on_usb_power = lambda: False
+    g.update_battery()
+    check("cable out: the voltage again", g._nav_state()[0] == "4.2V", repr(g._nav_state()[0]))
+
+    def boom():
+        raise OSError("i2c")
+
+    g.on_usb_power = boom
+    g.on_battery = lambda: 4.35
+    g.update_battery()
+    check("a failed VBUS read falls back to the voltage rule", g.ext_power is True)
+    g.on_usb_power = None
+    g.on_battery = lambda: 4.1
+    g.update_battery()
+    check("no hook: the voltage rule (v1 behaviour)", g.ext_power is False and g._nav_state()[0] == "4.1V")
+    g, t = mksleep(bat=4.18)
+    g.on_usb_power = lambda: True
+    g.update_battery()
+    g.sleep_screen()
+    check("sleep screen on a cable says USB at a charging cell voltage",
+          find(t, "small", "USB 4.18V") is not None, repr(texts(t, "small")))
 
 
 def test_sleep_screen():
@@ -2274,6 +2318,7 @@ if __name__ == "__main__":
     test_pro_header_fail_centred()
     test_pro_header_unsynced_clock_and_no_name()
     test_pro_header_long_status_drops_the_antenna()
+    test_pro_header_reports_the_painted_audio_status()
     test_pro_header_announce_hides_during_status()
     test_pro_header_middle_repaints_without_the_battery()
     test_sheet_items_per_tab()
@@ -2308,6 +2353,7 @@ if __name__ == "__main__":
     test_rrc_panel_members()
     test_rrc_review_gaps()
     test_browser_and_qr_bands()
+    test_pro_usb_comes_from_the_charger_not_the_voltage()
     test_sleep_screen()
     test_sleep_tick()
     test_sleep_review()

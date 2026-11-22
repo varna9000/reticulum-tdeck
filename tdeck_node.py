@@ -210,6 +210,9 @@ board.attach_ui(gui)
 # The board owns battery sensing: an ADC divider on the v1, a BQ27220 gauge on
 # the Pro, which adc_reader cannot read at all.
 gui.on_battery = board.battery_voltage
+# External power from the board (the Pro: the charger's VBUS-good bit, since its
+# gauge reads the cell and never reaches the v1's 4.3 V USB threshold).
+gui.on_usb_power = board.usb_power
 gc.collect()
 
 # --- Setup interfaces (LoRa comes online) ---
@@ -1650,9 +1653,9 @@ def get_radio_stats():
             rows.append(("sleep", power.instance.summary()))
     except ImportError:
         pass
-    # Battery: percent from a coarse LiPo curve, or USB when charging
+    # Battery: percent from a coarse LiPo curve, or USB on external power
     _bv = gui.bat_v
-    if _bv >= 4.3:
+    if gui.ext_power:
         rows.append(("battery", "USB %.2fV" % _bv))
     elif _bv > 0:
         _pct = int((_bv - 3.3) / 0.9 * 100)
@@ -2152,6 +2155,27 @@ async def _encode_and_send_voice(dest_hash, pcm_bytes):
 _pcm_cache = {}  # id(codec2_bytes) -> pcm_bytes — decoded audio for instant replay
 
 
+async def _show_audio_status(text, timeout_ms=3000):
+    """Put text in the navbar's audio slot and wait until the panel shows it.
+
+    Called before work that starves the GUI task: the codec2 decode blocks the
+    event loop outright, and the playback thread's I2S writes leave gui_loop so
+    little time that "[playing]" used to appear only once playback had ended.
+    The press that started it is the user's, so the redraw skips the Pro's
+    background-redraw hold. No wait with the screen off (nothing paints), and
+    never longer than timeout_ms."""
+    import uasyncio as asyncio
+    gui._audio_status = text
+    gui._nav_mid_cache = ''
+    gui.note_user_input()
+    gui.dirty = True
+    if not gui._screen_on:
+        return
+    t0 = time.ticks_ms()
+    while not gui.audio_status_shown() and time.ticks_diff(time.ticks_ms(), t0) < timeout_ms:
+        await asyncio.sleep_ms(20)
+
+
 async def _play_audio(audio_data, codec_mode):
     """Decode (if needed) and play Codec2 audio. Shows status in navbar."""
     import uasyncio as asyncio
@@ -2162,10 +2186,7 @@ async def _play_audio(audio_data, codec_mode):
         bpf = 8 if codec_mode == 0 else 6
         n_frames = len(audio_data) // bpf
         dur = n_frames * 20 // 1000  # audio duration in seconds
-        gui._audio_status = "decode " + str(dur) + "s audio"
-        gui._nav_mid_cache = ''
-        gui.dirty = True
-        await asyncio.sleep_ms(200)  # let navbar draw before blocking
+        await _show_audio_status("decode " + str(dur) + "s audio")   # before the blocking decode
         try:
             gc.collect()
             if DEBUG >= 1:
@@ -2199,10 +2220,7 @@ async def _play_audio(audio_data, codec_mode):
     # Play on thread — I2S write() releases GIL while DMA drains,
     # so main event loop (LoRa, keyboard) keeps running without gaps
     gc.collect()
-    await asyncio.sleep_ms(50)
-    gui._audio_status = "playing"
-    gui._nav_mid_cache = ''
-    gui.dirty = True
+    await _show_audio_status("playing")   # painted BEFORE the thread starts
     if DEBUG >= 1:
         print("[Audio] playing", len(pcm), "B PCM")
 

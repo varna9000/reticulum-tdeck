@@ -882,6 +882,7 @@ class UI:
         self._transfer_res = None      # the resource behind transfer_progress
         self._transfer_ms = 0          # ticks of its last progress report
         self._audio_status = None      # None, "decoding", or "playing"
+        self._nav_status_drawn = None  # the status text the navbar last painted
         self._rec_seconds = 0          # recording duration counter (driven by node)
         self._rec_max = REC_MAX_SECS   # max recording length in seconds
         self._rec_level = 0            # live mic peak, 0..10 bar units
@@ -1045,6 +1046,8 @@ class UI:
         self._haptics = False         # a click for every accepted touch (Pro); off unless saved on
         self.on_haptics = None        # (enabled); persists the setting
         self.on_battery = None        # () -> volts | None, set from the board
+        self.on_usb_power = None      # () -> bool: external power present, set from the board
+        self.ext_power = False        # last on_usb_power() (or the 4.3 V rule without one)
         self.on_audio_play = None     # (codec2_bytes, mode) -> None
         self.on_record_start = None   # () -> None
         self.on_record_stop = None    # (send: bool) -> None
@@ -1530,9 +1533,9 @@ class UI:
         clock, status, fan, antenna, antenna text, announce flash). status is
         "" or the bracketed audio text / "RX n/total"; fan and antenna are
         icons or None; the clock is "--:--" until the mesh time is synced."""
-        # Above ~4.3V the pack is on USB/charge; a bare voltage there reads
-        # like a bug. And 0.0V is an unknown, not a flat pack.
-        if self.bat_v >= 4.3:
+        # On external power say so; a bare voltage there reads like a bug.
+        # And 0.0V is an unknown, not a flat pack.
+        if self.ext_power:
             bat = "USB"
         elif self.bat_v <= 0.0:
             bat = "--"
@@ -1551,6 +1554,14 @@ class UI:
         clock = _fmt_clock() if _clock_valid() else "--:--"
         return bat, bars, clock, status, fan, ant, text, ann
 
+    def audio_status_shown(self):
+        """True once the navbar on the panel shows the current _audio_status.
+        tdeck_node waits for this before work that starves the GUI task (the
+        playback thread's I2S writes, the codec2 decode): a status set right
+        before it was painted only when that work had finished."""
+        want = "[" + self._audio_status + "]" if self._audio_status else ""
+        return self._nav_status_drawn == want
+
     def draw_navbar(self):
         """Battery on the left, the clock on the right, WiFi, LoRa and the
         announce flash packed leftwards from it; sending / RX / FAIL centred."""
@@ -1559,6 +1570,7 @@ class UI:
         bat, bl, clock, status, fan, ant, text, ann = self._nav_state()
         key = clock + status + text + bat + str(bl) + ("W" if fan is _WIFI else "B" if fan else "") \
             + ("A" if ant else "") + (">" if ann else "")
+        self._nav_status_drawn = status   # painted below, or already on the panel (same key)
         if self._cache[0] == key:
             return
         self._cache[0] = key
@@ -5854,6 +5866,19 @@ class UI:
                 v = None
         if v is not None:
             self.bat_v = v
+        self.ext_power = self._read_ext_power()
+
+    def _read_ext_power(self):
+        """External power from the board's sense (on_usb_power), else the old
+        voltage rule. The rule only works where bat_v is the supply rail: the
+        v1's ADC reads above 4.3 V on USB, but the Pro's BQ27220 reads the cell,
+        which stops near 4.2 V while charging, so the Pro never showed USB."""
+        if self.on_usb_power is not None:
+            try:
+                return bool(self.on_usb_power())
+            except Exception:
+                pass
+        return self.bat_v >= 4.3
 
     # --- Main draw ---
 
@@ -6003,7 +6028,10 @@ class UI:
         _last_bl = -1
         while True:
             self.update_battery()
-            bl = 3 if self.bat_v > 3.9 else (2 if self.bat_v > 3.6 else (1 if self.bat_v > 3.3 else 0))
+            # Bars and USB: plugging in changes the label long before the cell
+            # voltage moves a bar.
+            bl = (3 if self.bat_v > 3.9 else (2 if self.bat_v > 3.6 else (1 if self.bat_v > 3.3 else 0))) \
+                + (10 if self.ext_power else 0)
             # Don't redraw mid-recording — the display SPI would steal GIL from
             # the mic thread (the level is re-checked after recording ends).
             if bl != _last_bl and self._screen_on and self.state != STATE_RECORDING:
