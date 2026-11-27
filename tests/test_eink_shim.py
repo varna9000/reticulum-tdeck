@@ -397,6 +397,18 @@ def test_refresh_narrows_to_the_rows_that_moved():
           len(p.rects) == 1 and p.rects[0][1] >= 96
           and p.rects[0][1] + p.rects[0][3] <= 112,
           "got %r (full=%d)" % (p.rects, p.full))
+    check("and tightens X to the changed columns too",
+          p.rects and p.rects[0][0] == 0 and p.rects[0][2] == 8,
+          "got %r" % (p.rects,))
+
+    # Navbar clock tick on the far right inside a full-width navbar redraw.
+    p.rects = []
+    s.fill_rect(0, 0, 240, 16, DARK)
+    s.text(font, "12:34", 200, 0, WHITE, DARK)
+    s.flush()
+    check("a right-side change in a full-width redraw tightens X to the right",
+          len(p.rects) == 1 and p.rects[0][0] >= 200 and p.rects[0][2] <= 40,
+          "got %r" % (p.rects,))
 
 
 def _rgb565(r, g, b):

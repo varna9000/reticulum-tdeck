@@ -17,9 +17,16 @@
 # panel is only touched on an explicit flush. See eink_shim.py for the batching
 # policy layered on top.
 
+from array import array
 import framebuf
+import micropython
 import time
 from micropython import const
+
+try:
+    ptr8
+except NameError:
+    ptr8 = ptr32 = lambda x: x
 
 # UC8253 commands
 _PANEL_SETTING   = const(0x00)
@@ -83,9 +90,14 @@ class GDEQ031T10:
         self.buf = bytearray(stride * self.HEIGHT)
         self.fb = framebuf.FrameBuffer(
             self.buf, self.WIDTH, self.HEIGHT, framebuf.MONO_HLSB)
-        # Scratch row used to invert one line at a time on transfer, so a flush
-        # does not need a second full-size buffer.
-        self._row = bytearray(stride)
+        # Scratch chunk (40 rows = 1200 B) for viper-accelerated inversion and
+        # multi-row SPI transfers: turns 320 per-row Python/SPI writes into 8
+        # DMA bursts (~12 ms instead of ~196 ms for a full 9600 B frame).
+        self._chunk_rows = 40
+        self._chunk = bytearray(stride * self._chunk_rows)
+        self._chunk_mv = memoryview(self._chunk)
+        self._buf_mv = memoryview(self.buf)
+        self._rgeom = array("i", (0, 0, 0, 0, 0, 0))
 
         self._cs.value(1)
 
@@ -202,20 +214,57 @@ class GDEQ031T10:
         self._cmd(command)
         self._dc.value(1)
         self._cs.value(0)
-        row = self._row
-        mv = memoryview(row)[:wb]
         stride = self._stride
         buf = self.buf
-        for r in range(y, y + h):
-            base = r * stride + x0 // 8
-            if self._invert:
-                for i in range(wb):
-                    row[i] = buf[base + i] ^ 0xFF
-            else:
-                for i in range(wb):
-                    row[i] = buf[base + i]
-            self._spi.write(mv)
+        if wb == stride and not self._invert:
+            self._spi.write(self._buf_mv[y * stride:(y + h) * stride])
+        elif wb == stride:
+            chunk = self._chunk
+            cmv = self._chunk_mv
+            step = self._chunk_rows
+            r = y
+            end = y + h
+            while r < end:
+                rows = end - r
+                if rows > step:
+                    rows = step
+                n = rows * stride
+                _xor_bytes(chunk, buf, r * stride, n)
+                self._spi.write(cmv[:n])
+                r += rows
+        else:
+            chunk = self._chunk
+            cmv = self._chunk_mv
+            g = self._rgeom
+            x0b = x0 // 8
+            step = len(chunk) // wb
+            g[0] = stride
+            g[1] = x0b
+            g[2] = wb
+            g[5] = 1 if self._invert else 0
+            r = y
+            end = y + h
+            while r < end:
+                rows = end - r
+                if rows > step:
+                    rows = step
+                g[3] = r
+                g[4] = rows
+                _pack_rect(chunk, buf, g)
+                self._spi.write(cmv[:rows * wb])
+                r += rows
         self._cs.value(1)
+
+    async def _wait_busy_async(self, timeout_ms):
+        """Non-blocking BUSY wait for async callers: yields to uasyncio so LoRa,
+        keyboard, touch and timers stay live while the glass refreshes."""
+        import uasyncio as asyncio
+        deadline = time.ticks_add(time.ticks_ms(), timeout_ms + 500)
+        while self._busy.value() == 0:
+            if time.ticks_diff(deadline, time.ticks_ms()) < 0:
+                return False
+            await asyncio.sleep_ms(10)
+        return True
 
     # --- public API --------------------------------------------------------
 
@@ -244,6 +293,28 @@ class GDEQ031T10:
         finally:
             if self._release:
                 self._release()
+
+    async def flush_async(self):
+        """Async full refresh: releases SPI and yields during the ~1.0 s glass
+        refresh so LoRa, keyboard and touch keep running."""
+        if self._acquire:
+            self._acquire()
+        try:
+            if not self._init_done:
+                self._init_display()
+            self._write_region(_WRITE_PREV, 0, 0, self.WIDTH, self.HEIGHT)
+            self._write_region(_WRITE_CURR, 0, 0, self.WIDTH, self.HEIGHT)
+            self._cmd(_CASCADE_SET, [0x02])
+            self._cmd(_FORCE_TEMP, [0x5A])
+            self._cmd(_VCOM_INTERVAL, [0x97])
+            self._do_power_on()
+            self._cmd(_DISPLAY_REFRESH)
+        finally:
+            if self._release:
+                self._release()
+        await self._wait_busy_async(_FULL_MS)
+        self._init_done = False
+        self._initial_refresh = False
 
     def flush_rect(self, x, y, w, h):
         """Partial refresh of one rectangle. About 0.7 s.
@@ -297,6 +368,57 @@ class GDEQ031T10:
             if self._release:
                 self._release()
 
+    async def flush_rect_async(self, x, y, w, h):
+        """Async partial refresh: releases SPI and yields during the ~650 ms
+        glass refresh, then re-acquires briefly to sync the 0x10 previous
+        buffer."""
+        if self._initial_refresh:
+            return await self.flush_async()
+
+        if x < 0:
+            w += x
+            x = 0
+        if y < 0:
+            h += y
+            y = 0
+        if x + w > self.WIDTH:
+            w = self.WIDTH - x
+        if y + h > self.HEIGHT:
+            h = self.HEIGHT - y
+        if w <= 0 or h <= 0:
+            return
+
+        if self._acquire:
+            self._acquire()
+        try:
+            if not self._init_done:
+                self._init_display()
+            self._cmd(_PARTIAL_IN)
+            self._write_region(_WRITE_CURR, x, y, w, h)
+            self._cmd(_CASCADE_SET, [0x02])
+            self._cmd(_FORCE_TEMP, [0x79])
+            self._cmd(_VCOM_INTERVAL, [0xD7])
+            self._do_power_on()
+            self._cmd(_DISPLAY_REFRESH)
+        finally:
+            if self._release:
+                self._release()
+        await self._wait_busy_async(_PARTIAL_MS)
+        self._init_done = False
+
+        if self._acquire:
+            self._acquire()
+        try:
+            self._cmd(_PARTIAL_OUT)
+            if not self._init_done:
+                self._init_display()
+            self._cmd(_PARTIAL_IN)
+            self._write_region(_WRITE_PREV, x, y, w, h)
+            self._cmd(_PARTIAL_OUT)
+        finally:
+            if self._release:
+                self._release()
+
     def power_off(self):
         if self._acquire:
             self._acquire()
@@ -310,3 +432,30 @@ class GDEQ031T10:
         self.power_off()
         self._hibernating = True
         self._init_done = False
+
+
+@micropython.viper
+def _xor_bytes(dst: ptr8, src: ptr8, offset: int, n: int):
+    for i in range(n):
+        dst[i] = src[offset + i] ^ 0xFF
+
+
+@micropython.viper
+def _pack_rect(dst: ptr8, src: ptr8, g: ptr32):
+    stride = g[0]
+    x0b = g[1]
+    wb = g[2]
+    y = g[3]
+    h = g[4]
+    inv = g[5]
+    di = 0
+    for r in range(h):
+        si = (y + r) * stride + x0b
+        if inv:
+            for i in range(wb):
+                dst[di] = src[si + i] ^ 0xFF
+                di += 1
+        else:
+            for i in range(wb):
+                dst[di] = src[si + i]
+                di += 1

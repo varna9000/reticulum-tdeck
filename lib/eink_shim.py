@@ -17,6 +17,7 @@
 #    panel with ink, which is slow, ghosts badly and looks wrong. So luminance
 #    is inverted: bright source colours become ink, dark ones become paper.
 
+from array import array
 import framebuf
 import micropython
 from micropython import const
@@ -99,6 +100,7 @@ class EinkShim:
         self._stride = panel.WIDTH // 8
         self._shown = bytearray(len(panel.buf))
         self._shown_valid = False
+        self._diff_out = array("i", (0, 0, 0, 0, 0))
 
         # Reusable 8x16 glyph buffer, so text() allocates nothing per character.
         self._gbuf = bytearray(16)
@@ -159,6 +161,9 @@ class EinkShim:
         gfb = self._gfb
         start_x = x0
 
+        buf = self._buf
+        stride = self._stride
+        aligned = (x0 & 7) == 0 and y0 >= 0
         for char in text:
             ch = char if isinstance(char, int) else ord(char)
             if not (first <= ch < last):
@@ -167,22 +172,39 @@ class EinkShim:
             if x0 + 8 > self.width or y0 + h > self.height:
                 break
 
-            self.fb.fill_rect(x0, y0, 8, h, bg)
-            if fg != bg:
-                idx = (ch - first) * h
-                for r in range(h):
-                    gbuf[r] = src[idx + r]
-                # blit() treats source pixels equal to `key` as transparent.
-                # For ink-on-paper the glyph's set bits are already the value
-                # we want, so blit as-is and let the clear bits fall through.
-                # For paper-on-ink the glyph is inverted first, so the strokes
-                # become 0 and the surrounding 1s are the transparent ones.
-                if fg == _INK:
-                    self.fb.blit(gfb, x0, y0, 0)
+            if aligned and x0 >= 0:
+                # Byte-aligned fast path (almost all UI text sits on the 8px
+                # grid): write directly into the MONO_HLSB buffer with no
+                # fill_rect or blit overhead.
+                col = x0 >> 3
+                o = y0 * stride + col
+                if fg == bg:
+                    fill_b = 0xFF if bg == _INK else 0x00
+                    for _ in range(h):
+                        buf[o] = fill_b
+                        o += stride
                 else:
-                    for r in range(h):
-                        gbuf[r] = src[idx + r] ^ 0xFF
-                    self.fb.blit(gfb, x0, y0, 1)
+                    idx = (ch - first) * h
+                    if fg == _INK:
+                        for r in range(h):
+                            buf[o] = src[idx + r]
+                            o += stride
+                    else:
+                        for r in range(h):
+                            buf[o] = src[idx + r] ^ 0xFF
+                            o += stride
+            else:
+                self.fb.fill_rect(x0, y0, 8, h, bg)
+                if fg != bg:
+                    idx = (ch - first) * h
+                    if fg == _INK:
+                        for r in range(h):
+                            gbuf[r] = src[idx + r]
+                        self.fb.blit(gfb, x0, y0, 0)
+                    else:
+                        for r in range(h):
+                            gbuf[r] = src[idx + r] ^ 0xFF
+                        self.fb.blit(gfb, x0, y0, 1)
             x0 += 8
 
         self._mark(start_x, y0, x0 - start_x, h)
@@ -281,56 +303,58 @@ class EinkShim:
     def init(self):
         self._p.init()
 
-    def _changed_rows(self, y0, y1):
-        """Rows in [y0, y1) whose bytes differ from what the panel shows.
+    def _changed_rect(self, x0, y0, x1, y1):
+        """Byte-aligned bounding box inside [x0, x1) x [y0, y1) whose pixels
+        differ from what the panel shows, or None when nothing changed.
 
-        Returns (first, last_exclusive), or None when the region is identical.
-        Row granularity rather than pixel: the panel's own write window is
-        byte-aligned anyway, and this keeps the comparison to one slice per
-        row.
-        """
-        stride = self._stride
-        buf = self._buf
-        shown = self._shown
-        first = -1
-        last = y0
-        for y in range(y0, y1):
-            o = y * stride
-            if buf[o:o + stride] != shown[o:o + stride]:
-                if first < 0:
-                    first = y
-                last = y + 1
-        if first < 0:
+        Runs in viper with zero allocations (replaces per-row slice copies) and
+        tightens both X and Y so a narrow update inside a full-width redraw
+        (e.g. a navbar clock tick) refreshes only the changed columns."""
+        if y0 < 0:
+            y0 = 0
+        if y1 > self.height:
+            y1 = self.height
+        if x0 < 0:
+            x0 = 0
+        if x1 > self.width:
+            x1 = self.width
+        if x0 >= x1 or y0 >= y1:
             return None
-        return first, last
+        bx0 = x0 >> 3
+        bx1 = (x1 + 7) >> 3
+        out = self._diff_out
+        out[0] = self._stride
+        out[1] = y0
+        out[2] = y1
+        out[3] = bx0
+        out[4] = bx1
+        _diff_rect(self._buf, self._shown, out)
+        if out[0] < 0:
+            return None
+        ny0 = out[0]
+        ny1 = out[1]
+        nx0 = out[2] << 3
+        nx1 = out[3] << 3
+        if nx0 < x0:
+            nx0 = x0
+        if nx1 > x1:
+            nx1 = x1
+        return nx0, ny0, nx1, ny1
 
-    def flush(self, force_full=False, user=False):
-        """Push pending changes to the panel. This is the only slow call.
-
-        `user` says the redraw was caused by a key press (ui.py tracks that);
-        anything else -- an announce, a received message, the clock -- is a
-        background redraw. Refreshes just the rows that actually differ from
-        what is on the panel, which is often none of them, and then this
-        returns without touching the hardware.
-
-        A full refresh (the whole-panel flash) happens when asked (ui.py asks
-        on a screen change), on the first push, or on a sizeable user redraw
-        that finds a ghosting debt owed. Everything else -- a cursor step, a
-        scroll, a background redraw however large -- is a quiet partial that
-        at most notes the debt. The hard limit is the backstop for a panel
-        that sees nothing but small partials.
-        """
+    def _plan_flush(self, force_full, user):
+        """Decide what (if anything) to push. Returns None (no-op), 'full', or
+        (x0, y0, x1, y1) for a partial refresh."""
         if not self._dirty and not force_full:
-            return
+            return None
 
         x0, y0, x1, y1 = self._dx0, self._dy0, self._dx1, self._dy1
         self._dirty = False
 
         if self._shown_valid and not force_full:
-            rows = self._changed_rows(y0, y1)
-            if rows is None:
-                return          # drawn over, but nothing actually moved
-            y0, y1 = rows
+            rect = self._changed_rect(x0, y0, x1, y1)
+            if rect is None:
+                return None     # drawn over, but nothing actually moved
+            x0, y0, x1, y1 = rect
 
         area = (x1 - x0) * (y1 - y0)
         if self._partials >= _FAST_REFRESH_LIMIT:
@@ -340,13 +364,68 @@ class EinkShim:
                 (user and self._full_owed and area >= _OWED_MIN_PIXELS):
             self._partials = 0
             self._full_owed = False
+            return "full"
+        self._partials += 1
+        return x0, y0, x1, y1
+
+    def _commit_shown(self, plan):
+        if plan == "full" or not self._shown_valid:
+            self._shown[:] = self._buf
+        else:
+            s = self._stride
+            a = plan[1] * s
+            b = plan[3] * s
+            self._shown[a:b] = self._buf[a:b]
+        self._shown_valid = True
+
+    def flush(self, force_full=False, user=False):
+        """Push pending changes to the panel. This is the only slow call.
+
+        `user` says the redraw was caused by a key press (ui.py tracks that);
+        anything else -- an announce, a received message, the clock -- is a
+        background redraw. Refreshes just the region that actually differs from
+        what is on the panel, which is often nothing, and then this returns
+        without touching the hardware.
+
+        A full refresh (the whole-panel flash) happens when asked (ui.py asks
+        on a screen change), on the first push, or on a sizeable user redraw
+        that finds a ghosting debt owed. Everything else -- a cursor step, a
+        scroll, a background redraw however large -- is a quiet partial that
+        at most notes the debt. The hard limit is the backstop for a panel
+        that sees nothing but small partials.
+        """
+        plan = self._plan_flush(force_full, user)
+        if plan is None:
+            return
+        if plan == "full":
             self._p.flush()
         else:
-            self._partials += 1
+            x0, y0, x1, y1 = plan
             self._p.flush_rect(x0, y0, x1 - x0, y1 - y0)
+        self._commit_shown(plan)
 
-        self._shown[:] = self._buf
-        self._shown_valid = True
+    async def flush_async(self, force_full=False, user=False):
+        """Async twin of flush(): releases SPI and yields to uasyncio while the
+        panel's BUSY line is low."""
+        plan = self._plan_flush(force_full, user)
+        if plan is None:
+            return
+        # Snapshot _shown before awaiting so any UI draw that happens after
+        # this refresh starts is diffed cleanly against what was sent.
+        self._commit_shown(plan)
+        if plan == "full":
+            fn = getattr(self._p, "flush_async", None)
+            if fn is not None:
+                await fn()
+            else:
+                self._p.flush()
+        else:
+            x0, y0, x1, y1 = plan
+            fn = getattr(self._p, "flush_rect_async", None)
+            if fn is not None:
+                await fn(x0, y0, x1 - x0, y1 - y0)
+            else:
+                self._p.flush_rect(x0, y0, x1 - x0, y1 - y0)
 
     # --- compatibility no-ops ---------------------------------------------
 
@@ -359,6 +438,37 @@ class EinkShim:
     def sleep_mode(self, value):
         if value:
             self._p.hibernate()
+
+
+@micropython.viper
+def _diff_rect(buf: ptr8, shown: ptr8, out: ptr32):
+    """Find byte-aligned changed bounding box in [y0, y1) x [bx0, bx1).
+    Input out = (stride, y0, y1, bx0, bx1).
+    Output out[0..3] = (first_y, last_y_excl, min_bx, max_bx_excl), or out[0] = -1."""
+    stride = out[0]
+    y0 = out[1]
+    y1 = out[2]
+    bx0 = out[3]
+    bx1 = out[4]
+    fy = -1
+    ly = y0
+    mbx0 = bx1
+    mbx1 = bx0
+    for y in range(y0, y1):
+        o = y * stride
+        for bx in range(bx0, bx1):
+            if buf[o + bx] != shown[o + bx]:
+                if fy < 0:
+                    fy = y
+                ly = y + 1
+                if bx < mbx0:
+                    mbx0 = bx
+                if bx + 1 > mbx1:
+                    mbx1 = bx + 1
+    out[0] = fy
+    out[1] = ly
+    out[2] = mbx0
+    out[3] = mbx1
 
 
 @micropython.viper

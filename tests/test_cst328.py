@@ -109,8 +109,14 @@ class FakeI2C:
         if reg == 0xD005:
             return bytes([self.count_hi | self.count])
         if reg == 0xD000:
-            return bytes(self.report[:n])
+            data = bytearray(self.report[:n])
+            if n > 5:
+                data[5] = self.count_hi | self.count
+            return bytes(data)
         return bytes(n)
+
+    def readfrom_mem_into(self, addr, reg, buf, addrsize=8):
+        buf[:] = self.readfrom_mem(addr, reg, len(buf), addrsize=addrsize)
 
     def writeto(self, addr, data):
         assert addr == 0x1A
@@ -191,7 +197,7 @@ def test_first_contact_is_down():
     int_pin.fire()
     evs = t.poll()
     check("one DOWN at the reported point", evs == [(cst328.DOWN, 126, 169, 1000)], repr(evs))
-    check("count then points were read", i2c.reads == [(0xD005, 1), (0xD000, 27)], repr(i2c.reads))
+    check("point 0 + count read in one 6-byte transaction", i2c.reads == [(0xD000, 6)], repr(i2c.reads))
     check("report acknowledged with 0xAB", i2c.writes == [b"\xD0\x00\xAB"], repr(i2c.writes))
     check("touching", t.touching() is True)
 
@@ -206,7 +212,7 @@ def test_jitter_is_dropped_and_moves_pass():
     _clock[0] += 20
     evs = t.poll()
     check("1 px wobble is not a MOVE", evs == [], repr(evs))
-    check("a known finger is still polled without a new edge", len(i2c.reads) == 4, repr(i2c.reads))
+    check("a known finger is still polled without a new edge", len(i2c.reads) == 2, repr(i2c.reads))
     i2c.contact(130, 169)              # 4 px
     _clock[0] += 20
     evs = t.poll()
@@ -233,8 +239,8 @@ def test_second_finger_ignored_but_report_cleared():
     int_pin.fire()
     evs = t.poll()
     check("only the first finger is reported", evs == [(cst328.DOWN, 116, 32, 1000)], repr(evs))
-    check("full 27-byte read and the clear still happen",
-          (0xD000, 27) in i2c.reads and i2c.writes[-1] == b"\xD0\x00\xAB")
+    check("6-byte read and the clear still happen",
+          (0xD000, 6) in i2c.reads and i2c.writes[-1] == b"\xD0\x00\xAB")
 
 
 # --- lift-off --------------------------------------------------------------
@@ -257,8 +263,8 @@ def test_lifted_report_is_up_at_last_position():
     check("finger forgotten", t.touching() is False)
     _clock[0] += 20
     evs = t.poll()
-    check("lingering lifted report is not read again", evs == [] and i2c.reads[-1] == (0xD000, 27)
-          and len(i2c.reads) == 6, repr(i2c.reads))
+    check("lingering lifted report is not read again", evs == [] and i2c.reads[-1] == (0xD000, 6)
+          and len(i2c.reads) == 3, repr(i2c.reads))
 
 
 def test_short_tap_seen_only_as_lifted_is_down_then_up():
@@ -283,7 +289,7 @@ def test_count_zero_while_down_is_up():
     evs = t.poll()
     check("count 0 with a finger known is UP at the last position",
           evs == [(cst328.UP, 60, 60, 1020)], repr(evs))
-    check("no points read when the count is 0", i2c.reads[-1] == (0xD005, 1))
+    check("single 6-byte read when count is 0", i2c.reads[-1] == (0xD000, 6))
 
 
 def test_fresh_edge_after_up_is_read():
@@ -441,8 +447,8 @@ def test_count_and_status_nibbles_are_masked():
     i2c.nothing()                       # count 0, high nibble still junk
     _clock[0] += 20
     evs = t.poll()
-    check("count 0 under a junk high nibble is still 'no finger': UP, no points read",
-          evs == [(cst328.UP, 77, 88, 1020)] and i2c.reads[-1] == (0xD005, 1), repr(evs))
+    check("count 0 under a junk high nibble is still 'no finger': UP",
+          evs == [(cst328.UP, 77, 88, 1020)] and i2c.reads[-1] == (0xD000, 6), repr(evs))
 
 
 def test_reset_pulse_is_20ms_low():

@@ -1774,32 +1774,66 @@ def forget_peer(key):
         _lxmf_to_peer.pop(h, None)
 
 
+_dest_tab_cache = {}   # dest_hash -> TAB_MSG/TAB_NET/TAB_RRC/TAB_SSH or -1
+_dest_name_cache = {}  # dest_hash -> (app_data, parsed_name)
+_tab_nh_cache = None   # ((tab, name_hash), ...) built once
+
+
 def contact_snapshot(tab):
     """GUI Find: every address in urns' identity cache of the given tab's
-    kind, newest first, as (dest_hash, name, ts). The cache holds every
-    aspect, so an entry qualifies when its hash is its identity's hash for
-    the tab's destination name -- the test each tab's announce handler
-    applies, with the name hash taken once instead of per entry."""
+    kind, newest first, as (dest_hash, name, ts). Destination-to-tab kind and
+    parsed display names are cached per dest_hash so opening Lookup over 700+
+    known destinations does not re-hash and re-unpack every entry on each tap."""
+    global _tab_nh_cache
     from urns.identity import Identity
     import ui as _ui
-    name, parse = {
-        _ui.TAB_MSG: (b"lxmf.delivery", LXMRouter.display_name_from_app_data),
-        _ui.TAB_NET: (b"nomadnetwork.node", nomad_browser._decode_name),
-        _ui.TAB_RRC: (b"rrc.hub", rrc_client.hub_name),
-    }.get(tab, (b"rnsh", None))
-    nh = Identity.full_hash(name)[:Identity.NAME_HASH_LENGTH // 8]
+    if _tab_nh_cache is None:
+        nl = Identity.NAME_HASH_LENGTH // 8
+        _tab_nh_cache = (
+            (_ui.TAB_MSG, Identity.full_hash(b"lxmf.delivery")[:nl]),
+            (_ui.TAB_NET, Identity.full_hash(b"nomadnetwork.node")[:nl]),
+            (_ui.TAB_RRC, Identity.full_hash(b"rrc.hub")[:nl]),
+            (_ui.TAB_SSH, Identity.full_hash(b"rnsh")[:nl]),
+        )
+    parse = {
+        _ui.TAB_MSG: LXMRouter.display_name_from_app_data,
+        _ui.TAB_NET: nomad_browser._decode_name,
+        _ui.TAB_RRC: rrc_client.hub_name,
+    }.get(tab)
     tl = Identity.TRUNCATED_HASHLENGTH // 8
+    kd = Identity.known_destinations
+    if len(_dest_tab_cache) > len(kd) + 128:
+        for k in [k for k in _dest_tab_cache if k not in kd]:
+            del _dest_tab_cache[k]
+            _dest_name_cache.pop(k, None)
     out = []
-    for dh, v in Identity.known_destinations.items():
+    for dh, v in kd.items():
         pub = v[2]
         if dh == dest.hash or not pub:
             continue
-        if Identity.full_hash(nh + Identity.truncated_hash(pub))[:tl] != dh:
+        kind = _dest_tab_cache.get(dh)
+        if kind is None:
+            ih = Identity.truncated_hash(pub)
+            kind = -1
+            for t, nh in _tab_nh_cache:
+                if Identity.full_hash(nh + ih)[:tl] == dh:
+                    kind = t
+                    break
+            _dest_tab_cache[dh] = kind
+        if kind != tab:
             continue
-        out.append((dh, (parse(v[3]) if parse else None) or "?", v[0]))
-    out = _ui._heard_order(out, time.time())
-    gc.collect()
-    return out
+        if parse is None:
+            name = "?"
+        else:
+            ad = v[3]
+            cached = _dest_name_cache.get(dh)
+            if cached is not None and cached[0] == ad:
+                name = cached[1]
+            else:
+                name = parse(ad) or "?"
+                _dest_name_cache[dh] = (ad, name)
+        out.append((dh, name, v[0]))
+    return _ui._heard_order(out, time.time())
 
 
 def add_contact(dest_hash):

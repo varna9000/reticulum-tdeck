@@ -765,7 +765,10 @@ def handle(ui, g, changed_ms):
 def _redraw_pending(ui):
     if ui.state == _u.STATE_IMAGE:
         return not ui._image_drawn    # the viewer paints outside the dirty flag
-    return ui.dirty
+    # On async e-ink refreshes ui.dirty clears before the ~650 ms glass update
+    # finishes; _flushing keeps touch_ui aware that the new frame is not yet
+    # visible on the panel.
+    return ui.dirty or getattr(ui, "_flushing", False)
 
 
 class Controller:

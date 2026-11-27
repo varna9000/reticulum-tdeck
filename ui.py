@@ -706,6 +706,8 @@ class UI:
         # and _flush() is called once per rendered screen instead. Resolved
         # once here rather than per redraw.
         self._panel_flush = getattr(tft, "flush", None)
+        self._panel_flush_async = getattr(tft, "flush_async", None)
+        self._flushing = False
         self._user_redraw = False
         self._force_full_flush = False
         # A tick until which gui_loop leaves a pending redraw alone, or None.
@@ -1185,6 +1187,22 @@ class UI:
         self._user_redraw = False
         self._force_full_flush = False
         if self._panel_flush is not None:
+            self._panel_flush(force_full=full, user=user)
+
+    async def _flush_async(self):
+        """Async push for e-ink: the panel driver acquires/releases SPI around
+        its own short transfers and yields to uasyncio while BUSY is low."""
+        user = self._user_redraw
+        full = self._force_full_flush
+        self._user_redraw = False
+        self._force_full_flush = False
+        if self._panel_flush_async is not None:
+            self._flushing = True
+            try:
+                await self._panel_flush_async(force_full=full, user=user)
+            finally:
+                self._flushing = False
+        elif self._panel_flush is not None:
             self._panel_flush(force_full=full, user=user)
 
     def _redraw_held(self, now):
@@ -5951,7 +5969,7 @@ class UI:
                     or self._irq_click or self._irq_long_click):
                 self.note_user_input()
             self.handle_trackball()
-            await asyncio.sleep_ms(20)
+            await asyncio.sleep_ms(10 if self._stroke_down else 20)
 
     async def gui_loop(self, spi_acquire_display, spi_release_display):
         """Drawing + input loop. kbd_loop handles fast polling separately."""
@@ -5990,12 +6008,16 @@ class UI:
 
             # Progress update: redraw center section only, no full clear
             if self._progress_dirty and not self.dirty:
-                spi_acquire_display()
-                self._nav_mid_cache = ''  # force center section redraw
-                self.draw_navbar()
-                self._flush()
-                spi_release_display()
                 self._progress_dirty = False
+                self._nav_mid_cache = ''  # force center section redraw
+                if self._panel_flush_async is not None:
+                    self.draw_navbar()
+                    await self._flush_async()
+                else:
+                    spi_acquire_display()
+                    self.draw_navbar()
+                    self._flush()
+                    spi_release_display()
 
             # Redraw: immediate for input line, throttled for full redraws
             # (see _redraw_due: the shell throttles harder, and e-ink holds
@@ -6003,20 +6025,31 @@ class UI:
             # renderer; settings text pages (WiFi pass / node name / TCP
             # host) redraw via their own draw().
             if self._input_dirty and not self.dirty:
-                spi_acquire_display()
-                if self.state == STATE_CHAT:
-                    self.draw_input()
-                else:
-                    self.draw()
-                self._flush()
-                spi_release_display()
                 self._input_dirty = False
+                if self._panel_flush_async is not None:
+                    if self.state == STATE_CHAT:
+                        self.draw_input()
+                    else:
+                        self.draw()
+                    await self._flush_async()
+                else:
+                    spi_acquire_display()
+                    if self.state == STATE_CHAT:
+                        self.draw_input()
+                    else:
+                        self.draw()
+                    self._flush()
+                    spi_release_display()
             elif self._redraw_due(now):
-                spi_acquire_display()
-                self.draw()
-                self._flush()
-                spi_release_display()
-                self._last_draw = now
+                if self._panel_flush_async is not None:
+                    self.draw()
+                    await self._flush_async()
+                else:
+                    spi_acquire_display()
+                    self.draw()
+                    self._flush()
+                    spi_release_display()
+                self._last_draw = time.ticks_ms()
 
             # A background redraw waiting out BG_REDRAW_MS is not worth a
             # 10 ms spin; the idle cadence serves it within 100 ms of due.

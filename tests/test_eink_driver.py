@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.join(ROOT, "lib"))
 
 _mp = types.ModuleType("micropython")
 _mp.const = lambda x: x
+_mp.viper = lambda f: f
 sys.modules.setdefault("micropython", _mp)
 
 
@@ -171,6 +172,77 @@ def test_idle_hook_that_raises_does_not_break_the_refresh():
     panel.idle = bad
     panel.flush_rect(0, 100, 32, 16)        # must not raise
     assert panel.idle is None, "a failing hook is dropped, not retried every 5 ms"
+
+
+def test_async_partial_releases_spi_while_busy_and_reinits_for_prev():
+    import asyncio
+    _ua = types.ModuleType("uasyncio")
+    _ua.sleep_ms = lambda ms: asyncio.sleep(0)
+    sys.modules["uasyncio"] = _ua
+
+    dc = FakePin(1)
+    spi = FakeSPI(dc)
+    busy = BusyPin(3)
+    held = [False]
+    saw_released_while_busy = [False]
+
+    def acq():
+        held[0] = True
+
+    def rel():
+        held[0] = False
+
+    panel = eink_gdeq031t10.GDEQ031T10(spi, FakePin(1), dc, busy, acquire=acq, release=rel)
+    real_cmd = panel._cmd
+
+    def cmd(c, data=None):
+        assert held[0], "SPI must be acquired for every command"
+        real_cmd(c, data)
+        if c == 0x12:
+            busy.left = busy.n
+
+    panel._cmd = cmd
+    orig_val = busy.value
+
+    def busy_val(v=None):
+        r = orig_val(v)
+        if r == 0 and not held[0]:
+            saw_released_while_busy[0] = True
+        return r
+
+    busy.value = busy_val
+
+    asyncio.run(panel.flush_async())
+    spi.log.clear()
+    saw_released_while_busy[0] = False
+    asyncio.run(panel.flush_rect_async(0, 100, 32, 16))
+    assert not held[0], "SPI left acquired after async partial"
+    assert saw_released_while_busy[0], "SPI was not released while BUSY was low"
+    cmds = commands(spi)
+    refresh = cmds.index(0x12)
+    after = cmds[refresh + 1:]
+    assert 0x10 in after and 0x00 in after[:after.index(0x10)], "0x10 sync missing re-init: %r" % after
+
+
+def test_write_region_batches_spi_writes_and_inverts():
+    dc = FakePin(1)
+    writes = []
+
+    class RecSPI:
+        def write(self, buf):
+            if dc.value() == 1:
+                writes.append(bytes(buf))
+
+    panel = eink_gdeq031t10.GDEQ031T10(RecSPI(), FakePin(1), dc, FakePin(1), invert=True)
+    panel.buf[0] = 0xAA
+    panel.buf[30] = 0x55
+    panel._write_region(0x13, 0, 0, 240, 2)
+    # First dc=1 write is the 7-byte _PARTIAL_WINDOW payload; the pixel data
+    # for 2 full-width rows (60 bytes) is a single batched SPI write, inverted.
+    pixel_writes = writes[1:]
+    assert len(pixel_writes) == 1 and len(pixel_writes[0]) == 60, (
+        "expected 1x60B pixel write, got %r" % [len(w) for w in pixel_writes])
+    assert pixel_writes[0][0] == 0x55 and pixel_writes[0][30] == 0xAA, "inversion mismatch"
 
 
 if __name__ == "__main__":
